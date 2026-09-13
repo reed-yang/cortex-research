@@ -1,0 +1,34 @@
+/* Shared chat/document math stays inside the reader on narrow screens. */
+.aui-md {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.aui-md .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.25em;
+}
+
+/* The legacy artifact reader must not flatten Markdown paragraph/code styles. */
+.artifact-document .aui-md p {
+  margin-block: 0.75rem;
+}
+
+.artifact-document .aui-md pre {
+  overflow-x: auto;
+  color: inherit;
+  font-size: 13px;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.artifact-document .artifact-source {
+  max-width: 100%;
+  margin-block: 0.75rem;
+  color: inherit;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

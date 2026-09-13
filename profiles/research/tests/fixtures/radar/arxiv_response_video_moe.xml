@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>arXiv Query: search_query=...</title>
+  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">2</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2403.12345v2</id>
+    <published>2026-05-25T17:30:00Z</published>
+    <updated>2026-05-26T09:15:00Z</updated>
+    <title>Mixture of Experts in Video Diffusion: A Survey</title>
+    <summary>We survey mixture-of-experts (MoE) approaches in video diffusion models, covering routing strategies, capacity scaling, and inference efficiency. Results show 2-4x throughput gains at equivalent quality.</summary>
+    <author><name>Alice Researcher</name></author>
+    <author><name>Bob Engineer</name></author>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2403.12345v2" rel="alternate" type="text/html"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2403.12345v2" rel="related" type="application/pdf"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2403.99999v1</id>
+    <published>2026-05-25T11:00:00Z</published>
+    <updated>2026-05-25T11:00:00Z</updated>
+    <title>Sparse Routing for Video Generation</title>
+    <summary>We propose a sparse routing mechanism for video MoE diffusion transformers.</summary>
+    <author><name>Charlie Author</name></author>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <link href="http://arxiv.org/abs/2403.99999v1" rel="alternate" type="text/html"/>
+  </entry>
+</feed>

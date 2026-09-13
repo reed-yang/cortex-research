@@ -1,0 +1,637 @@
+{
+  "$schema": "golden-case-v0.1.schema.json",
+  "schema_version": "0.1",
+  "fixture_id": "golden-echo-lingbot-g1",
+  "fixture_stage": "g1_keep_both_successor",
+  "clock": {
+    "frozen_at": "2026-07-15T20:10:00Z",
+    "tick_seconds": 1
+  },
+  "identities": {
+    "workspace_id": "workspace-golden-001",
+    "run_id": "run-golden-001",
+    "attempt_id": "attempt-golden-001-a2",
+    "thread_ids": ["thread-evidence-001", "thread-architecture-001", "thread-training-001"]
+  },
+  "run": {
+    "run_id": "run-golden-001",
+    "attempt_id": "attempt-golden-001-a2",
+    "state": "completed",
+    "active_attempt_count": 0
+  },
+  "workspace": {
+    "workspace_id": "workspace-golden-001",
+    "name": "Synthetic Echo / LingBot memory study"
+  },
+  "source_intent": {
+    "source_intent_id": "source-intent-golden-001",
+    "title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+    "url": "https://arxiv.org/pdf/2607.07675",
+    "title_canonical_id": "arxiv:2606.04527",
+    "url_canonical_id": "arxiv:2607.07675"
+  },
+  "sources": {
+    "initial": [
+      {
+        "source_id": "source-echo",
+        "canonical_id": "arxiv:2606.04527",
+        "source_kind": "paper",
+        "official_title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+        "aliases": [
+          {"alias_id": "alias-echo-infinity", "kind": "project", "value": "Echo-Infinity"}
+        ],
+        "import_state": "existing"
+      }
+    ],
+    "candidates": [
+      {
+        "source_id": "source-echo",
+        "canonical_id": "arxiv:2606.04527",
+        "source_kind": "paper",
+        "official_title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+        "aliases": [
+          {"alias_id": "alias-echo-infinity", "kind": "project", "value": "Echo-Infinity"}
+        ],
+        "import_state": "existing"
+      },
+      {
+        "source_id": "source-lingbot",
+        "canonical_id": "arxiv:2607.07675",
+        "source_kind": "paper",
+        "official_title": "Scaling Mixture-of-Experts Video Pretraining for Embodied Intelligence",
+        "aliases": [
+          {"alias_id": "alias-lingbot-video", "kind": "model", "value": "LingBot-Video"}
+        ],
+        "import_state": "resolved_not_imported"
+      }
+    ],
+    "final": [
+      {
+        "source_id": "source-echo",
+        "canonical_id": "arxiv:2606.04527",
+        "source_kind": "paper",
+        "official_title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+        "aliases": [
+          {"alias_id": "alias-echo-infinity", "kind": "project", "value": "Echo-Infinity"}
+        ],
+        "import_state": "existing"
+      },
+      {
+        "source_id": "source-lingbot",
+        "canonical_id": "arxiv:2607.07675",
+        "source_kind": "paper",
+        "official_title": "Scaling Mixture-of-Experts Video Pretraining for Embodied Intelligence",
+        "aliases": [
+          {"alias_id": "alias-lingbot-video", "kind": "model", "value": "LingBot-Video"}
+        ],
+        "import_state": "imported"
+      }
+    ],
+    "run_bindings": [
+      {
+        "binding_id": "binding-run-echo",
+        "run_id": "run-golden-001",
+        "source_id": "source-echo",
+        "disposition": "reused",
+        "bound_at_sequence": 8
+      },
+      {
+        "binding_id": "binding-run-lingbot",
+        "run_id": "run-golden-001",
+        "source_id": "source-lingbot",
+        "disposition": "imported",
+        "bound_at_sequence": 9
+      }
+    ]
+  },
+  "decisions": [
+    {
+      "decision_id": "decision-source-001",
+      "kind": "source_conflict",
+      "status": "resolved",
+      "revision": 2,
+      "options": ["keep_both", "replace_url_with_echo", "cancel"],
+      "selected": "keep_both",
+      "created_at": "2026-07-15T20:10:04Z",
+      "resolved_at": "2026-07-15T20:10:06Z"
+    },
+    {
+      "decision_id": "decision-lineage-001",
+      "kind": "prior_lineage_disposition",
+      "status": "resolved",
+      "revision": 2,
+      "options": ["create_successor", "continue_existing", "start_unrelated", "cancel"],
+      "selected": "create_successor",
+      "created_at": "2026-07-15T20:10:10Z",
+      "resolved_at": "2026-07-15T20:10:12Z"
+    }
+  ],
+  "lineage": {
+    "initial_nodes": [
+      {
+        "node_id": "lineage-helios-ttt-dormant",
+        "status": "dormant",
+        "title": "Helios-14B TTT memory feasibility",
+        "revision": 4
+      },
+      {
+        "node_id": "lineage-echo-memory-graduated",
+        "status": "graduated",
+        "title": "Echo memory architecture survey",
+        "revision": 7
+      }
+    ],
+    "final_nodes": [
+      {
+        "node_id": "lineage-helios-ttt-dormant",
+        "status": "dormant",
+        "title": "Helios-14B TTT memory feasibility",
+        "revision": 4
+      },
+      {
+        "node_id": "lineage-echo-memory-graduated",
+        "status": "graduated",
+        "title": "Echo memory architecture survey",
+        "revision": 7
+      },
+      {
+        "node_id": "lineage-helios-echo-successor",
+        "status": "active",
+        "title": "Helios-14B on Wan2.2 hybrid memory successor",
+        "revision": 1
+      }
+    ],
+    "links": [
+      {
+        "link_id": "link-successor-dormant",
+        "from_node_id": "lineage-helios-echo-successor",
+        "to_node_id": "lineage-helios-ttt-dormant",
+        "relation": "successor_reuses"
+      },
+      {
+        "link_id": "link-successor-graduated",
+        "from_node_id": "lineage-helios-echo-successor",
+        "to_node_id": "lineage-echo-memory-graduated",
+        "relation": "successor_reuses"
+      }
+    ],
+    "retrieval": {
+      "strategy": "independent_lineage_retrieval",
+      "live_seed_dedup_statuses": ["awaiting_human", "incubating"],
+      "retrieved": [
+        {"node_id": "lineage-helios-ttt-dormant", "status": "dormant", "in_live_seed_dedup_domain": false, "reason": "lineage_reuse_candidate"},
+        {"node_id": "lineage-echo-memory-graduated", "status": "graduated", "in_live_seed_dedup_domain": false, "reason": "lineage_reuse_candidate"}
+      ]
+    }
+  },
+  "checkpoints": [
+    {
+      "checkpoint_id": "checkpoint-golden-001",
+      "run_id": "run-golden-001",
+      "attempt_id": "attempt-golden-001-a1",
+      "committed_at_sequence": 15,
+      "state": {
+        "decision_revisions": {
+          "decision-lineage-001": 2,
+          "decision-source-001": 2
+        },
+        "lineage_node_ids": [
+          "lineage-helios-ttt-dormant",
+          "lineage-echo-memory-graduated",
+          "lineage-helios-echo-successor"
+        ],
+        "next_stage": "materialize_threads",
+        "run_source_binding_ids": ["binding-run-echo", "binding-run-lingbot"]
+      },
+      "state_sha256": "f4f8cc16c71f844c7ddc98fa11217a8e4bc029da664d892344da75013bce6986"
+    }
+  ],
+  "threads": [
+    {
+      "thread_id": "thread-evidence-001",
+      "workspace_id": "workspace-golden-001",
+      "kind": "evidence",
+      "title": "Evidence and source identity"
+    },
+    {
+      "thread_id": "thread-architecture-001",
+      "workspace_id": "workspace-golden-001",
+      "kind": "architecture",
+      "title": "Helios memory architecture"
+    },
+    {
+      "thread_id": "thread-training-001",
+      "workspace_id": "workspace-golden-001",
+      "kind": "training_plan",
+      "title": "Training and ablation plan"
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "evidence-echo-001",
+      "thread_id": "thread-evidence-001",
+      "source_id": "source-echo",
+      "claim": "Synthetic Echo memory evidence placeholder"
+    },
+    {
+      "evidence_id": "evidence-lingbot-001",
+      "thread_id": "thread-evidence-001",
+      "source_id": "source-lingbot",
+      "claim": "Synthetic LingBot-Video alias evidence placeholder"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "artifact-living-brief-001",
+      "kind": "living_brief",
+      "thread_id": "thread-architecture-001",
+      "mutable": true,
+      "references": {
+        "source_ids": ["source-echo", "source-lingbot"],
+        "evidence_ids": ["evidence-echo-001", "evidence-lingbot-001"],
+        "lineage_node_ids": ["lineage-helios-ttt-dormant", "lineage-echo-memory-graduated", "lineage-helios-echo-successor"],
+        "artifact_version_ids": []
+      },
+      "versions": [
+        {
+          "version_id": "version-living-001",
+          "revision": 1,
+          "resource_uri": "cortex://artifacts/golden/living-brief-v1.md",
+          "sha256": "2d0ab0e1eb19e28767e0cb6fc89956b8941e33c9945ccbb53a844e2916d80b87",
+          "created_at": "2026-07-15T20:10:19Z",
+          "immutable": true
+        },
+        {
+          "version_id": "version-living-002",
+          "revision": 2,
+          "resource_uri": "cortex://artifacts/golden/living-brief.md",
+          "sha256": "7cc9a443f8b3e52435b31adcc9e5fe81ac49eccf076a3da9f560a90c13f1ec06",
+          "created_at": "2026-07-15T20:10:20Z",
+          "immutable": true
+        }
+      ]
+    },
+    {
+      "artifact_id": "artifact-evidence-matrix-001",
+      "kind": "evidence_matrix",
+      "thread_id": "thread-evidence-001",
+      "mutable": true,
+      "references": {
+        "source_ids": ["source-echo", "source-lingbot"],
+        "evidence_ids": ["evidence-echo-001", "evidence-lingbot-001"],
+        "lineage_node_ids": ["lineage-helios-ttt-dormant", "lineage-echo-memory-graduated"],
+        "artifact_version_ids": []
+      },
+      "versions": [
+        {
+          "version_id": "version-evidence-001",
+          "revision": 1,
+          "resource_uri": "cortex://artifacts/golden/evidence-matrix.md",
+          "sha256": "7d51633be29e2ace145aa5e18ff67123d3ac7e5515ee8757ee49fafc18c8e88a",
+          "created_at": "2026-07-15T20:10:21Z",
+          "immutable": true
+        }
+      ]
+    },
+    {
+      "artifact_id": "artifact-training-plan-001",
+      "kind": "training_plan",
+      "thread_id": "thread-training-001",
+      "mutable": true,
+      "references": {
+        "source_ids": ["source-echo", "source-lingbot"],
+        "evidence_ids": ["evidence-echo-001", "evidence-lingbot-001"],
+        "lineage_node_ids": ["lineage-helios-echo-successor"],
+        "artifact_version_ids": []
+      },
+      "versions": [
+        {
+          "version_id": "version-training-001",
+          "revision": 1,
+          "resource_uri": "cortex://artifacts/golden/training-plan.md",
+          "sha256": "f1c6b165ee604057daea4a331747c5218ec17821ea94a6a17666d8ccd3437cb0",
+          "created_at": "2026-07-15T20:10:22Z",
+          "immutable": true
+        }
+      ]
+    },
+    {
+      "artifact_id": "artifact-snapshot-001",
+      "kind": "snapshot",
+      "thread_id": "thread-architecture-001",
+      "mutable": false,
+      "references": {
+        "source_ids": ["source-echo", "source-lingbot"],
+        "evidence_ids": ["evidence-echo-001", "evidence-lingbot-001"],
+        "lineage_node_ids": ["lineage-helios-ttt-dormant", "lineage-echo-memory-graduated", "lineage-helios-echo-successor"],
+        "artifact_version_ids": ["version-living-002", "version-evidence-001", "version-training-001"]
+      },
+      "versions": [
+        {
+          "version_id": "version-snapshot-001",
+          "revision": 1,
+          "resource_uri": "cortex://artifacts/golden/snapshot.md",
+          "sha256": "1c6148bfba7d0301a468d32174d28ed2481159d53fa6ffbc1d95176ceee16c5d",
+          "created_at": "2026-07-15T20:10:23Z",
+          "immutable": true
+        }
+      ]
+    }
+  ],
+  "events": [
+    {"schema_version": "0.1", "id": "event-g1-001", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 1, "type": "run.created", "occurred_at": "2026-07-15T20:10:00Z", "durability": "durable", "payload": {"workspace_id": "workspace-golden-001"}},
+    {"schema_version": "0.1", "id": "event-g1-002", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 2, "type": "run.started", "occurred_at": "2026-07-15T20:10:01Z", "durability": "durable", "payload": {}},
+    {"schema_version": "0.1", "id": "event-g1-003", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 3, "type": "source.intent_received", "occurred_at": "2026-07-15T20:10:02Z", "durability": "durable", "payload": {"source_intent_id": "source-intent-golden-001", "title_canonical_id": "arxiv:2606.04527", "url_canonical_id": "arxiv:2607.07675"}},
+    {"schema_version": "0.1", "id": "event-g1-004", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 4, "type": "source.conflict_detected", "occurred_at": "2026-07-15T20:10:03Z", "causation_id": "event-g1-003", "durability": "durable", "payload": {"source_intent_id": "source-intent-golden-001", "candidate_source_ids": ["source-echo", "source-lingbot"]}},
+    {"schema_version": "0.1", "id": "event-g1-005", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 5, "type": "decision.requested", "occurred_at": "2026-07-15T20:10:04Z", "durability": "durable", "payload": {"decision_id": "decision-source-001", "revision": 1}},
+    {"schema_version": "0.1", "id": "event-g1-006", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 6, "type": "run.waiting_for_decision", "occurred_at": "2026-07-15T20:10:05Z", "durability": "durable", "payload": {"decision_id": "decision-source-001"}},
+    {"schema_version": "0.1", "id": "event-g1-007", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 7, "type": "decision.resolved", "occurred_at": "2026-07-15T20:10:06Z", "causation_id": "event-g1-005", "durability": "durable", "payload": {"decision_id": "decision-source-001", "revision": 2, "selected": "keep_both"}},
+    {"schema_version": "0.1", "id": "event-g1-008", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 8, "type": "source.reused", "occurred_at": "2026-07-15T20:10:07Z", "causation_id": "event-g1-007", "durability": "durable", "payload": {"source_id": "source-echo", "binding_id": "binding-run-echo", "canonical_id": "arxiv:2606.04527"}},
+    {"schema_version": "0.1", "id": "event-g1-009", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 9, "type": "source.imported", "occurred_at": "2026-07-15T20:10:08Z", "causation_id": "event-g1-007", "durability": "durable", "payload": {"source_id": "source-lingbot", "binding_id": "binding-run-lingbot", "canonical_id": "arxiv:2607.07675"}},
+    {"schema_version": "0.1", "id": "event-g1-010", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 10, "type": "lineage.candidates_retrieved", "occurred_at": "2026-07-15T20:10:09Z", "durability": "durable", "payload": {"node_ids": ["lineage-helios-ttt-dormant", "lineage-echo-memory-graduated"]}},
+    {"schema_version": "0.1", "id": "event-g1-011", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 11, "type": "decision.requested", "occurred_at": "2026-07-15T20:10:10Z", "durability": "durable", "payload": {"decision_id": "decision-lineage-001", "revision": 1}},
+    {"schema_version": "0.1", "id": "event-g1-012", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 12, "type": "run.waiting_for_decision", "occurred_at": "2026-07-15T20:10:11Z", "durability": "durable", "payload": {"decision_id": "decision-lineage-001"}},
+    {"schema_version": "0.1", "id": "event-g1-013", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 13, "type": "decision.resolved", "occurred_at": "2026-07-15T20:10:12Z", "causation_id": "event-g1-011", "durability": "durable", "payload": {"decision_id": "decision-lineage-001", "revision": 2, "selected": "create_successor"}},
+    {"schema_version": "0.1", "id": "event-g1-014", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 14, "type": "lineage.successor_created", "occurred_at": "2026-07-15T20:10:13Z", "causation_id": "event-g1-013", "durability": "durable", "payload": {"node_id": "lineage-helios-echo-successor"}},
+    {"schema_version": "0.1", "id": "event-g1-015", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 15, "type": "checkpoint.committed", "occurred_at": "2026-07-15T20:10:14Z", "causation_id": "event-g1-014", "durability": "durable", "payload": {"checkpoint_id": "checkpoint-golden-001", "state_sha256": "f4f8cc16c71f844c7ddc98fa11217a8e4bc029da664d892344da75013bce6986"}},
+    {"schema_version": "0.1", "id": "event-g1-016", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 16, "type": "run.recovered", "occurred_at": "2026-07-15T20:10:15Z", "causation_id": "event-g1-015", "durability": "durable", "payload": {"checkpoint_id": "checkpoint-golden-001", "source_attempt_id": "attempt-golden-001-a1", "state_sha256": "f4f8cc16c71f844c7ddc98fa11217a8e4bc029da664d892344da75013bce6986"}},
+    {"schema_version": "0.1", "id": "event-g1-017", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 17, "type": "thread.created", "occurred_at": "2026-07-15T20:10:16Z", "durability": "durable", "payload": {"thread_id": "thread-evidence-001"}},
+    {"schema_version": "0.1", "id": "event-g1-018", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 18, "type": "thread.created", "occurred_at": "2026-07-15T20:10:17Z", "durability": "durable", "payload": {"thread_id": "thread-architecture-001"}},
+    {"schema_version": "0.1", "id": "event-g1-019", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 19, "type": "thread.created", "occurred_at": "2026-07-15T20:10:18Z", "durability": "durable", "payload": {"thread_id": "thread-training-001"}},
+    {"schema_version": "0.1", "id": "event-g1-020", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 20, "type": "artifact.version_committed", "occurred_at": "2026-07-15T20:10:19Z", "durability": "durable", "payload": {"artifact_id": "artifact-living-brief-001", "version_id": "version-living-001"}},
+    {"schema_version": "0.1", "id": "event-g1-021", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 21, "type": "artifact.version_committed", "occurred_at": "2026-07-15T20:10:20Z", "durability": "durable", "payload": {"artifact_id": "artifact-living-brief-001", "version_id": "version-living-002"}},
+    {"schema_version": "0.1", "id": "event-g1-022", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 22, "type": "artifact.version_committed", "occurred_at": "2026-07-15T20:10:21Z", "durability": "durable", "payload": {"artifact_id": "artifact-evidence-matrix-001", "version_id": "version-evidence-001"}},
+    {"schema_version": "0.1", "id": "event-g1-023", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 23, "type": "artifact.version_committed", "occurred_at": "2026-07-15T20:10:22Z", "durability": "durable", "payload": {"artifact_id": "artifact-training-plan-001", "version_id": "version-training-001"}},
+    {"schema_version": "0.1", "id": "event-g1-024", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 24, "type": "artifact.snapshot_committed", "occurred_at": "2026-07-15T20:10:23Z", "durability": "durable", "payload": {"artifact_id": "artifact-snapshot-001", "version_id": "version-snapshot-001", "sha256": "1c6148bfba7d0301a468d32174d28ed2481159d53fa6ffbc1d95176ceee16c5d"}},
+    {"schema_version": "0.1", "id": "event-g1-025", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a2", "sequence": 25, "type": "run.completed", "occurred_at": "2026-07-15T20:10:24Z", "causation_id": "event-g1-024", "durability": "durable", "payload": {"snapshot_version_id": "version-snapshot-001"}}
+  ],
+  "mutation_manifest": {
+    "scope": "research_import_materialization_side_effects",
+    "excludes_control_entities": ["run", "attempt", "decision", "event", "checkpoint"],
+    "transactions": [
+      {
+        "transaction_id": "transaction-source-reuse-001",
+        "triggered_by": "decision-source-001",
+        "committed_at_sequence": 8,
+        "mutations": [
+          {"op": "insert", "entity": "run_source_binding", "entity_id": "binding-run-echo", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-source-import-001",
+        "triggered_by": "decision-source-001",
+        "committed_at_sequence": 9,
+        "mutations": [
+          {"op": "insert", "entity": "source", "entity_id": "source-lingbot", "count": 1},
+          {"op": "insert", "entity": "source_alias", "entity_id": "alias-lingbot-video", "count": 1},
+          {"op": "insert", "entity": "run_source_binding", "entity_id": "binding-run-lingbot", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-lineage-001",
+        "triggered_by": "decision-lineage-001",
+        "committed_at_sequence": 14,
+        "mutations": [
+          {"op": "insert", "entity": "lineage_node", "entity_id": "lineage-helios-echo-successor", "count": 1},
+          {"op": "insert", "entity": "lineage_link", "entity_id": "link-successor-dormant", "count": 1},
+          {"op": "insert", "entity": "lineage_link", "entity_id": "link-successor-graduated", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-thread-evidence-001",
+        "triggered_by": "attempt-golden-001-a2",
+        "committed_at_sequence": 17,
+        "mutations": [
+          {"op": "insert", "entity": "thread", "entity_id": "thread-evidence-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-thread-architecture-001",
+        "triggered_by": "attempt-golden-001-a2",
+        "committed_at_sequence": 18,
+        "mutations": [
+          {"op": "insert", "entity": "thread", "entity_id": "thread-architecture-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-thread-training-001",
+        "triggered_by": "attempt-golden-001-a2",
+        "committed_at_sequence": 19,
+        "mutations": [
+          {"op": "insert", "entity": "thread", "entity_id": "thread-training-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-artifact-living-001",
+        "triggered_by": "attempt-golden-001-a2",
+        "committed_at_sequence": 20,
+        "mutations": [
+          {"op": "insert", "entity": "evidence", "entity_id": "evidence-echo-001", "count": 1},
+          {"op": "insert", "entity": "evidence", "entity_id": "evidence-lingbot-001", "count": 1},
+          {"op": "insert", "entity": "artifact", "entity_id": "artifact-living-brief-001", "count": 1},
+          {"op": "insert", "entity": "artifact_version", "entity_id": "version-living-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-artifact-living-002",
+        "triggered_by": "version-living-001",
+        "committed_at_sequence": 21,
+        "mutations": [
+          {"op": "update", "entity": "artifact", "entity_id": "artifact-living-brief-001", "count": 1},
+          {"op": "insert", "entity": "artifact_version", "entity_id": "version-living-002", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-artifact-evidence-001",
+        "triggered_by": "attempt-golden-001-a2",
+        "committed_at_sequence": 22,
+        "mutations": [
+          {"op": "insert", "entity": "artifact", "entity_id": "artifact-evidence-matrix-001", "count": 1},
+          {"op": "insert", "entity": "artifact_version", "entity_id": "version-evidence-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-artifact-training-001",
+        "triggered_by": "attempt-golden-001-a2",
+        "committed_at_sequence": 23,
+        "mutations": [
+          {"op": "insert", "entity": "artifact", "entity_id": "artifact-training-plan-001", "count": 1},
+          {"op": "insert", "entity": "artifact_version", "entity_id": "version-training-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-artifact-snapshot-001",
+        "triggered_by": "attempt-golden-001-a2",
+        "committed_at_sequence": 24,
+        "mutations": [
+          {"op": "insert", "entity": "artifact", "entity_id": "artifact-snapshot-001", "count": 1},
+          {"op": "insert", "entity": "artifact_version", "entity_id": "version-snapshot-001", "count": 1}
+        ]
+      }
+    ],
+    "materializations": [
+      {"operation": "write", "resource_uri": "cortex://artifacts/golden/living-brief-v1.md", "sha256": "2d0ab0e1eb19e28767e0cb6fc89956b8941e33c9945ccbb53a844e2916d80b87", "committed_at_sequence": 20},
+      {"operation": "write", "resource_uri": "cortex://artifacts/golden/living-brief.md", "sha256": "7cc9a443f8b3e52435b31adcc9e5fe81ac49eccf076a3da9f560a90c13f1ec06", "committed_at_sequence": 21},
+      {"operation": "write", "resource_uri": "cortex://artifacts/golden/evidence-matrix.md", "sha256": "7d51633be29e2ace145aa5e18ff67123d3ac7e5515ee8757ee49fafc18c8e88a", "committed_at_sequence": 22},
+      {"operation": "write", "resource_uri": "cortex://artifacts/golden/training-plan.md", "sha256": "f1c6b165ee604057daea4a331747c5218ec17821ea94a6a17666d8ccd3437cb0", "committed_at_sequence": 23},
+      {"operation": "write", "resource_uri": "cortex://artifacts/golden/snapshot.md", "sha256": "1c6148bfba7d0301a468d32174d28ed2481159d53fa6ffbc1d95176ceee16c5d", "committed_at_sequence": 24}
+    ]
+  },
+  "control_state_manifest": {
+    "scope": "control_plane_state",
+    "persisted_run_ids": ["run-golden-001"],
+    "persisted_attempt_ids": ["attempt-golden-001-a1", "attempt-golden-001-a2"],
+    "persisted_source_intent_ids": ["source-intent-golden-001"],
+    "persisted_decision_ids": ["decision-source-001", "decision-lineage-001"],
+    "persisted_event_ids": ["event-g1-001", "event-g1-002", "event-g1-003", "event-g1-004", "event-g1-005", "event-g1-006", "event-g1-007", "event-g1-008", "event-g1-009", "event-g1-010", "event-g1-011", "event-g1-012", "event-g1-013", "event-g1-014", "event-g1-015", "event-g1-016", "event-g1-017", "event-g1-018", "event-g1-019", "event-g1-020", "event-g1-021", "event-g1-022", "event-g1-023", "event-g1-024", "event-g1-025"],
+    "transactions": [
+      {
+        "transaction_id": "transaction-g1-run-created-001",
+        "triggered_by": "event-g1-001",
+        "committed_at_sequence": 1,
+        "mutations": [
+          {"op": "insert", "entity": "run", "entity_id": "run-golden-001", "count": 1},
+          {"op": "insert", "entity": "attempt", "entity_id": "attempt-golden-001-a1", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-run-started-001",
+        "triggered_by": "event-g1-002",
+        "committed_at_sequence": 2,
+        "mutations": [
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1},
+          {"op": "update", "entity": "attempt", "entity_id": "attempt-golden-001-a1", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-source-intent-received-001",
+        "triggered_by": "event-g1-003",
+        "committed_at_sequence": 3,
+        "mutations": [
+          {"op": "insert", "entity": "source_intent", "entity_id": "source-intent-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-source-conflict-detected-001",
+        "triggered_by": "event-g1-004",
+        "committed_at_sequence": 4,
+        "mutations": [
+          {"op": "update", "entity": "source_intent", "entity_id": "source-intent-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-source-decision-requested-001",
+        "triggered_by": "event-g1-005",
+        "committed_at_sequence": 5,
+        "mutations": [
+          {"op": "insert", "entity": "decision", "entity_id": "decision-source-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-run-waiting-source-001",
+        "triggered_by": "event-g1-006",
+        "committed_at_sequence": 6,
+        "mutations": [
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-source-decision-resolved-001",
+        "triggered_by": "event-g1-007",
+        "committed_at_sequence": 7,
+        "mutations": [
+          {"op": "update", "entity": "decision", "entity_id": "decision-source-001", "count": 1},
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-lineage-decision-requested-001",
+        "triggered_by": "event-g1-011",
+        "committed_at_sequence": 11,
+        "mutations": [
+          {"op": "insert", "entity": "decision", "entity_id": "decision-lineage-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-run-waiting-lineage-001",
+        "triggered_by": "event-g1-012",
+        "committed_at_sequence": 12,
+        "mutations": [
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-lineage-decision-resolved-001",
+        "triggered_by": "event-g1-013",
+        "committed_at_sequence": 13,
+        "mutations": [
+          {"op": "update", "entity": "decision", "entity_id": "decision-lineage-001", "count": 1},
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-checkpoint-001",
+        "triggered_by": "event-g1-015",
+        "committed_at_sequence": 15,
+        "mutations": [
+          {"op": "insert", "entity": "checkpoint", "entity_id": "checkpoint-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-run-recovered-001",
+        "triggered_by": "event-g1-016",
+        "committed_at_sequence": 16,
+        "mutations": [
+          {"op": "insert", "entity": "attempt", "entity_id": "attempt-golden-001-a2", "count": 1},
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g1-run-completed-001",
+        "triggered_by": "event-g1-025",
+        "committed_at_sequence": 25,
+        "mutations": [
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1},
+          {"op": "update", "entity": "attempt", "entity_id": "attempt-golden-001-a2", "count": 1}
+        ]
+      }
+    ]
+  },
+  "replay": {
+    "idempotency": {
+      "key": "golden-g1-keep-both-successor-001",
+      "first_transaction_ids": ["transaction-source-reuse-001", "transaction-source-import-001", "transaction-lineage-001", "transaction-thread-evidence-001", "transaction-thread-architecture-001", "transaction-thread-training-001", "transaction-artifact-living-001", "transaction-artifact-living-002", "transaction-artifact-evidence-001", "transaction-artifact-training-001", "transaction-artifact-snapshot-001"],
+      "repeated_response_matches_first": true,
+      "expected_additional_events": [],
+      "expected_additional_mutations": [],
+      "expected_additional_materializations": []
+    },
+    "restart_recovery": {
+      "checkpoint_id": "checkpoint-golden-001",
+      "checkpoint_at_sequence": 15,
+      "source_attempt_id": "attempt-golden-001-a1",
+      "recovered_attempt_id": "attempt-golden-001-a2",
+      "after_sequence": 15,
+      "expected_replayed_sequences": [16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
+      "expected_duplicate_event_ids": [],
+      "expected_duplicate_entity_ids": []
+    }
+  },
+  "blobs": {
+    "cortex://artifacts/golden/living-brief-v1.md": "living-brief-v1.md",
+    "cortex://artifacts/golden/living-brief.md": "living-brief.md",
+    "cortex://artifacts/golden/evidence-matrix.md": "evidence-matrix.md",
+    "cortex://artifacts/golden/training-plan.md": "training-plan.md",
+    "cortex://artifacts/golden/snapshot.md": "snapshot.md"
+  },
+  "expected": {
+    "source_resolution": "keep_both",
+    "lineage_resolution": "create_successor",
+    "echo_import_delta": {"source_rows": 0, "chunks": 0, "directories": 0, "materializations": 0},
+    "secondary_source_delta": 1,
+    "reused_lineage_statuses": ["dormant", "graduated"],
+    "thread_kinds": ["evidence", "architecture", "training_plan"],
+    "artifact_kinds": ["living_brief", "evidence_matrix", "training_plan", "snapshot"],
+    "memory_variants": ["token_kv", "ttt_weight_space", "hybrid", "cache_no_new_memory"]
+  }
+}

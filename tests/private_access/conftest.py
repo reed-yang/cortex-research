@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from deployment.private_access.config import AccessConfig, parse_config
+
+
+@pytest.fixture
+def config_dict() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "provider": "tailscale-serve",
+        "public_origin": "https://cortex-host.example-tailnet.ts.net",
+        "access_gateway": "http://127.0.0.1:3340",
+        "web_upstream": "http://127.0.0.1:3000",
+        "daemon_upstream": "http://127.0.0.1:8791",
+        "identity": {
+            "allowed_logins": ["owner@example.com"],
+            "allowed_sources": ["owner@example.com", "tag:cortex-client"],
+            "service_tag": "tag:cortex-server",
+            "tag_owners": ["owner@example.com"],
+            "app_capability": "example.com/cap/cortex-access",
+            "allowed_capability_roles": ["owner"],
+        },
+        "session_bootstrap_secret_ref": (
+            "keychain://cortex/private-access-session"
+        ),
+    }
+
+
+@pytest.fixture
+def config(config_dict: dict[str, object]) -> AccessConfig:
+    return parse_config(copy.deepcopy(config_dict))

@@ -1,0 +1,71 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.venv-*/
+*.egg-info/
+.pytest_cache/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Local secrets — NEVER commit
+secrets.age
+*.plain
+age-key.txt
+.env
+.env.local
+
+# Local state (should live in ~/.local/state/cortex/, not here — but defense in depth)
+runtime/
+# ...but `cortex_platform/runtime/` is source, and a bare `runtime/` pattern
+# silently swallows every NEW file added there while the tracked ones keep
+# working — which is exactly how a new module gets left out of a commit.
+# Sources only: the re-inclusion must not drag caches back in with them.
+!cortex_platform/runtime/
+!cortex_platform/runtime/**/
+!cortex_platform/runtime/**/*.py
+*.db
+*.db-wal
+*.db-shm
+*.pickle
+logs/
+
+# Scratch / derived data caches (M5 S3a price cache, etc.) — rebuildable, never commit
+scratch/
+*.parquet
+
+# M5 / S5 model artifacts — trained on the remote node, synced as binaries; the
+# CODE + json schema are versioned, the binaries are NOT (plan §3.3). Production
+# artifacts live in ~/.local/state/cortex/investment/models/, not the repo.
+*.joblib
+*.onnx
+*.pkl
+models/*/
+
+# sed -i.bak artifacts
+*.bak
+
+# User-supplied PDFs/epubs for distillation (large + copyright-sensitive).
+# Distilled chunks (knowledge_data/distilled_*.md) ARE committed; the source
+# books are not. M6-B2.
+docs/downloads/
+
+# In-repo git worktrees (cortex convention; see docs/runbooks/worktrees.md)
+.claude/worktrees/
+
+# pytest cache (runtime, never source)
+.pytest_cache/
+**/.pytest_cache/
+
+# Vendored embedded runtime — large binaries; the pin descriptor IS committed
+vendor/python-runtime/*.tar.gz
+vendor/python-runtime/*.attestation.json
+vendor/wheelhouse/

@@ -1,0 +1,109 @@
+# Gitleaks configuration for the auto-research candidate.
+#
+# The default rule set is extended, never narrowed: no rule is disabled, no
+# path is excluded wholesale, and no entropy threshold is lowered. Every
+# allowlist below names one rule and the exact files whose findings are
+# correct by construction, with the reason on the line above it. Anything not
+# matched by these entries is a finding to investigate, not noise.
+#
+# Two kinds of finding are allowlisted, and only these two:
+#   1. de-duplication identifiers (`Idempotency-Key` command keys, capture
+#      keys) whose descriptive slug is long enough to pass the entropy filter
+#      of `generic-api-key`, a rule that keys off the word "key" alone;
+#   2. deliberately fake credential-shaped literals that negative tests must
+#      contain in order to assert that the code rejects or redacts them.
+#
+# Paths are anchored file names — `(^|/)` so a scan of an absolute directory
+# matches too, `$` so no sibling is covered — and `condition = "AND"` requires
+# both the file and the line shape to match before a finding is dropped.
+
+[extend]
+useDefault = true
+
+# `idempotency_key=` carries the value of the `Idempotency-Key` request header:
+# a caller-chosen de-duplication token for a command, not a credential.
+[[allowlists]]
+description = "test and acceptance idempotency keys (command de-duplication identifiers)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''idempotency_key\s*=\s*"[a-z0-9][a-z0-9-]*"''']
+paths = [
+  '''(^|/)cortex_platform/tests/product/api/test_source_knowledge\.py$''',
+  '''(^|/)cortex_platform/tests/product/engine/test_capture_consumer\.py$''',
+  '''(^|/)cortex_platform/tests/product/engine/test_schedule_tick\.py$''',
+  '''(^|/)cortex_platform/tests/product/orchestration/test_service\.py$''',
+  '''(^|/)cortex_platform/tests/product/research/test_dossier_artifacts\.py$''',
+  '''(^|/)cortex_platform/tests/product/research/test_dossier_execution\.py$''',
+  '''(^|/)cortex_platform/tests/product/research/test_execution\.py$''',
+  '''(^|/)cortex_platform/tests/product/sources/test_imports\.py$''',
+  '''(^|/)cortex_platform/tests/product/sources/test_knowledge_reader\.py$''',
+  '''(^|/)cortex_platform/tests/product/sources/test_knowledge_search\.py$''',
+  '''(^|/)cortex_platform/tests/product/sources/test_store\.py$''',
+  '''(^|/)cortex_platform/tests/product/transports/test_turn_bridge\.py$''',
+  '''(^|/)cortex_platform/tests/product/workflows/test_coordinator\.py$''',
+  '''(^|/)tools/hermes_acceptance\.py$''',
+]
+
+# `_post(..., key=...)` in this module fills the same `Idempotency-Key` header
+# (see `_headers`); the local parameter is just named `key`.
+[[allowlists]]
+description = "turn driver API test: the _post keyword argument is an Idempotency-Key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''\bkey\s*=\s*"[a-z0-9][a-z0-9-]*"''']
+paths = ['''(^|/)cortex_platform/tests/product/api/test_turn_driver\.py$''']
+
+# The productization fixture pins the idempotency key a replay must reuse, and
+# the test asserts that exact value: a contract identifier held in two places.
+[[allowlists]]
+description = "productization replay fixture: the pinned idempotency key and its assertion"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''"key"\s*:\s*"[a-z0-9][a-z0-9:-]*"''']
+paths = [
+  '''(^|/)cortex_platform/tests/fixtures/productization/g1-keep-both-successor\.json$''',
+  '''(^|/)cortex_platform/tests/test_productization_fixtures\.py$''',
+]
+
+# `capture_key` is derived from the capture payload (see `_capture_shape` in
+# the control store) and is used only to find an existing row.
+[[allowlists]]
+description = "web control client test: capture de-duplication key in a fixture object"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''capture_key\s*:\s*"[a-z0-9][a-z0-9:_-]*"''']
+paths = ['''(^|/)apps/web/tests/control-client\.test\.ts$''']
+
+# A parametrized list of obviously synthetic credential shapes (this one is the
+# AWS prefix followed by the alphabet) that the projector must refuse.
+[[allowlists]]
+description = "research workflow test: AWS-shaped literal asserted to be rejected"
+targetRules = ["aws-access-token"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"AKIA[A-Z]{16}",$''']
+paths = ['''(^|/)cortex_platform/tests/product/api/test_research_workflow\.py$''']
+
+# The input of `redact()`; the next assertion in the test proves the literal is
+# gone from the output, so it has to appear here in full.
+[[allowlists]]
+description = "redaction test: fake key=value secret that the assertion requires verbatim"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''text = redact\("Authorization: Bearer ''']
+paths = ['''(^|/)cortex_platform/tests/product/test_redaction\.py$''']
+
+# A PEM header whose body is the word "fixture", written to a temporary file so
+# the test can assert the offline source closure refuses key material.
+[[allowlists]]
+description = "release supply test: empty PEM fixture asserted to be rejected"
+targetRules = ["private-key"]
+condition = "AND"
+regexTarget = "line"
+regexes = ['''"app/local\.pem", "-----BEGIN PRIVATE KEY-----''']
+paths = ['''(^|/)apps/web/tests/release-supply\.test\.mjs$''']

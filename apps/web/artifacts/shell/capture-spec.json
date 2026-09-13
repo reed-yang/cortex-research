@@ -1,0 +1,153 @@
+{
+  "base_origin": "http://127.0.0.1:3002",
+  "schemes": [
+    "light",
+    "dark"
+  ],
+  "viewports": {
+    "desktop": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "deviceScaleFactor": 1
+    },
+    "mobile": {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 2,
+      "hasTouch": true,
+      "isMobile": true
+    }
+  },
+  "screenshots": {
+    "empty-project-light-desktop.png": {
+      "scene": "empty-project",
+      "scheme": "light",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_empty",
+      "sha256": "67db465ddd6713200b2a0c504152480032859606ce07de77a29ce55ba68d1c9a"
+    },
+    "empty-project-dark-desktop.png": {
+      "scene": "empty-project",
+      "scheme": "dark",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_empty",
+      "sha256": "6d163e4494311c63777cf53db4880ea5deae9265e99eaa2a1aa89490b7a97edf"
+    },
+    "thread-decision-light-desktop.png": {
+      "scene": "thread-decision",
+      "scheme": "light",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "ca7d045071bc479cf6490b69987f776079377c1f44b3ae63d15fd8eeed63dabe"
+    },
+    "thread-decision-dark-desktop.png": {
+      "scene": "thread-decision",
+      "scheme": "dark",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "a12e1825d896e2ef3d6a2344763f02db8564216611e47c1476ea6971aaac8d91"
+    },
+    "thread-decision-light-mobile.png": {
+      "scene": "thread-decision",
+      "scheme": "light",
+      "viewport": "mobile",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "ec2d9691ff09227751accb54ef3a5cc801a1e753d34d71dc76bc889d48601516"
+    },
+    "thread-decision-dark-mobile.png": {
+      "scene": "thread-decision",
+      "scheme": "dark",
+      "viewport": "mobile",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "e544c7b818aff63bcbf9fb0bb30ed83c68ea34e628e0f85a85ad183da613b263"
+    },
+    "thread-failed-light-desktop.png": {
+      "scene": "thread-failed",
+      "scheme": "light",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_failed",
+      "sha256": "5081aa1375780d73057221c00099d576568174a537c6c82e778750fd8de64b2a"
+    },
+    "thread-failed-dark-desktop.png": {
+      "scene": "thread-failed",
+      "scheme": "dark",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_failed",
+      "sha256": "036639bba6e9abf0b3a6b764a6050975bd21060b9b5be08ef1d828e86db37261"
+    },
+    "sidebar-archived-light-desktop.png": {
+      "scene": "sidebar-archived",
+      "scheme": "light",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "3913bee876a5947b54446080171949281bc8960c01b76448f0d605180472e054"
+    },
+    "sidebar-archived-dark-desktop.png": {
+      "scene": "sidebar-archived",
+      "scheme": "dark",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "ad7ebb8a7e69f5bf31d2acde2a3aab04888059411585bb7cab9faf64bfabc557"
+    },
+    "library-light-desktop.png": {
+      "scene": "library",
+      "scheme": "light",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library",
+      "sha256": "eacfe89fa686f770db7d32d1af6c17324e4c1ce02a0ed9b98a37924dea3f7486"
+    },
+    "library-dark-desktop.png": {
+      "scene": "library",
+      "scheme": "dark",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library",
+      "sha256": "76723537b0ce9cf05dfef3966977d34ebcaf92ba4adcde240f390b5eeef8cc02"
+    },
+    "inbox-light-desktop.png": {
+      "scene": "inbox",
+      "scheme": "light",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&view=inbox",
+      "sha256": "f750cd1fd669521fa2047da4880230d905f5142e9bed33c80dd3995e986029f6"
+    },
+    "inbox-dark-desktop.png": {
+      "scene": "inbox",
+      "scheme": "dark",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&view=inbox",
+      "sha256": "d13f91b543a4524c95f20aa7617d0f10b0be884f17c899cb77d7b69898ad61a5"
+    },
+    "status-light-desktop.png": {
+      "scene": "status",
+      "scheme": "light",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&view=status",
+      "sha256": "5234ec4860bb150a68a15f8c41c41a8b6277ea098b2cb062ab24cbff8d1f4302"
+    },
+    "status-dark-desktop.png": {
+      "scene": "status",
+      "scheme": "dark",
+      "viewport": "desktop",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&view=status",
+      "sha256": "5d4281718873b9218013a5a92b4b78cc0a7c4521d990483be3500701deb8f26c"
+    },
+    "drawer-light-mobile.png": {
+      "scene": "drawer",
+      "scheme": "light",
+      "viewport": "mobile",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "0871f00636b063c9d3e91d236bc791226b41c221fef086b7dd216d3affea85b5"
+    },
+    "drawer-dark-mobile.png": {
+      "scene": "drawer",
+      "scheme": "dark",
+      "viewport": "mobile",
+      "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
+      "sha256": "bf9f830ac3c44b2ada2f46ddc958ee134dc38f3d67656141c15222ff6c8f3054"
+    }
+  }
+}

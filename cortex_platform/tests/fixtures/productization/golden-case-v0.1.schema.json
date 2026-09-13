@@ -1,0 +1,507 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cortex://artifacts/fixtures/productization/golden-case-v0.1.schema.json",
+  "title": "Cortex deterministic productization golden fixture v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "fixture_id",
+    "fixture_stage",
+    "clock",
+    "identities",
+    "run",
+    "workspace",
+    "source_intent",
+    "sources",
+    "decisions",
+    "lineage",
+    "checkpoints",
+    "threads",
+    "evidence",
+    "artifacts",
+    "events",
+    "mutation_manifest",
+    "control_state_manifest",
+    "replay",
+    "blobs",
+    "expected"
+  ],
+  "properties": {
+    "$schema": {"const": "golden-case-v0.1.schema.json"},
+    "schema_version": {"const": "0.1"},
+    "fixture_id": {"type": "string", "pattern": "^golden-[a-z0-9-]+$"},
+    "fixture_stage": {"enum": ["g0_source_conflict", "g1_keep_both_successor"]},
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frozen_at", "tick_seconds"],
+      "properties": {
+        "frozen_at": {"type": "string", "pattern": "Z$"},
+        "tick_seconds": {"const": 1}
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace_id", "run_id", "attempt_id", "thread_ids"],
+      "properties": {
+        "workspace_id": {"type": "string"},
+        "run_id": {"type": "string"},
+        "attempt_id": {"type": "string"},
+        "thread_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "attempt_id", "state", "active_attempt_count"],
+      "properties": {
+        "run_id": {"type": "string"},
+        "attempt_id": {"type": "string"},
+        "state": {"type": "string"},
+        "active_attempt_count": {"type": "integer"}
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace_id", "name"],
+      "properties": {
+        "workspace_id": {"type": "string"},
+        "name": {"type": "string"}
+      }
+    },
+    "source_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_intent_id", "title", "url", "title_canonical_id", "url_canonical_id"],
+      "properties": {
+        "source_intent_id": {"type": "string"},
+        "title": {"type": "string"},
+        "url": {"type": "string"},
+        "title_canonical_id": {"const": "arxiv:2606.04527"},
+        "url_canonical_id": {"const": "arxiv:2607.07675"}
+      }
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial", "candidates", "final", "run_bindings"],
+      "properties": {
+        "initial": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "final": {"type": "array", "items": {"$ref": "#/$defs/source"}},
+        "run_bindings": {"type": "array", "items": {"$ref": "#/$defs/run_source_binding"}}
+      }
+    },
+    "decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}},
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial_nodes", "final_nodes", "links", "retrieval"],
+      "properties": {
+        "initial_nodes": {"type": "array", "items": {"$ref": "#/$defs/lineage_node"}},
+        "final_nodes": {"type": "array", "items": {"$ref": "#/$defs/lineage_node"}},
+        "links": {"type": "array", "items": {"$ref": "#/$defs/lineage_link"}},
+        "retrieval": {"type": ["object", "null"]}
+      }
+    },
+    "checkpoints": {"type": "array", "items": {"$ref": "#/$defs/checkpoint"}},
+    "threads": {"type": "array", "items": {"$ref": "#/$defs/thread"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+    "events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
+    "mutation_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "excludes_control_entities", "transactions", "materializations"],
+      "properties": {
+        "scope": {"const": "research_import_materialization_side_effects"},
+        "excludes_control_entities": {
+          "type": "array",
+          "items": {"enum": ["run", "attempt", "decision", "event", "checkpoint"]},
+          "minItems": 5,
+          "maxItems": 5
+        },
+        "transactions": {"type": "array", "items": {"$ref": "#/$defs/transaction"}},
+        "materializations": {"type": "array", "items": {"$ref": "#/$defs/materialization"}}
+      }
+    },
+    "control_state_manifest": {"$ref": "#/$defs/control_state_manifest"},
+    "replay": {"type": "object"},
+    "blobs": {"type": "object"},
+    "expected": {"type": "object"}
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "fixture_stage": {"const": "g0_source_conflict"},
+        "checkpoints": {"type": "array", "maxItems": 0},
+        "replay": {"$ref": "#/$defs/g0_replay"},
+        "blobs": {"type": "object", "additionalProperties": false, "maxProperties": 0},
+        "expected": {"$ref": "#/$defs/g0_expected"},
+        "lineage": {"type": "object", "properties": {"retrieval": {"type": "null"}}}
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "fixture_stage": {"const": "g1_keep_both_successor"},
+        "checkpoints": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/$defs/checkpoint"}},
+        "replay": {"$ref": "#/$defs/g1_replay"},
+        "blobs": {"$ref": "#/$defs/g1_blobs"},
+        "expected": {"$ref": "#/$defs/g1_expected"},
+        "lineage": {"type": "object", "properties": {"retrieval": {"$ref": "#/$defs/lineage_retrieval"}}}
+      }
+    }
+  ],
+  "$defs": {
+    "alias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias_id", "kind", "value"],
+      "properties": {
+        "alias_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "value": {"type": "string"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "canonical_id", "source_kind", "official_title", "aliases", "import_state"],
+      "properties": {
+        "source_id": {"type": "string"},
+        "canonical_id": {"type": "string", "pattern": "^arxiv:[0-9]{4}\\.[0-9]{5}$"},
+        "source_kind": {"const": "paper"},
+        "official_title": {"type": "string"},
+        "aliases": {"type": "array", "items": {"$ref": "#/$defs/alias"}},
+        "import_state": {"enum": ["existing", "resolved_not_imported", "imported"]}
+      }
+    },
+    "run_source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding_id", "run_id", "source_id", "disposition", "bound_at_sequence"],
+      "properties": {
+        "binding_id": {"type": "string"},
+        "run_id": {"type": "string"},
+        "source_id": {"type": "string"},
+        "disposition": {"enum": ["reused", "imported"]},
+        "bound_at_sequence": {"type": "integer"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id", "kind", "status", "revision", "options", "selected", "created_at", "resolved_at"],
+      "properties": {
+        "decision_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "status": {"enum": ["pending", "resolved"]},
+        "revision": {"type": "integer"},
+        "options": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        "selected": {"type": ["string", "null"]},
+        "created_at": {"type": "string"},
+        "resolved_at": {"type": ["string", "null"]}
+      }
+    },
+    "lineage_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "status", "title", "revision"],
+      "properties": {
+        "node_id": {"type": "string"},
+        "status": {"enum": ["dormant", "graduated", "active"]},
+        "title": {"type": "string"},
+        "revision": {"type": "integer"}
+      }
+    },
+    "lineage_link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["link_id", "from_node_id", "to_node_id", "relation"],
+      "properties": {
+        "link_id": {"type": "string"},
+        "from_node_id": {"type": "string"},
+        "to_node_id": {"type": "string"},
+        "relation": {"const": "successor_reuses"}
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkpoint_id", "run_id", "attempt_id", "committed_at_sequence", "state", "state_sha256"],
+      "properties": {
+        "checkpoint_id": {"type": "string"},
+        "run_id": {"type": "string"},
+        "attempt_id": {"type": "string"},
+        "committed_at_sequence": {"type": "integer"},
+        "state": {"$ref": "#/$defs/checkpoint_state"},
+        "state_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "checkpoint_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_revisions", "lineage_node_ids", "next_stage", "run_source_binding_ids"],
+      "properties": {
+        "decision_revisions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decision-lineage-001", "decision-source-001"],
+          "properties": {
+            "decision-lineage-001": {"const": 2},
+            "decision-source-001": {"const": 2}
+          }
+        },
+        "lineage_node_ids": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "string"}},
+        "next_stage": {"const": "materialize_threads"},
+        "run_source_binding_ids": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string"}}
+      }
+    },
+    "lineage_retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "live_seed_dedup_statuses", "retrieved"],
+      "properties": {
+        "strategy": {"const": "independent_lineage_retrieval"},
+        "live_seed_dedup_statuses": {"type": "array", "items": {"type": "string"}},
+        "retrieved": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["node_id", "status", "in_live_seed_dedup_domain", "reason"],
+            "properties": {
+              "node_id": {"type": "string"},
+              "status": {"enum": ["dormant", "graduated"]},
+              "in_live_seed_dedup_domain": {"const": false},
+              "reason": {"const": "lineage_reuse_candidate"}
+            }
+          }
+        }
+      }
+    },
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thread_id", "workspace_id", "kind", "title"],
+      "properties": {
+        "thread_id": {"type": "string"},
+        "workspace_id": {"type": "string"},
+        "kind": {"enum": ["evidence", "architecture", "training_plan"]},
+        "title": {"type": "string"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "thread_id", "source_id", "claim"],
+      "properties": {
+        "evidence_id": {"type": "string"},
+        "thread_id": {"type": "string"},
+        "source_id": {"type": "string"},
+        "claim": {"type": "string"}
+      }
+    },
+    "artifact_version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version_id", "revision", "resource_uri", "sha256", "created_at", "immutable"],
+      "properties": {
+        "version_id": {"type": "string"},
+        "revision": {"type": "integer"},
+        "resource_uri": {"type": "string", "pattern": "^cortex://artifacts/"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "created_at": {"type": "string"},
+        "immutable": {"type": "boolean"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "kind", "thread_id", "mutable", "references", "versions"],
+      "properties": {
+        "artifact_id": {"type": "string"},
+        "kind": {"enum": ["living_brief", "evidence_matrix", "training_plan", "snapshot"]},
+        "thread_id": {"type": "string"},
+        "mutable": {"type": "boolean"},
+        "references": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source_ids", "evidence_ids", "lineage_node_ids", "artifact_version_ids"],
+          "properties": {
+            "source_ids": {"type": "array", "items": {"type": "string"}},
+            "evidence_ids": {"type": "array", "items": {"type": "string"}},
+            "lineage_node_ids": {"type": "array", "items": {"type": "string"}},
+            "artifact_version_ids": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "versions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/artifact_version"}}
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "id", "run_id", "attempt_id", "sequence", "type", "occurred_at", "durability", "payload"],
+      "properties": {
+        "schema_version": {"const": "0.1"},
+        "id": {"type": "string"},
+        "run_id": {"type": "string"},
+        "attempt_id": {"type": "string"},
+        "sequence": {"type": "integer"},
+        "type": {"type": "string"},
+        "occurred_at": {"type": "string"},
+        "causation_id": {"type": "string"},
+        "durability": {"const": "durable"},
+        "payload": {"type": "object"}
+      }
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "entity", "entity_id", "count"],
+      "properties": {
+        "op": {"enum": ["insert", "update", "delete"]},
+        "entity": {"type": "string"},
+        "entity_id": {"type": "string"},
+        "count": {"type": "integer"}
+      }
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transaction_id", "triggered_by", "committed_at_sequence", "mutations"],
+      "properties": {
+        "transaction_id": {"type": "string"},
+        "triggered_by": {"type": "string"},
+        "committed_at_sequence": {"type": "integer"},
+        "mutations": {"type": "array", "items": {"$ref": "#/$defs/mutation"}}
+      }
+    },
+    "materialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "resource_uri", "sha256", "committed_at_sequence"],
+      "properties": {
+        "operation": {"const": "write"},
+        "resource_uri": {"type": "string", "pattern": "^cortex://artifacts/"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "committed_at_sequence": {"type": "integer"}
+      }
+    },
+    "control_state_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "persisted_run_ids", "persisted_attempt_ids", "persisted_source_intent_ids", "persisted_decision_ids", "persisted_event_ids", "transactions"],
+      "properties": {
+        "scope": {"const": "control_plane_state"},
+        "persisted_run_ids": {"type": "array", "items": {"type": "string"}},
+        "persisted_attempt_ids": {"type": "array", "items": {"type": "string"}},
+        "persisted_source_intent_ids": {"type": "array", "items": {"type": "string"}},
+        "persisted_decision_ids": {"type": "array", "items": {"type": "string"}},
+        "persisted_event_ids": {"type": "array", "items": {"type": "string"}},
+        "transactions": {"type": "array", "items": {"$ref": "#/$defs/transaction"}}
+      }
+    },
+    "g0_replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idempotency_key", "expected_additional_events", "expected_additional_mutations"],
+      "properties": {
+        "idempotency_key": {"const": "golden-g0-source-conflict-001"},
+        "expected_additional_events": {"type": "array", "maxItems": 0},
+        "expected_additional_mutations": {"type": "array", "maxItems": 0}
+      }
+    },
+    "g1_replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idempotency", "restart_recovery"],
+      "properties": {
+        "idempotency": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "first_transaction_ids", "repeated_response_matches_first", "expected_additional_events", "expected_additional_mutations", "expected_additional_materializations"],
+          "properties": {
+            "key": {"const": "golden-g1-keep-both-successor-001"},
+            "first_transaction_ids": {"type": "array", "items": {"type": "string"}},
+            "repeated_response_matches_first": {"const": true},
+            "expected_additional_events": {"type": "array", "maxItems": 0},
+            "expected_additional_mutations": {"type": "array", "maxItems": 0},
+            "expected_additional_materializations": {"type": "array", "maxItems": 0}
+          }
+        },
+        "restart_recovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["checkpoint_id", "checkpoint_at_sequence", "source_attempt_id", "recovered_attempt_id", "after_sequence", "expected_replayed_sequences", "expected_duplicate_event_ids", "expected_duplicate_entity_ids"],
+          "properties": {
+            "checkpoint_id": {"type": "string"},
+            "checkpoint_at_sequence": {"type": "integer"},
+            "source_attempt_id": {"type": "string"},
+            "recovered_attempt_id": {"type": "string"},
+            "after_sequence": {"type": "integer"},
+            "expected_replayed_sequences": {"type": "array", "items": {"type": "integer"}},
+            "expected_duplicate_event_ids": {"type": "array", "maxItems": 0},
+            "expected_duplicate_entity_ids": {"type": "array", "maxItems": 0}
+          }
+        }
+      }
+    },
+    "g1_blobs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cortex://artifacts/golden/living-brief-v1.md", "cortex://artifacts/golden/living-brief.md", "cortex://artifacts/golden/evidence-matrix.md", "cortex://artifacts/golden/training-plan.md", "cortex://artifacts/golden/snapshot.md"],
+      "properties": {
+        "cortex://artifacts/golden/living-brief-v1.md": {"const": "living-brief-v1.md"},
+        "cortex://artifacts/golden/living-brief.md": {"const": "living-brief.md"},
+        "cortex://artifacts/golden/evidence-matrix.md": {"const": "evidence-matrix.md"},
+        "cortex://artifacts/golden/training-plan.md": {"const": "training-plan.md"},
+        "cortex://artifacts/golden/snapshot.md": {"const": "snapshot.md"}
+      }
+    },
+    "g0_expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_resolution_required", "no_research_side_effects_before_resolution", "echo_import_delta", "secondary_source_delta"],
+      "properties": {
+        "source_resolution_required": {"const": true},
+        "no_research_side_effects_before_resolution": {"const": true},
+        "echo_import_delta": {"$ref": "#/$defs/zero_import_delta"},
+        "secondary_source_delta": {"const": 0}
+      }
+    },
+    "g1_expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_resolution", "lineage_resolution", "echo_import_delta", "secondary_source_delta", "reused_lineage_statuses", "thread_kinds", "artifact_kinds", "memory_variants"],
+      "properties": {
+        "source_resolution": {"const": "keep_both"},
+        "lineage_resolution": {"const": "create_successor"},
+        "echo_import_delta": {"$ref": "#/$defs/zero_import_delta"},
+        "secondary_source_delta": {"const": 1},
+        "reused_lineage_statuses": {"type": "array", "items": {"enum": ["dormant", "graduated"]}, "minItems": 2, "maxItems": 2},
+        "thread_kinds": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 3},
+        "artifact_kinds": {"type": "array", "items": {"type": "string"}, "minItems": 4, "maxItems": 4},
+        "memory_variants": {"type": "array", "items": {"type": "string"}, "minItems": 4, "maxItems": 4}
+      }
+    },
+    "zero_import_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_rows", "chunks", "directories", "materializations"],
+      "properties": {
+        "source_rows": {"const": 0},
+        "chunks": {"const": 0},
+        "directories": {"const": 0},
+        "materializations": {"const": 0}
+      }
+    }
+  }
+}

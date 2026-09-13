@@ -1,0 +1,185 @@
+{
+  "$schema": "golden-case-v0.1.schema.json",
+  "schema_version": "0.1",
+  "fixture_id": "golden-echo-lingbot-g0",
+  "fixture_stage": "g0_source_conflict",
+  "clock": {
+    "frozen_at": "2026-07-15T20:00:00Z",
+    "tick_seconds": 1
+  },
+  "identities": {
+    "workspace_id": "workspace-golden-001",
+    "run_id": "run-golden-001",
+    "attempt_id": "attempt-golden-001-a1",
+    "thread_ids": []
+  },
+  "run": {
+    "run_id": "run-golden-001",
+    "attempt_id": "attempt-golden-001-a1",
+    "state": "waiting_for_decision",
+    "active_attempt_count": 1
+  },
+  "workspace": {
+    "workspace_id": "workspace-golden-001",
+    "name": "Synthetic Echo / LingBot memory study"
+  },
+  "source_intent": {
+    "source_intent_id": "source-intent-golden-001",
+    "title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+    "url": "https://arxiv.org/pdf/2607.07675",
+    "title_canonical_id": "arxiv:2606.04527",
+    "url_canonical_id": "arxiv:2607.07675"
+  },
+  "sources": {
+    "initial": [
+      {
+        "source_id": "source-echo",
+        "canonical_id": "arxiv:2606.04527",
+        "source_kind": "paper",
+        "official_title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+        "aliases": [
+          {"alias_id": "alias-echo-infinity", "kind": "project", "value": "Echo-Infinity"}
+        ],
+        "import_state": "existing"
+      }
+    ],
+    "candidates": [
+      {
+        "source_id": "source-echo",
+        "canonical_id": "arxiv:2606.04527",
+        "source_kind": "paper",
+        "official_title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+        "aliases": [
+          {"alias_id": "alias-echo-infinity", "kind": "project", "value": "Echo-Infinity"}
+        ],
+        "import_state": "existing"
+      },
+      {
+        "source_id": "source-lingbot",
+        "canonical_id": "arxiv:2607.07675",
+        "source_kind": "paper",
+        "official_title": "Scaling Mixture-of-Experts Video Pretraining for Embodied Intelligence",
+        "aliases": [
+          {"alias_id": "alias-lingbot-video", "kind": "model", "value": "LingBot-Video"}
+        ],
+        "import_state": "resolved_not_imported"
+      }
+    ],
+    "final": [
+      {
+        "source_id": "source-echo",
+        "canonical_id": "arxiv:2606.04527",
+        "source_kind": "paper",
+        "official_title": "Echo-Infinity: Learnable Evolving Memory for Real-Time Infinite Video Generation",
+        "aliases": [
+          {"alias_id": "alias-echo-infinity", "kind": "project", "value": "Echo-Infinity"}
+        ],
+        "import_state": "existing"
+      }
+    ],
+    "run_bindings": []
+  },
+  "decisions": [
+    {
+      "decision_id": "decision-source-001",
+      "kind": "source_conflict",
+      "status": "pending",
+      "revision": 1,
+      "options": ["keep_both", "replace_url_with_echo", "cancel"],
+      "selected": null,
+      "created_at": "2026-07-15T20:00:04Z",
+      "resolved_at": null
+    }
+  ],
+  "lineage": {"initial_nodes": [], "final_nodes": [], "links": [], "retrieval": null},
+  "checkpoints": [],
+  "threads": [],
+  "evidence": [],
+  "artifacts": [],
+  "events": [
+    {"schema_version": "0.1", "id": "event-g0-001", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 1, "type": "run.created", "occurred_at": "2026-07-15T20:00:00Z", "durability": "durable", "payload": {"workspace_id": "workspace-golden-001"}},
+    {"schema_version": "0.1", "id": "event-g0-002", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 2, "type": "run.started", "occurred_at": "2026-07-15T20:00:01Z", "durability": "durable", "payload": {}},
+    {"schema_version": "0.1", "id": "event-g0-003", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 3, "type": "source.intent_received", "occurred_at": "2026-07-15T20:00:02Z", "durability": "durable", "payload": {"source_intent_id": "source-intent-golden-001", "title_canonical_id": "arxiv:2606.04527", "url_canonical_id": "arxiv:2607.07675"}},
+    {"schema_version": "0.1", "id": "event-g0-004", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 4, "type": "source.conflict_detected", "occurred_at": "2026-07-15T20:00:03Z", "causation_id": "event-g0-003", "durability": "durable", "payload": {"source_intent_id": "source-intent-golden-001", "candidate_source_ids": ["source-echo", "source-lingbot"]}},
+    {"schema_version": "0.1", "id": "event-g0-005", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 5, "type": "decision.requested", "occurred_at": "2026-07-15T20:00:04Z", "causation_id": "event-g0-004", "durability": "durable", "payload": {"decision_id": "decision-source-001", "revision": 1}},
+    {"schema_version": "0.1", "id": "event-g0-006", "run_id": "run-golden-001", "attempt_id": "attempt-golden-001-a1", "sequence": 6, "type": "run.waiting_for_decision", "occurred_at": "2026-07-15T20:00:05Z", "durability": "durable", "payload": {"decision_id": "decision-source-001"}}
+  ],
+  "mutation_manifest": {
+    "scope": "research_import_materialization_side_effects",
+    "excludes_control_entities": ["run", "attempt", "decision", "event", "checkpoint"],
+    "transactions": [],
+    "materializations": []
+  },
+  "control_state_manifest": {
+    "scope": "control_plane_state",
+    "persisted_run_ids": ["run-golden-001"],
+    "persisted_attempt_ids": ["attempt-golden-001-a1"],
+    "persisted_source_intent_ids": ["source-intent-golden-001"],
+    "persisted_decision_ids": ["decision-source-001"],
+    "persisted_event_ids": ["event-g0-001", "event-g0-002", "event-g0-003", "event-g0-004", "event-g0-005", "event-g0-006"],
+    "transactions": [
+      {
+        "transaction_id": "transaction-g0-run-created-001",
+        "triggered_by": "event-g0-001",
+        "committed_at_sequence": 1,
+        "mutations": [
+          {"op": "insert", "entity": "run", "entity_id": "run-golden-001", "count": 1},
+          {"op": "insert", "entity": "attempt", "entity_id": "attempt-golden-001-a1", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g0-run-started-001",
+        "triggered_by": "event-g0-002",
+        "committed_at_sequence": 2,
+        "mutations": [
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1},
+          {"op": "update", "entity": "attempt", "entity_id": "attempt-golden-001-a1", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g0-source-intent-received-001",
+        "triggered_by": "event-g0-003",
+        "committed_at_sequence": 3,
+        "mutations": [
+          {"op": "insert", "entity": "source_intent", "entity_id": "source-intent-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g0-source-conflict-detected-001",
+        "triggered_by": "event-g0-004",
+        "committed_at_sequence": 4,
+        "mutations": [
+          {"op": "update", "entity": "source_intent", "entity_id": "source-intent-golden-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g0-decision-requested-001",
+        "triggered_by": "event-g0-005",
+        "committed_at_sequence": 5,
+        "mutations": [
+          {"op": "insert", "entity": "decision", "entity_id": "decision-source-001", "count": 1}
+        ]
+      },
+      {
+        "transaction_id": "transaction-g0-run-waiting-001",
+        "triggered_by": "event-g0-006",
+        "committed_at_sequence": 6,
+        "mutations": [
+          {"op": "update", "entity": "run", "entity_id": "run-golden-001", "count": 1}
+        ]
+      }
+    ]
+  },
+  "replay": {
+    "idempotency_key": "golden-g0-source-conflict-001",
+    "expected_additional_events": [],
+    "expected_additional_mutations": []
+  },
+  "blobs": {},
+  "expected": {
+    "source_resolution_required": true,
+    "no_research_side_effects_before_resolution": true,
+    "echo_import_delta": {"source_rows": 0, "chunks": 0, "directories": 0, "materializations": 0},
+    "secondary_source_delta": 0
+  }
+}

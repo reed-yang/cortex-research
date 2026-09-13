@@ -1,0 +1,94 @@
+[project]
+name = "cortex"
+dynamic = ["version"]
+description = "Local-first single-operator research assistant"
+requires-python = ">=3.11"
+# The root distribution imports nothing outside the standard library. The five
+# third-party SDKs it used to declare -- `anthropic`, `claude-agent-sdk`,
+# `openai`, `starlette` and `uvicorn` -- were the legacy model-dispatch chain's
+# and the retired research board's, and `httpx` reached this manifest through
+# the same chain; `cortex_research` declares httpx itself, at its own importers.
+# An AST scan of `cortex_platform/`, `distribution/`, `deployment/` and `tools/`
+# finds no third-party import left, and the vendored worker payload imports
+# none either, so a declaration here would be an installed package nothing can
+# reach. `cortex_platform/tests/product/engine/test_runtime_closure_proof.py`
+# asserts the same closure from the running engine child.
+dependencies = [
+    "cortex-research",
+]
+
+[project.scripts]
+cortex = "cortex_platform.product.cli:main"
+cortexd = "cortex_platform.product.daemon:main"
+cortex-hermes = "cortex_platform.product.runtime_update.certify_cli:main"
+cortex-private-access = "deployment.private_access.cli:main"
+cortex-private-access-gateway = "deployment.private_access.gateway:main"
+cortex-private-access-supervisor = "deployment.private_access.supervision:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "distribution/release.toml"
+pattern = '(?m)^version = "(?P<version>[^"]+)"$'
+
+# Wheel member policy. Two rules, both maintained here rather than as a copied
+# file list: an allowlist of the trees that ship, and a small set of categories
+# that never ship from inside them.
+#
+# `only-include` rather than `packages`: `packages` would rewrite the source root,
+# so `deployment/private_access` would install as a top-level `private_access`
+# and break `deployment.private_access.cli:main`. It is also an allowlist, so a
+# new operator directory under `deployment/` does not ship by accident — the old
+# `packages = [..., "deployment"]` shipped every one of them. Only
+# `deployment/private_access` is product code: `distribution/bundle.py`
+# `_PRIVATE_ACCESS_MODULES`/`_PRIVATE_ACCESS_SCRIPTS` require its four modules
+# and three console scripts inside this wheel, and `distribution/product_manifest.py`
+# declares the matching `private_access` process. `deployment/research_activation`
+# is checkout-only operator tooling: nothing under `cortex_platform/` or
+# `distribution/` imports it, and its build driver resolves the repository from
+# its own location. `deployment/` stays a namespace package in the wheel exactly
+# as before.
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "cortex_platform",
+    "deployment/private_access",
+]
+exclude = [
+    # Test code, whether it lives in a `tests/` package or beside its subject.
+    # `test_*.py` also covers a test module dropped into a shipped package,
+    # which a `tests/`-only rule cannot see.
+    "**/tests/**",
+    "**/test_*.py",
+    "**/conftest.py",
+    # Documentation and planning Markdown. Markdown that IS a runtime resource
+    # would be neither, and the rule is written so it stays that way: only
+    # `README.md` and `*_PLAN.md` are named, so a resource this product reads at
+    # runtime -- as `deployment/private_access/example.config.json` is read --
+    # keeps shipping whatever its extension.
+    "**/README.md",
+    "**/*_PLAN.md",
+    # Workspace member build manifests.
+    "**/pyproject.toml",
+]
+
+[tool.uv]
+# The release descriptor drives the dynamic package version.
+cache-keys = [{ file = "pyproject.toml" }, { file = "distribution/release.toml" }]
+
+[tool.uv.workspace]
+members = ["profiles/research"]
+
+[tool.uv.sources]
+cortex-research = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+markers = ["integration: needs network/LLM (real embeddings + model)"]
+# Default run excludes integration (network/LLM) tests; opt in with `pytest -m integration`.
+addopts = "-m 'not integration'"

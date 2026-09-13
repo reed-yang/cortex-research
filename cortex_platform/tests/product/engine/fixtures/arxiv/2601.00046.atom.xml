@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title type="html">ArXiv Query: search_query=&amp;id_list=2601.00046</title>
+  <entry>
+    <id>http://arxiv.org/abs/2601.00046v1</id>
+    <updated>2026-01-04T09:12:33Z</updated>
+    <published>2026-01-04T09:12:33Z</published>
+    <title>A Bounded Tick for a Local-First Research Loop</title>
+    <summary>  We study durable effect journals for local-first research agents and show
+that claim-before-deliver plus a never-replayed uncertain outcome is sufficient
+to keep a materialising side effect exactly-once in practice. The construction
+is evaluated against a copied corpus of 366 sources.
+</summary>
+    <author><name>A. Recorded</name></author>
+    <author><name>B. Fixture</name></author>
+    <link href="http://arxiv.org/abs/2601.00046v1" rel="alternate" type="text/html"/>
+    <category term="cs.DC" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>

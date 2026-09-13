@@ -1,0 +1,115 @@
+{
+  "base_origin": "http://127.0.0.1:3000",
+  "css_viewport": {
+    "width": 1600,
+    "height": 1000
+  },
+  "device_scale_factor": 2,
+  "capture_scale": 0.5,
+  "screenshot_mode": "explicit_css_clip",
+  "rendered_columns_css": {
+    "workspace_rail": 126,
+    "main_workspace": 499,
+    "decision_inbox": 175
+  },
+  "expected_columns_px": {
+    "workspace_rail": 252,
+    "main_workspace": 998,
+    "decision_inbox": 350
+  },
+  "screenshots": {
+    "g0-source-conflict.png": {
+      "scenario": "g0",
+      "url": "http://127.0.0.1:3000/?mode=demo&capture=full&scenario=g0",
+      "expected_dom": [
+        {
+          "selector": "[data-capture-scenario=\"g0\"]",
+          "text": "Resolve source identity before research",
+          "count": 1
+        },
+        {
+          "selector": ".source-conflict",
+          "text": "Cortex stopped before import",
+          "count": 1
+        },
+        {
+          "selector": "[aria-label=\"Research artifacts unavailable\"]",
+          "text": "Artifacts are not created yet",
+          "count": 1
+        },
+        {
+          "selector": ".inbox-count",
+          "exact_text": "1",
+          "count": 1
+        },
+        {
+          "selector": ".decision-card:not(.resolved)",
+          "text": "Two sources, one request",
+          "count": 1
+        }
+      ],
+      "forbidden_dom": [
+        "[aria-label=\"Successor lineage\"]",
+        ".artifact-card"
+      ],
+      "clip_css": {
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 560
+      },
+      "width": 1600,
+      "height": 1120,
+      "sha256": "abe04400b8900a7cc44f2c45b41a61133a44425abc3bbcc2db342e1041e30bb5"
+    },
+    "g1-successor-lineage.png": {
+      "scenario": "g1",
+      "url": "http://127.0.0.1:3000/?mode=demo&capture=full&scenario=g1",
+      "expected_dom": [
+        {
+          "selector": "[data-capture-scenario=\"g1\"]",
+          "text": "Successor memory research workspace",
+          "count": 1
+        },
+        {
+          "selector": ".lineage-node.successor",
+          "text": "Helios-14B on Wan2.2 hybrid memory successor",
+          "count": 1
+        },
+        {
+          "selector": ".lineage-branch[data-from=\"lineage-helios-echo-successor\"][data-to=\"lineage-helios-ttt-dormant\"]",
+          "text": "dormant",
+          "count": 1
+        },
+        {
+          "selector": ".lineage-branch[data-from=\"lineage-helios-echo-successor\"][data-to=\"lineage-echo-memory-graduated\"]",
+          "text": "graduated",
+          "count": 1
+        },
+        {
+          "selector": ".inbox-count",
+          "exact_text": "0",
+          "count": 1
+        },
+        {
+          "selector": ".decision-card.resolved",
+          "text": "Canonical fixture resolution",
+          "count": 2
+        }
+      ],
+      "forbidden_dom": [
+        ".source-conflict",
+        "[aria-label=\"Research artifacts unavailable\"]"
+      ],
+      "clip_css": {
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 554
+      },
+      "width": 1600,
+      "height": 1108,
+      "sha256": "2ef286c359fe23ed8ae44e71c43048e2370d19c011ce116e05f5c0525566d605"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+# The browser-free tier only: `apps/web` unit, contract and typecheck work, and
+# the provider-free Control and artifact contracts. It does not run the Web
+# build, the browser acceptances, macOS-only work, an installed bundle or
+# anything needing a provider credential. Those gates and the full chain are in
+# docs/runbooks/web-verification.md.
+name: Fast checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --python 3.12
+      - name: Verify checkout ownership and lock
+        run: |
+          .venv/bin/python - <<'PYTHON'
+          import pathlib, tomllib, cortex_platform, cortex_research
+          from importlib.metadata import version
+          from packaging.version import Version
+          root = pathlib.Path.cwd()
+          # Every workspace member must be imported from this checkout, not from
+          # an editable path left behind by another one.
+          for module in (cortex_platform, cortex_research):
+              assert pathlib.Path(module.__file__).resolve().is_relative_to(root), module.__name__
+          release = tomllib.loads((root / "distribution/release.toml").read_text())
+          # Compared as PEP 440 versions, not as strings: the descriptor writes
+          # the pre-release separator the release-record parser requires
+          # (`0.1.20-a1`) and the built metadata carries its normalized form
+          # (`0.1.20a1`). They are the same version.
+          assert Version(version("cortex")) == Version(release["product"]["version"])
+          PYTHON
+          git diff --exit-code -- uv.lock
+      - name: Run provider-free Control and artifact contracts
+        run: .venv/bin/python -m pytest cortex_platform/tests/product/control cortex_platform/tests/product/artifacts -q
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run test:fast

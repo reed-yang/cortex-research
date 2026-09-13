@@ -1,0 +1,26 @@
+[project]
+name = "cortex-research"
+version = "0.0.1"
+description = "Research profile: paper-search, relationship ledger, distill"
+requires-python = ">=3.11"
+dependencies = [
+    # The supported closure is the arXiv ingest path plus the paper index.
+    # `arxiv_client.py:13`, `paper_ingest.py:31` and `embed.py:7` import httpx;
+    # `db.py:8` imports sqlite_vec.
+    "httpx>=0.28.0",
+    "sqlite-vec>=0.1.9",
+    # `paper_ingest.py:122` imports bs4 unguarded on the live ingest path, and
+    # `:125` asks BeautifulSoup for the "lxml" parser BY NAME. Neither was
+    # declared here: bs4 arrived through `cortex-investment` and lxml through
+    # `trafilatura`, so an import scan could not see the second one at all and
+    # either provider could have dropped both without a signal.
+    "beautifulsoup4>=4.14.3",
+    "lxml>=6.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cortex_research"]

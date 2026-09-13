@@ -1,0 +1,22 @@
+{
+  "base_origin": "http://127.0.0.1:3000",
+  "css_viewport": {
+    "width": 390,
+    "height": 844
+  },
+  "device_scale_factor": 3,
+  "screenshots": {
+    "mobile-control-decision.png": {
+      "scenario": "persisted-control-decision",
+      "sha256": "79e183cd8fa125fd4fd6e3dcf2dcafc763891e6b3910646bf9e17e6936cff894"
+    },
+    "mobile-g0-offline.png": {
+      "scenario": "g0-offline-decision",
+      "sha256": "4ed19881998e2f72d9bcfecd6d110a8b53930cfbea39b62d1ded47ecb60c5bd2"
+    },
+    "mobile-g1-artifact.png": {
+      "scenario": "g1-architecture-artifact",
+      "sha256": "342a61b638ba0fb887da4e32668a2294b9e4f5153ea9e4c1cc75e3b92aadfcab"
+    }
+  }
+}
