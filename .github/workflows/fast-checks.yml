@@ -65,3 +65,15 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
       - run: npm run test:fast
+
+  review-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test repository review tooling without provider credentials
+        run: python3 -m unittest discover -s tools/pr_review -v

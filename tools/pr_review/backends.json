@@ -1,0 +1,45 @@
+{
+  "slots": [
+    {
+      "id": "Grok",
+      "opinion_family": "grok",
+      "backends": [
+        "grok-gateway"
+      ]
+    },
+    {
+      "id": "Gemini",
+      "opinion_family": "gemini",
+      "backends": [
+        "gemini-ai-pro"
+      ]
+    }
+  ],
+  "backends": {
+    "grok-gateway": {
+      "harness": "compatible_packet",
+      "opinion_family": "grok",
+      "auth_mode": "subscription_gateway",
+      "base_url_env": "GROK_BASE_URL",
+      "key_env": "GROK_API_KEY",
+      "model_env": "GROK_MODEL",
+      "output_limit_parameter": "max_tokens",
+      "timeout_seconds": 240,
+      "fallback_on": [
+        "network_or_timeout",
+        "http_502",
+        "http_503",
+        "http_504"
+      ]
+    },
+    "gemini-ai-pro": {
+      "disabled_reason": "antigravity_subscription_hosted_auth_unqualified",
+      "harness": "antigravity_packet",
+      "opinion_family": "gemini",
+      "auth_mode": "google_ai_pro_subscription",
+      "model_env": "GEMINI_MODEL",
+      "timeout_seconds": 300,
+      "fallback_on": []
+    }
+  }
+}
