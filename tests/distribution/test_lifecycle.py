@@ -2252,6 +2252,129 @@ def test_normal_stop_uses_the_supervisor_authenticated_shutdown_channel(
         manager.stop(timeout=5)
 
 
+def test_a_long_stop_timeout_is_acknowledged_and_completes_promptly(
+    tmp_path: Path,
+    wheel_pair: tuple[Path, Path],
+    web_closure: tuple[Path, Path],
+    analyser_node: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import distribution.lifecycle as lifecycle
+
+    generation = _installed_generation(tmp_path, wheel_pair, web_closure, analyser_node)
+    runtime = tmp_path / "runtime"
+    manager = lifecycle.LifecycleManager(
+        generation,
+        runtime,
+        home=tmp_path / "home",
+    )
+    try:
+        manager.start(timeout=8)
+        channel = lifecycle._shutdown_socket_path(runtime)
+        assert channel.exists()
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                lifecycle,
+                "_signal_owned",
+                lambda *_args, **_kwargs: pytest.fail(
+                    "a long stop timeout attempted a bare PID signal"
+                ),
+            )
+            started = time.monotonic()
+            assert manager.stop(timeout=120).state == "stopped"
+            # A generous timeout is a bound, never a wait: the supervisor
+            # acknowledges the request and exits at its own pace.
+            assert time.monotonic() - started < 20
+        assert not channel.exists()
+        assert not (runtime / "lifecycle.json").exists()
+    finally:
+        manager.stop(timeout=5)
+
+
+def test_a_long_stop_timeout_fits_the_installed_supervisor_deadline_bound(
+    tmp_path: Path,
+) -> None:
+    """A long caller deadline is sent as a budget the installed server accepts.
+
+    The supervisor that is already installed refuses any request whose deadline
+    is more than sixty seconds ahead, so the stand-in below repeats that exact
+    rule against a real socket, a real claimed process and the real client.
+    """
+
+    import distribution.lifecycle as lifecycle
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    claim = "b" * 64
+    supervisor = subprocess.Popen(
+        [sys.executable, "-c", "import time;time.sleep(30)", claim],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    listener, path, identity = lifecycle._open_shutdown_listener(runtime)
+    requests: list[dict[str, object]] = []
+    refused: list[object] = []
+
+    def installed_supervisor() -> None:
+        listener.settimeout(10)
+        try:
+            connection, _address = listener.accept()
+        except OSError:
+            return
+        with connection:
+            try:
+                raw = lifecycle._read_shutdown_message(
+                    connection,
+                    deadline=time.monotonic() + 0.5,
+                )
+            except (lifecycle.LifecycleError, OSError):
+                return
+            assert isinstance(raw, dict)
+            requests.append(raw)
+            if not time.monotonic() < raw["deadline"] <= time.monotonic() + 60:
+                refused.append(raw["deadline"])
+                return
+            connection.sendall(
+                canonical_json_bytes(
+                    {"schema_version": 1, "accepted": True, "claim": claim}
+                )
+                + b"\n"
+            )
+        supervisor.terminate()
+
+    server = threading.Thread(target=installed_supervisor)
+    server.start()
+    try:
+        start_token = lifecycle._current_start_token(supervisor.pid)
+        assert start_token is not None
+        record = lifecycle.LifecycleRecord(
+            generation_identity="c" * 64,
+            generation_root=str(tmp_path / "generation"),
+            run_id="1" * 32,
+            supervisor=lifecycle.ProcessClaim(supervisor.pid, start_token, claim),
+            control=lifecycle.ControlClaim(
+                supervisor.pid, start_token, "control-claim", "127.0.0.1", 1111, "token"
+            ),
+            web=lifecycle.WebClaim(
+                supervisor.pid, start_token, "web-claim", "127.0.0.1", 2222, "build"
+            ),
+        )
+        started = time.monotonic()
+        lifecycle._request_supervisor_shutdown(runtime, record, deadline=started + 120)
+        assert time.monotonic() - started < 20
+        assert refused == []
+        budget = float(requests[0]["deadline"]) - started
+        assert 60 <= budget <= 65
+    finally:
+        server.join(timeout=15)
+        listener.close()
+        lifecycle._remove_shutdown_socket(path, identity)
+        if supervisor.poll() is None:
+            supervisor.kill()
+        supervisor.wait(timeout=5)
+
+
 def test_start_reaps_supervisor_when_its_start_token_cannot_be_captured(
     tmp_path: Path,
     wheel_pair: tuple[Path, Path],

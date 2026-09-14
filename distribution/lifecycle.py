@@ -66,6 +66,7 @@ _SHUTDOWN_REQUEST_FIELDS = {"claim", "deadline", "operation", "schema_version"}
 _SHUTDOWN_RESPONSE_FIELDS = {"accepted", "claim", "schema_version"}
 _SUPERVISOR_CLEANUP_TIMEOUT = 5.0
 _FOREGROUND_CLEANUP_TIMEOUT = 2.0
+_SHUTDOWN_DEADLINE_LIMIT = 60.0
 _STATUS_TIMEOUT = 2.0
 _MACOS_SYSTEM_ANCHORS = {
     Path("/tmp"): Path("/private/tmp"),
@@ -1477,7 +1478,11 @@ def _accept_shutdown_request(
             or not secrets.compare_digest(raw["claim"], claim)
             or type(raw["deadline"]) not in {int, float}
             or not math.isfinite(raw["deadline"])
-            or not time.monotonic() < raw["deadline"] <= time.monotonic() + 60
+            or not (
+                time.monotonic()
+                < raw["deadline"]
+                <= time.monotonic() + _SHUTDOWN_DEADLINE_LIMIT
+            )
         ):
             return
         response = {
@@ -1515,11 +1520,16 @@ def _request_supervisor_shutdown(
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise LifecycleError("supervisor shutdown timed out")
+    # The channel carries a cleanup budget, not the caller's overall deadline:
+    # every supervisor, including an already installed one, refuses a request
+    # whose deadline exceeds `_SHUTDOWN_DEADLINE_LIMIT`. Send the largest budget
+    # the protocol accepts so a longer `stop` timeout is still acknowledged; the
+    # caller's deadline keeps bounding this exchange and the exit wait below.
     request = {
         "schema_version": 1,
         "operation": "stop",
         "claim": record.supervisor.claim,
-        "deadline": deadline,
+        "deadline": min(deadline, time.monotonic() + _SHUTDOWN_DEADLINE_LIMIT),
     }
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
