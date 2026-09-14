@@ -61,9 +61,12 @@ to remove repository tooling; no product release or database rollback is needed.
   `not_run`. Collection used the real GitHub API; no provider request was made.
 - Hosted Fast checks run `34814969491` passed Web, Control and review-tools.
   This proves the provider-free CI integration, not a successful live reviewer.
-- The new Independent PR review workflow remains inactive until merged to the
-  default branch. Its own manual dispatch, model calls and publisher still have
-  separate live gates.
+- The implementation was fast-forwarded to the default branch with both
+  activation variables unset. Hosted Independent PR review run `34815165489`
+  then succeeded on PR #1 in dry-run mode: report artifacts downloaded and
+  inspected; both opinions were `not_run`; the publish job was skipped.
+- Real provider calls, subscription authentication and review-comment delivery
+  remain unperformed. No model activation or publication variable was enabled.
 - No model credential has been read or transferred. No provider call or PR
   report publication has occurred. Gemini remains explicitly unavailable.
 
@@ -75,9 +78,9 @@ to remove repository tooling; no product release or database rollback is needed.
 2. Qualify a supported agy personal-subscription login/refresh path and a tool-free
    adapter. Do not substitute paid Gemini API mode or count another Grok call as
    the Gemini opinion.
-3. Merge the inactive workflow, dispatch a real open PR in dry-run mode, then
-   enable artifact-only model runs. Confirm model identity and finding quality
-   before separately authorizing comment publication.
+3. The workflow is installed and its hosted dry run passed. After provider
+   qualification, enable artifact-only model runs. Confirm model identity and
+   finding quality before separately authorizing comment publication.
 
 Product 0.1.20, Control schema 19 and the qualified Hermes gen9 runtime do not
 change as a result of this repository-tooling integration.
