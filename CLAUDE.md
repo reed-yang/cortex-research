@@ -25,6 +25,13 @@ roadmap and release records. Read the applicable runbook before changing a bound
 - `deployment/private_access/` is required by the bundle contract. Its directory
   name is not a reason to exclude it from the product wheel.
 
+## Repository review tooling
+
+`tools/pr_review/` and `.github/workflows/auto-review.yml` are development tooling,
+not product runtime. Read the tool README before changing activation, credentials
+or publishing. PR head content is untrusted API data; only trusted base tooling
+executes. Preserve distinct reviewer families and explicit unavailable states.
+
 ## Release and state
 
 Product version, installation sequence, Control schema and worker generation are

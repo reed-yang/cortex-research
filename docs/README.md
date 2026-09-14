@@ -12,6 +12,7 @@ instructions. The following files are intentionally tracked and public.
 | [Web verification](runbooks/web-verification.md) | Test tiers and their limits |
 | [Hermes acceptance](runbooks/hermes-acceptance.md) | Worker qualification and continuity |
 | [0.1.20](releases/0.1.20.md) | Released composition and acceptance record |
+| [PR review tooling](../tools/pr_review/README.md) | Hosted packet review, setup and unavailable-lane boundaries |
 | [ADR index](adr/README.md) | Retained architectural decisions |
 
 Release composition is defined in `../distribution/release.toml`; installed
