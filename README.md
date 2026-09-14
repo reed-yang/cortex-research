@@ -1,4 +1,4 @@
-# Cortex
+# Cortex Research
 
 A single-operator research assistant you install and run on your own machine.
 It keeps conversations, a research catalog, an adopted document library and
@@ -13,6 +13,11 @@ only allowlisted routes. The Web listener is loopback-only; there is no public
 entry point unless you configure the optional private-access path.
 [`docs/runbooks/cortex-web-user-guide.md`](docs/runbooks/cortex-web-user-guide.md)
 walks through the surfaces once it is running.
+
+Product0.1.20 uses installation sequence20 and Control schema19. The qualified
+Hermes gen9 runtime is supplied separately. See
+[`CHANGELOG.md`](CHANGELOG.md) for changes and
+[`docs/releases/0.1.20.md`](docs/releases/0.1.20.md) for validation boundaries.
 
 ## Supported operations
 

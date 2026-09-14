@@ -2,7 +2,8 @@
 
 This repository contains the single-operator research product. Start with
 `README.md` for supported behavior and `distribution/release.toml` for the
-candidate composition. Read the applicable runbook before changing a boundary.
+candidate composition. `docs/README.md` maps current architecture, contracts,
+roadmap and release records. Read the applicable runbook before changing a boundary.
 
 ## Architecture and scope
 
@@ -35,6 +36,13 @@ Use the official distribution lifecycle. Preserve data, credentials, sessions,
 asset roots and installed predecessors. Never edit a sealed bundle or active
 worker slot. Same-schema row readability, actual native-session continuation,
 and end-to-end Web/Telegram delivery are different acceptance claims.
+
+## Private operator context
+
+If present, `.cortex-context/README.md` indexes ignored internal handoffs and
+plans. Read it for operator-specific continuity, but never force-add its files
+or make the build depend on that directory. Public docs must remain sufficient
+for a clean clone. Original historical designs may name removed legacy modules.
 
 ## Development
 

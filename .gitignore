@@ -69,3 +69,7 @@ docs/downloads/
 vendor/python-runtime/*.tar.gz
 vendor/python-runtime/*.attestation.json
 vendor/wheelhouse/
+
+# Operator-only context and release staging; never part of public history
+/.cortex-context/
+/output/
