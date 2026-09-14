@@ -65,7 +65,8 @@ owns the imported `cortex_platform` and that the installed version matches
 `distribution/release.toml`, checks `uv.lock` is unchanged, and runs the
 provider-free Control and artifact contracts. The Ubuntu Web job runs `npm ci`
 and `npm run test:fast`. A macOS ingestion job runs the offline engine/research
-suites, including the Darwin process scanner. The Ubuntu review-tools job tests
+suites, including the Darwin process scanner, using uv-managed Python with
+SQLite extension loading enabled. The Ubuntu review-tools job tests
 repository review tooling without credentials.
 
 These jobs do not run browser acceptances, the build, macOS launch jobs or
