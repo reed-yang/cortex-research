@@ -123,6 +123,11 @@ route, not an automatic fallback.
   Gemini's native endpoint reported no available upstream Gemini accounts.
   Catalog entries are not evidence of working inference. Automatic invocation
   and publication remain explicitly false until upstream qualification passes.
+- After the operator repaired gateway groups, Grok completed an actual packet
+  review as `grok-4.6`. Gemini's updated catalog listed only 2.0/2.5 models and
+  rejected the previously listed 3.1 model. Testing `gemini-2.5-pro` returned
+  HTTP 502, followed by HTTP 503 with no available Gemini accounts. The Gemini
+  upstream and hosted dual-review acceptance remain incomplete.
 - 31 focused tests and actionlint 1.7.12 passed. Tests cover independent keys and
   protocols, native Gemini output, incomplete/blocked/tool output, invalid model
   paths, redacted failures and the existing snapshot/publication gates.
