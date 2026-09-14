@@ -275,3 +275,35 @@ def test_the_pdf_fallback_refuses_typed_when_pymupdf_is_absent() -> None:
     finally:
         builtins.__import__ = real_import  # type: ignore[assignment]
     assert "PyMuPDF" in str(raised.value)
+
+
+def test_a_real_child_recovers_metadata_429_and_indexes_html(
+    engine: ProductResearchEngine, roots: EngineRoots, arxiv: ArxivFixtureServer,
+) -> None:
+    """Exercise real retries, bound abs egress, parsing and corpus indexing."""
+    arxiv.metadata_status = 429
+    request = _request("capture-cap1")
+    result = engine.import_source(request)
+    assert result.manifest["chunks"] >= 1
+    assert arxiv.requests.count(f"/api/query?id_list={HTML_PAPER}") == 4
+    assert f"/abs/{HTML_PAPER}" in arxiv.requests
+    assert f"/html/{HTML_PAPER}" in arxiv.requests
+    outcome = engine.outcomes[request.operation_id]
+    assert (roots.corpus_root / outcome.paper_dirs[0] / "full_text.md").is_file()
+
+
+def test_permanent_metadata_failure_is_known_and_writes_nothing(
+    engine: ProductResearchEngine, roots: EngineRoots, arxiv: ArxivFixtureServer,
+) -> None:
+    arxiv.metadata_status = 404
+    before = sorted(roots.corpus_root.iterdir())
+    with pytest.raises(EffectPermanentlyRejected) as raised:
+        engine.import_source(_request("capture-cap1"))
+    assert raised.value.category == "materialization_failed"
+    assert sorted(roots.corpus_root.iterdir()) == before
+    assert arxiv.requests == [f"/api/query?id_list={HTML_PAPER}"]
+    receipts = list((roots.state / "effects").glob("*/result.json"))
+    assert len(receipts) == 1
+    failure = json.loads(receipts[0].read_text())["failure"]
+    assert "arxiv metadata" in failure["message"]
+    assert "404" in failure["message"]

@@ -12,6 +12,8 @@ roadmap and release records. Read the applicable runbook before changing a bound
   idempotency boundaries when extracting helpers.
 - `profiles/research/src/cortex_research/` is the retained arXiv ingestion and
   indexing bridge. The directory name does not imply multi-profile support.
+  Metadata uses the product-bound export API and, after transient failures, the
+  product-bound abs endpoint; fallback pages must identify the requested paper.
 - Research catalog items and adopted dossiers are durable evidence. Opening an
   item or sending `/research` does not run autonomous idea/exploration rounds.
 - `cortex_platform/runtime/` implements RuntimePort through managed Hermes.

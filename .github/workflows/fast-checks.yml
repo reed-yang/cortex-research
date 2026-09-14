@@ -1,5 +1,5 @@
 # The browser-free tier only: `apps/web` unit, contract and typecheck work, and
-# the provider-free Control and artifact contracts. It does not run the Web
+# the provider-free Control, artifact and ingestion contracts. It does not run the Web
 # build, the browser acceptances, macOS-only work, an installed bundle or
 # anything needing a provider credential. Those gates and the full chain are in
 # docs/runbooks/web-verification.md.
@@ -47,8 +47,8 @@ jobs:
           assert Version(version("cortex")) == Version(release["product"]["version"])
           PYTHON
           git diff --exit-code -- uv.lock
-      - name: Run provider-free Control and artifact contracts
-        run: .venv/bin/python -m pytest cortex_platform/tests/product/control cortex_platform/tests/product/artifacts -q
+      - name: Run provider-free Control, artifact and ingestion contracts
+        run: .venv/bin/python -m pytest cortex_platform/tests/product/control cortex_platform/tests/product/artifacts cortex_platform/tests/product/engine profiles/research/tests -q
 
   web:
     runs-on: ubuntu-latest

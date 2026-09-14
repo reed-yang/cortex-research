@@ -42,7 +42,9 @@ Hermes gen9 runtime is supplied separately. See
 - **arXiv ingestion.** The engine's supported child operations are
   `ingest_arxiv`, `checkpoint`, `reconcile_arxiv` and `self_check`. Ingestion is
   strict: a paper with no arXiv HTML is refused with a typed error rather than
-  silently degraded.
+  silently degraded. Metadata uses the HTTPS export API, with a validated abs-page
+  fallback after transient API failures. Exhausting both paths reports a known
+  metadata failure before corpus writes.
 - **Managed runtime lifecycle.** One attested worker generation, with protocol
   handshake, a restart-durable operation ledger, cancellation, session
   continuity and rollback. Health reports `unbound` and refuses dispatch when no
@@ -106,7 +108,7 @@ prerequisites and the gates no local command covers are in
 [`docs/runbooks/web-verification.md`](docs/runbooks/web-verification.md).
 
 `.github/workflows/fast-checks.yml` is the browser-free hosted tier: the
-provider-free Control and artifact contracts, and `npm run test:fast`.
+provider-free Control, artifact and ingestion contracts, and `npm run test:fast`.
 
 A release bundle is composed by the checked-in driver, which acquires the Web
 payload, verifies the worker artifact and calls `python -m distribution build`:

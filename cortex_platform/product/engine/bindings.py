@@ -149,6 +149,7 @@ RETAINED_WITHOUT_A_READER: Mapping[str, str] = {
 ENGINE_BINDINGS: Mapping[str, Binding] = {
     # -- read by the retained engine surface (the AST scan finds all of these) --
     "CORTEX_AGENT_READINGS": Binding("CORTEX_AGENT_READINGS", BOUND, "path:readings_root", "F4: one of the two independent corpus roots."),
+    "CORTEX_ARXIV_ABS_BASE": Binding("CORTEX_ARXIV_ABS_BASE", BOUND, "literal:arxiv_abs_base", "The product owns the metadata fallback endpoint."),
     "CORTEX_ARXIV_API_BASE": Binding("CORTEX_ARXIV_API_BASE", BOUND, "literal:arxiv_api_base", "P4.2 binds the engine's egress: the product owns which arxiv endpoint an effect reaches."),
     "CORTEX_ARXIV_HTML_BASE": Binding("CORTEX_ARXIV_HTML_BASE", BOUND, "literal:arxiv_html_base", "P4.2 binds the engine's egress: the product owns which arxiv endpoint an effect reaches."),
     "CORTEX_ARXIV_MIN_INTERVAL": Binding("CORTEX_ARXIV_MIN_INTERVAL", BOUND, "literal:arxiv_interval", "The engine's own throttle, pinned by the product."),
@@ -194,7 +195,8 @@ _LITERAL_VALUES: Mapping[str, str] = {
     "path": os.defpath,
     "locale": "C",
     "arxiv_interval": "1.0",
-    "arxiv_api_base": "http://export.arxiv.org/api/query",
+    "arxiv_api_base": "https://export.arxiv.org/api/query",
+    "arxiv_abs_base": "https://arxiv.org/abs",
     "arxiv_html_base": "https://arxiv.org/html",
     "arxiv_pdf_base": "https://arxiv.org/pdf",
     "ocr_engines": "deepseek-ocr,glm-ocr",

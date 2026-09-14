@@ -2,7 +2,7 @@
 
 The engine's endpoints are bound (`CORTEX_ARXIV_*_BASE`), so a real ingest can
 run against recorded bytes without reaching the network at all. This is the
-whole reason those three bindings exist: an acceptance that mocks the engine
+whole reason those endpoint bindings exist: an acceptance that mocks the engine
 proves nothing, and an acceptance that calls arxiv.org is not reproducible.
 """
 
@@ -19,11 +19,12 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "arxiv"
 
 
 class ArxivFixtureServer:
-    """Serve `/api/query`, `/html/<id>` and `/pdf/<id>` from recorded files."""
+    """Serve `/api/query`, `/abs/<id>`, `/html/<id>` and `/pdf/<id>` from recorded files."""
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = Path(root or FIXTURE_ROOT)
         self.requests: list[str] = []
+        self.metadata_status = 200
         # Held on the full-text response only, so a test can keep a real child
         # genuinely in flight instead of racing a sub-second ingest.
         self.stall_seconds = 0.0
@@ -46,6 +47,9 @@ class ArxivFixtureServer:
                 outer.requests.append(self.path)
                 parts = urlsplit(self.path)
                 if parts.path.endswith("/api/query"):
+                    if outer.metadata_status != 200:
+                        self._send(outer.metadata_status, b"metadata unavailable", "text/plain")
+                        return
                     identifiers = parse_qs(parts.query).get("id_list", [""])
                     source = outer.root / f"{identifiers[0]}.atom.xml"
                     if not source.is_file():
@@ -54,6 +58,13 @@ class ArxivFixtureServer:
                     self._send(200, source.read_bytes(), "application/atom+xml")
                     return
                 kind, _, identifier = parts.path.strip("/").partition("/")
+                if kind == "abs":
+                    source = outer.root / f"{identifier}.abs.html"
+                    if not source.is_file():
+                        self._send(404, b"no abs", "text/plain")
+                        return
+                    self._send(200, source.read_bytes(), "text/html; charset=utf-8")
+                    return
                 if kind == "html":
                     if outer.stall_seconds:
                         time.sleep(outer.stall_seconds)
@@ -99,6 +110,7 @@ class ArxivFixtureServer:
 
         return {
             "arxiv_api_base": f"{self.base}/api/query",
+            "arxiv_abs_base": f"{self.base}/abs",
             "arxiv_html_base": f"{self.base}/html",
             "arxiv_pdf_base": f"{self.base}/pdf",
             "arxiv_interval": "0",

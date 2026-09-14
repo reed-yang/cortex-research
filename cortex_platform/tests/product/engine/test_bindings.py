@@ -247,3 +247,9 @@ def test_both_corpus_names_answer_one_directory_at_s1s_frozen_shape(
     # The invariant the two bindings exist for: one ingest, one directory.
     (written / "20260101-A-Paper").mkdir(parents=True)
     assert (roots.corpus_root / "20260101-A-Paper").is_dir()
+
+
+def test_metadata_endpoints_use_product_owned_https_bindings(roots: EngineRoots) -> None:
+    environment = research_effect_environment(roots=roots, effect_marker="metadata")
+    assert environment["CORTEX_ARXIV_API_BASE"] == "https://export.arxiv.org/api/query"
+    assert environment["CORTEX_ARXIV_ABS_BASE"] == "https://arxiv.org/abs"

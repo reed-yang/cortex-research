@@ -51,8 +51,9 @@ from .index_papers import agent_readings_papers, index_paper
 # product that owns this process also owns its egress. Defaults are the values
 # that shipped, so an unset environment behaves exactly as before.
 _META_URL = os.environ.get(
-    "CORTEX_ARXIV_API_BASE", "http://export.arxiv.org/api/query"
+    "CORTEX_ARXIV_API_BASE", "https://export.arxiv.org/api/query"
 ) + "?id_list={id}"
+_ABS_URL = os.environ.get("CORTEX_ARXIV_ABS_BASE", "https://arxiv.org/abs") + "/{id}"
 _HTML_URL = os.environ.get("CORTEX_ARXIV_HTML_BASE", "https://arxiv.org/html") + "/{id}"
 _PDF_URL = os.environ.get("CORTEX_ARXIV_PDF_BASE", "https://arxiv.org/pdf") + "/{id}"
 _TIMEOUT = 30.0
@@ -94,9 +95,70 @@ def _norm_id(id_or_url: str) -> str:
     return aid
 
 
+def _metadata_from_abs(arxiv_id: str) -> dict:
+    """Read metadata from an abs page, refusing mismatched or incomplete pages."""
+    from bs4 import BeautifulSoup
+    from datetime import date
+
+    response = _get_with_retry(_ABS_URL.format(id=arxiv_id), timeout=_TIMEOUT)
+    soup = BeautifulSoup(response.text, "lxml")
+
+    def values(name: str) -> list[str]:
+        return [
+            value for tag in soup.find_all("meta", attrs={"name": name})
+            if (value := (tag.get("content") or "").strip())
+        ]
+
+    identifiers = values("citation_arxiv_id")
+    if len(identifiers) != 1 or _strip_version(identifiers[0]) != arxiv_id:
+        raise ValueError("abs page does not identify the requested paper")
+    titles = values("citation_title")
+    abstracts = values("citation_abstract")
+    authors = values("citation_author")
+    dates = values("citation_date")
+    if not titles or not abstracts or not authors or not dates:
+        raise ValueError("abs page is missing required citation metadata")
+    published = date.fromisoformat(dates[0].replace("/", "-")).isoformat()
+
+    def author_name(value: str) -> str:
+        surname, separator, given = value.partition(",")
+        return f"{given.strip()} {surname.strip()}".strip() if separator else value
+
+    subjects = soup.find("td", class_="subjects")
+    categories = re.findall(
+        r"\(([a-z][a-z-]*(?:\.[A-Za-z-]+)?)\)",
+        subjects.get_text(" ", strip=True) if subjects else "",
+    )
+    return {
+        "arxiv_id": arxiv_id,
+        "title": titles[0],
+        "abstract": abstracts[0],
+        "authors": [author_name(value) for value in authors],
+        "categories": categories,
+        "published_at": published,
+    }
+
+
 def fetch_metadata(arxiv_id: str) -> dict:
-    """Title / abstract / published date for an arxiv id (export API)."""
-    resp = _get_with_retry(_META_URL.format(id=arxiv_id), timeout=_TIMEOUT)
+    """Prefer the export API; recover transient failures from the abs page."""
+    try:
+        resp = _get_with_retry(_META_URL.format(id=arxiv_id), timeout=_TIMEOUT)
+    except httpx.HTTPError as error:
+        detail = f"export API {type(error).__name__}: {error}"
+        if _is_transient_http(error):
+            try:
+                metadata = _metadata_from_abs(arxiv_id)
+            except (httpx.HTTPError, ValueError) as fallback_error:
+                detail += f"; abs fallback {type(fallback_error).__name__}: {fallback_error}"
+            else:
+                _log.warning(
+                    "[ingest] %s: export API failed (%s); using abs metadata",
+                    arxiv_id, type(error).__name__,
+                )
+                return metadata
+        # Metadata precedes corpus writes. This is a known failure; marking it
+        # outcome_unknown would prevent a failed capture from being resubmitted.
+        raise IngestError(f"arxiv metadata lookup failed for {arxiv_id}: {detail}") from error
     entries = parse_atom(resp.text)
     if not entries:
         raise IngestError(f"no arxiv metadata for {arxiv_id}")

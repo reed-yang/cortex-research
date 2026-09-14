@@ -63,7 +63,7 @@ failing screenshot check pass: investigate the drift first.
 Two ubuntu jobs: the Control job runs `uv sync --frozen`, asserts the checkout
 owns the imported `cortex_platform` and that the installed version matches
 `distribution/release.toml`, checks `uv.lock` is unchanged, and runs the
-provider-free Control and artifact contracts; the Web job runs `npm ci` and
+provider-free Control, artifact and ingestion contracts; the Web job runs `npm ci` and
 `npm run test:fast`.
 
 CI cannot run the browser acceptances, the build, macOS-only work, the
