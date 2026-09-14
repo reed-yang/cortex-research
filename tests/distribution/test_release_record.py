@@ -102,9 +102,9 @@ def test_the_checked_in_descriptor_parses_and_names_this_release() -> None:
 
     descriptor = load_descriptor(REPOSITORY / "distribution" / "release.toml")
 
-    assert descriptor.product_version == "0.1.20"
-    assert descriptor.release_id == "cortex-research-20"
-    assert descriptor.release_sequence == 20
+    assert descriptor.product_version == "0.1.21"
+    assert descriptor.release_id == "cortex-research-21"
+    assert descriptor.release_sequence == 21
     assert descriptor.target_schema == 19
     assert descriptor.upgrade_from_schemas == (16, 17, 18)
     assert descriptor.worker_release_id == "hermes-0.15.0-gen9"
@@ -296,13 +296,20 @@ def test_a_different_worker_release_or_protocol_is_refused() -> None:
         _record(worker={**WORKER, "adapter_protocol": "cortex-worker/3"})
 
 
-def test_a_predecessor_must_be_below_this_release_on_both_counters() -> None:
+def test_predecessor_sequence_and_schema_upgrade_bounds_are_enforced() -> None:
     with pytest.raises(ReleaseRecordError, match="sequence is not below"):
         _record(previous={**PREVIOUS, "release_sequence": 17})
     with pytest.raises(ReleaseRecordError, match="schema is not below"):
         _record(previous={**PREVIOUS, "control_schema": 19})
     with pytest.raises(ReleaseRecordError, match="not a declared upgrade path"):
         _record(previous={**PREVIOUS, "control_schema": 15})
+
+
+def test_a_code_only_upgrade_preserves_the_same_schema_predecessor() -> None:
+    record = _record(previous={**PREVIOUS, "control_schema": 18})
+    assert record["previous_control_schema"] == record["control_schema"] == 18
+    assert record["previous_release_sequence"] == 16
+    assert record["previous_bundle_digest"] == PREVIOUS["bundle_digest"]
 
 
 def test_a_first_release_records_an_absent_predecessor_explicitly() -> None:

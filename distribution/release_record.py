@@ -457,7 +457,9 @@ def validate_predecessor(descriptor: ReleaseDescriptor, previous: Mapping[str, o
         raise ReleaseRecordError(
             "predecessor control schema is not below this release"
         )
-    if previous_schema not in descriptor.upgrade_from_schemas:
+    # A code-only update needs no migration and must still retain its predecessor.
+    if (previous_schema != descriptor.target_schema
+            and previous_schema not in descriptor.upgrade_from_schemas):
         raise ReleaseRecordError(
             f"predecessor control schema {previous_schema} is not a declared "
             "upgrade path"
