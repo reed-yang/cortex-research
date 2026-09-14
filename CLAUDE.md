@@ -33,6 +33,9 @@ roadmap and release records. Read the applicable runbook before changing a bound
 not product runtime. Read the tool README before changing activation, credentials
 or publishing. PR head content is untrusted API data; only trusted base tooling
 executes. Preserve distinct reviewer families and explicit unavailable states.
+Gateway keys belong to the `pr-review` GitHub environment, restricted to the
+trusted default branch. Only the inference step receives them. Grok uses chat
+completions and Gemini uses native generateContent; OAuth is not a fallback.
 
 ## Release and state
 

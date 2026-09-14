@@ -1,5 +1,5 @@
 # Repository tooling only. PR head content is fetched as data, never executed.
-# Gemini is unavailable until agy subscription authentication is qualified.
+# Provider credentials live in the pr-review environment restricted to main.
 # Both activation and publishing default to off. Use standard Ubuntu runners.
 name: Independent PR review
 
@@ -30,13 +30,13 @@ jobs:
   review:
     if: >-
       (github.event_name == 'workflow_dispatch' &&
-       github.ref_name == github.event.repository.default_branch &&
-       (inputs.mode == 'dry-run' || vars.AUTO_REVIEW_ENABLED == 'true')) ||
+       github.ref_name == github.event.repository.default_branch) ||
       (github.event_name == 'pull_request_target' && vars.AUTO_REVIEW_ENABLED == 'true' &&
        github.event.pull_request.draft == false &&
        github.event.pull_request.base.ref == github.event.repository.default_branch &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
+    environment: pr-review
     timeout-minutes: 12
     permissions:
       contents: read
@@ -79,6 +79,8 @@ jobs:
         env:
           GROK_BASE_URL: ${{ vars.GROK_BASE_URL }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}
+          GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: >-
           python3 tools/pr_review/review.py run --dry-run
           --packet "$RUNNER_TEMP/review-output/packet.json"
@@ -90,6 +92,9 @@ jobs:
           GROK_BASE_URL: ${{ vars.GROK_BASE_URL }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: >-
           python3 tools/pr_review/review.py run
           --packet "$RUNNER_TEMP/review-output/packet.json"

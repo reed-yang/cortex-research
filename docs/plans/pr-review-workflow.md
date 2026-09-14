@@ -22,7 +22,7 @@ personal credentials, or substitute separately billed Google APIs.
 - [x] Validate tests, workflow syntax and a bounded GitHub packet without model calls.
 - [x] Commit the integration and record exact remaining activation requirements.
 
-## Decisions
+## Original integration decisions
 
 - PR head is API data only; checkout and execute trusted default-branch tooling.
 - Only same-repository, non-draft PRs against the default branch are eligible.
@@ -70,7 +70,7 @@ to remove repository tooling; no product release or database rollback is needed.
 - No model credential has been read or transferred. No provider call or PR
   report publication has occurred. Gemini remains explicitly unavailable.
 
-## Activation requirements
+## Original subscription activation requirements
 
 1. Select the Grok review gateway, callable model and existing authorized key.
    Provision only the review-specific repository variables/secret named in the
@@ -84,6 +84,50 @@ to remove repository tooling; no product release or database rollback is needed.
 
 Product 0.1.20, Control schema 19 and the qualified Hermes gen9 runtime do not
 change as a result of this repository-tooling integration.
+
+## Authentication research follow-up: September 14, 2026
+
+The operator requested persistent OAuth where practical and proposed a gateway
+API key as an alternative. This expands the options for a deliberately selected
+Gemini gateway lane; it does not enable automatic billing-route fallback.
+
+- Official Grok Build docs establish browser and device-code login with renewal.
+  The current HTTP-only Grok adapter does not implement that CLI route.
+- agy docs establish cached keyring and SSH authorization, plus an explicit
+  Gemini-compatible API-key mode. Unattended subscription renewal and tool
+  isolation on the selected host remain qualification gates.
+- Upstream Sub2API supports provider/composite routing and multiple protocols.
+  Deployment support, review-key scope and actual callable models must be tested
+  separately. A working OpenAI key is not Grok/Gemini access evidence.
+- The tool README now contains concrete login and gateway setup steps. No CLI
+  was installed, provider inference attempted, Actions credential provisioned, or
+  workflow activation changed by this research follow-up. An explicitly
+  authorized gateway catalog check did not list Grok or Gemini models.
+
+## Hosted gateway configuration: September 14, 2026
+
+The operator selected GitHub-hosted execution and supplied separate gateway keys.
+The current follow-up selects Grok chat completions and Gemini native
+generateContent; the disabled subscription adapter remains an optional future
+route, not an automatic fallback.
+
+- Provisioned `GROK_API_KEY` and `GEMINI_API_KEY` as encrypted secrets in the
+  `pr-review` environment. Its selected-branch policy permits only `main`.
+  There are no repository-level copies of these secrets.
+- Added the protected environment to the review job and supplied credentials
+  only to its inference step. Dry runs and the publisher receive no model keys.
+- Manual review on the default branch is independent of automatic PR triggers.
+  Forks, drafts and non-default targets remain refused; PR head content remains
+  API data and never executable code.
+- Gateway catalogs accepted both keys, but smoke inference returned HTTP 503.
+  Gemini's native endpoint reported no available upstream Gemini accounts.
+  Catalog entries are not evidence of working inference. Automatic invocation
+  and publication remain explicitly false until upstream qualification passes.
+- 31 focused tests and actionlint 1.7.12 passed. Tests cover independent keys and
+  protocols, native Gemini output, incomplete/blocked/tool output, invalid model
+  paths, redacted failures and the existing snapshot/publication gates.
+- Workflow changes are prepared for review; hosted dual-model inference has not
+  passed. Key storage is complete independently of provider availability.
 
 ## Existing PR compatibility
 

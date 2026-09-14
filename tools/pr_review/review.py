@@ -229,9 +229,33 @@ def run_compatible(backend, prompt):
         raise ReviewError("invalid_provider_response") from None
 
 
-# Personal Gemini CLI OAuth is retired. Do not retain an executable fallback.
-# Add an agy adapter only after subscription auth and tool isolation qualify.
-HARNESSES = {"compatible_packet": run_compatible}
+def run_gemini(backend, prompt):
+    key = os.environ.get(backend["key_env"], "")
+    base = os.environ.get(backend["base_url_env"], "").rstrip("/")
+    model = os.environ.get(backend["model_env"], "")
+    if not key or not base or not model:
+        raise ReviewError("backend_not_configured")
+    if not re.fullmatch(r"gemini-[A-Za-z0-9._-]+", model):
+        raise ReviewError("invalid_gemini_model")
+    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+               "generationConfig": {"maxOutputTokens": 6000, "responseMimeType": "application/json"}}
+    response = request_json(base + "/models/" + model + ":generateContent", key, payload,
+                            timeout=backend["timeout_seconds"])
+    try:
+        candidate = response["candidates"][0]
+        parts = candidate["content"]["parts"]
+        if candidate.get("finishReason") != "STOP" or any("functionCall" in part for part in parts):
+            raise ReviewError("incomplete_or_unexpected_model_output")
+        text = "".join(part["text"] for part in parts if "text" in part and not part.get("thought"))
+        if not text:
+            raise ReviewError("empty_model_output")
+        return text, response.get("modelVersion", model), response.get("usageMetadata", {})
+    except (KeyError, TypeError, IndexError):
+        raise ReviewError("invalid_provider_response") from None
+
+
+# OAuth adapters remain unavailable; gateway failures never change the billing route.
+HARNESSES = {"compatible_packet": run_compatible, "gemini_packet": run_gemini}
 
 
 def configuration_status(config):

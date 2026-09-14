@@ -29,6 +29,7 @@ def answer():
 def configuration():
     config = review.load(Path(__file__).with_name("backends.json"))
     # Injected runners test coordinator behavior, never Gemini entitlement.
+    config["slots"][1]["backends"] = ["gemini-ai-pro"]
     config["backends"]["gemini-ai-pro"].pop("disabled_reason", None)
     return config
 
@@ -103,9 +104,10 @@ class OutputTests(unittest.TestCase):
 class RoutingTests(unittest.TestCase):
     def test_shipped_config_blocks_unqualified_subscription_before_invoking_harness(self):
         config = review.load(Path(__file__).with_name("backends.json"))
+        slot = dict(config["slots"][1], backends=["gemini-ai-pro"])
         def unexpected(*args):
             self.fail("Unqualified subscription adapter must not run")
-        result = review.run_slot(config["slots"][1], config["backends"], packet(),
+        result = review.run_slot(slot, config["backends"], packet(),
                                  {"antigravity_packet": unexpected})
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["attempts"][0]["error"], "antigravity_subscription_hosted_auth_unqualified")
@@ -150,7 +152,8 @@ class AuthenticationTests(unittest.TestCase):
                                      "GROK_BASE_URL": "https://example.invalid/v1"}, clear=True):
             result = review.configuration_status(review.load(Path(__file__).with_name("backends.json")))
         self.assertEqual(result[0]["status"], "configured")
-        self.assertEqual(result[1]["status"], "unavailable")
+        self.assertEqual(result[1]["status"], "unconfigured")
+        self.assertEqual(result[1]["missing"], ["GEMINI_API_KEY", "GEMINI_BASE_URL", "GEMINI_MODEL"])
         self.assertNotIn("secret-value", json.dumps(result))
 
     def test_missing_review_configuration_is_explicit(self):
@@ -165,6 +168,79 @@ class AuthenticationTests(unittest.TestCase):
             with patch("review.request_json", return_value={"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]}):
                 with self.assertRaisesRegex(review.ReviewError, "incomplete"):
                     review.run_compatible(backend, "test")
+
+
+class GatewayTests(unittest.TestCase):
+    def setUp(self):
+        self.config = review.load(Path(__file__).with_name("backends.json"))
+        self.backend = self.config["backends"]["gemini-gateway"]
+        self.env = patch.dict(os.environ, {"GEMINI_API_KEY": "gemini-secret",
+                             "GEMINI_BASE_URL": "https://gateway.example/v1beta",
+                             "GEMINI_MODEL": "gemini-test", "GROK_API_KEY": "grok-secret",
+                             "GROK_BASE_URL": "https://gateway.example/v1", "GROK_MODEL": "grok-test"}, clear=True)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def response(self):
+        return {"modelVersion": "gemini-test-version", "usageMetadata": {"totalTokenCount": 123},
+                "candidates": [{"finishReason": "STOP", "content": {"parts": [
+                    {"thought": True, "text": "Internal reasoning"}, {"text": json.dumps(answer())}]}}]}
+
+    def test_native_response_keeps_only_answer_and_provider_metadata(self):
+        with patch("review.request_json", return_value=self.response()) as request:
+            text, model, usage = review.run_gemini(self.backend, "review packet")
+        self.assertEqual(json.loads(text), answer())
+        self.assertEqual(model, "gemini-test-version")
+        self.assertEqual(usage["totalTokenCount"], 123)
+        self.assertEqual(request.call_args.args[0], "https://gateway.example/v1beta/models/gemini-test:generateContent")
+        self.assertEqual(request.call_args.args[1], "gemini-secret")
+        payload = request.call_args.args[2]
+        self.assertNotIn("gemini-secret", json.dumps(payload))
+        self.assertNotIn("tools", payload)
+        self.assertEqual(payload["generationConfig"]["responseMimeType"], "application/json")
+
+    def test_incomplete_blocked_or_tool_output_is_rejected(self):
+        for reason in ["MAX_TOKENS", "SAFETY", "RECITATION"]:
+            with self.subTest(reason=reason):
+                response = self.response()
+                response["candidates"][0]["finishReason"] = reason
+                with patch("review.request_json", return_value=response):
+                    with self.assertRaisesRegex(review.ReviewError, "incomplete"):
+                        review.run_gemini(self.backend, "test")
+        response = self.response()
+        response["candidates"][0]["content"]["parts"].append({"functionCall": {"name": "read_file"}})
+        with patch("review.request_json", return_value=response):
+            with self.assertRaisesRegex(review.ReviewError, "unexpected_model_output"):
+                review.run_gemini(self.backend, "test")
+
+    def test_empty_and_malformed_responses_are_redacted_failures(self):
+        for response in [{}, {"candidates": []}, {"candidates": [{"finishReason": "STOP", "content": {"parts": []}}]}]:
+            with self.subTest(response=response), patch("review.request_json", return_value=response):
+                with self.assertRaises(review.ReviewError):
+                    review.run_gemini(self.backend, "test")
+
+    def test_model_cannot_inject_an_endpoint_path(self):
+        with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-test/../../other"}), patch("review.request_json") as request:
+            with self.assertRaisesRegex(review.ReviewError, "invalid_gemini_model"):
+                review.run_gemini(self.backend, "test")
+            request.assert_not_called()
+
+    def test_live_config_uses_independent_keys_and_protocols(self):
+        def reply(url, key, data, **kwargs):
+            if "/chat/completions" in url:
+                self.assertEqual(key, "grok-secret")
+                return {"model": "grok-test", "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(answer())}}]}
+            self.assertEqual(key, "gemini-secret")
+            return self.response()
+        with patch("review.request_json", side_effect=reply):
+            result = review.run_reviews(packet(), self.config)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual([r["opinion_family"] for r in result["reviews"]], ["grok", "gemini"])
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_redirects_cannot_forward_authorization(self):
+        with self.assertRaisesRegex(review.ReviewError, "redirect_not_allowed"):
+            review.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.example")
 
 
 class SnapshotAndPublicationTests(unittest.TestCase):

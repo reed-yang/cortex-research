@@ -11,7 +11,7 @@
       "id": "Gemini",
       "opinion_family": "gemini",
       "backends": [
-        "gemini-ai-pro"
+        "gemini-gateway"
       ]
     }
   ],
@@ -19,7 +19,7 @@
     "grok-gateway": {
       "harness": "compatible_packet",
       "opinion_family": "grok",
-      "auth_mode": "subscription_gateway",
+      "auth_mode": "gateway_api_key",
       "base_url_env": "GROK_BASE_URL",
       "key_env": "GROK_API_KEY",
       "model_env": "GROK_MODEL",
@@ -31,6 +31,16 @@
         "http_503",
         "http_504"
       ]
+    },
+    "gemini-gateway": {
+      "harness": "gemini_packet",
+      "opinion_family": "gemini",
+      "auth_mode": "gateway_api_key",
+      "base_url_env": "GEMINI_BASE_URL",
+      "key_env": "GEMINI_API_KEY",
+      "model_env": "GEMINI_MODEL",
+      "timeout_seconds": 300,
+      "fallback_on": []
     },
     "gemini-ai-pro": {
       "disabled_reason": "antigravity_subscription_hosted_auth_unqualified",
