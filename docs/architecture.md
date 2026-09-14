@@ -38,6 +38,19 @@ An attempt reserves its runtime identity and pin durably before an effect
 starts. Runtime I/O occurs outside SQLite write transactions. Applying results
 checks ownership and identity again; retries cannot replace those checks.
 
+## Direct paper ingestion
+
+The research bridge reads validated metadata from `arxiv.org/abs/<id>` and full
+text from `arxiv.org/html/<id>`. A valid abs page requires no export API call.
+If the abs request fails or its citation metadata is invalid, the product-bound
+export API is the metadata fallback. Both paths validate the requested paper
+identity; failure before corpus writes remains a known refusal. The existing
+HTTP client implements these direct requests without spawning curl.
+
+The product continues to refuse papers without usable HTML. Direct PDF download
+alone does not provide structured text, formulas, figures or an indexed source;
+PDF parsing/OCR remains a separate capability.
+
 ## Composition and upgrade
 
 The product, Control schema, installation sequence and Hermes worker generation

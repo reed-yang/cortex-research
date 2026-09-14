@@ -25,6 +25,7 @@ class ArxivFixtureServer:
         self.root = Path(root or FIXTURE_ROOT)
         self.requests: list[str] = []
         self.metadata_status = 200
+        self.abs_status = 200
         # Held on the full-text response only, so a test can keep a real child
         # genuinely in flight instead of racing a sub-second ingest.
         self.stall_seconds = 0.0
@@ -59,6 +60,9 @@ class ArxivFixtureServer:
                     return
                 kind, _, identifier = parts.path.strip("/").partition("/")
                 if kind == "abs":
+                    if outer.abs_status != 200:
+                        self._send(outer.abs_status, b"abs unavailable", "text/plain")
+                        return
                     source = outer.root / f"{identifier}.abs.html"
                     if not source.is_file():
                         self._send(404, b"no abs", "text/plain")

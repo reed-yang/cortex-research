@@ -221,7 +221,8 @@ def test_the_ingest_reached_only_the_fixture_server(
     engine: ProductResearchEngine, arxiv: ArxivFixtureServer
 ) -> None:
     engine.import_source(_request("capture-cap1"))
-    assert any("/api/query" in path for path in arxiv.requests)
+    assert f"/abs/{HTML_PAPER}" in arxiv.requests
+    assert not any("/api/query" in path for path in arxiv.requests)
     assert any(f"/html/{HTML_PAPER}" in path for path in arxiv.requests)
 
 
@@ -277,15 +278,15 @@ def test_the_pdf_fallback_refuses_typed_when_pymupdf_is_absent() -> None:
     assert "PyMuPDF" in str(raised.value)
 
 
-def test_a_real_child_recovers_metadata_429_and_indexes_html(
+def test_a_real_child_indexes_direct_html_without_calling_the_unavailable_api(
     engine: ProductResearchEngine, roots: EngineRoots, arxiv: ArxivFixtureServer,
 ) -> None:
-    """Exercise real retries, bound abs egress, parsing and corpus indexing."""
+    """A broken export API has no effect on the normal direct-page path."""
     arxiv.metadata_status = 429
     request = _request("capture-cap1")
     result = engine.import_source(request)
     assert result.manifest["chunks"] >= 1
-    assert arxiv.requests.count(f"/api/query?id_list={HTML_PAPER}") == 4
+    assert not any("/api/query" in path for path in arxiv.requests)
     assert f"/abs/{HTML_PAPER}" in arxiv.requests
     assert f"/html/{HTML_PAPER}" in arxiv.requests
     outcome = engine.outcomes[request.operation_id]
@@ -295,15 +296,27 @@ def test_a_real_child_recovers_metadata_429_and_indexes_html(
 def test_permanent_metadata_failure_is_known_and_writes_nothing(
     engine: ProductResearchEngine, roots: EngineRoots, arxiv: ArxivFixtureServer,
 ) -> None:
+    arxiv.abs_status = 404
     arxiv.metadata_status = 404
     before = sorted(roots.corpus_root.iterdir())
     with pytest.raises(EffectPermanentlyRejected) as raised:
         engine.import_source(_request("capture-cap1"))
     assert raised.value.category == "materialization_failed"
     assert sorted(roots.corpus_root.iterdir()) == before
-    assert arxiv.requests == [f"/api/query?id_list={HTML_PAPER}"]
+    assert arxiv.requests == [f"/abs/{HTML_PAPER}", f"/api/query?id_list={HTML_PAPER}"]
     receipts = list((roots.state / "effects").glob("*/result.json"))
     assert len(receipts) == 1
     failure = json.loads(receipts[0].read_text())["failure"]
     assert "arxiv metadata" in failure["message"]
     assert "404" in failure["message"]
+
+
+def test_a_real_child_uses_api_only_when_abs_is_unavailable(
+    engine: ProductResearchEngine, roots: EngineRoots, arxiv: ArxivFixtureServer,
+) -> None:
+    arxiv.abs_status = 404
+    result = engine.import_source(_request("capture-cap1"))
+    assert result.manifest["chunks"] >= 1
+    assert arxiv.requests[:3] == [
+        f"/abs/{HTML_PAPER}", f"/api/query?id_list={HTML_PAPER}", f"/html/{HTML_PAPER}",
+    ]

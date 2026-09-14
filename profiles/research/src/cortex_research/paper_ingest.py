@@ -31,6 +31,7 @@ import time
 import tempfile
 from pathlib import Path
 from typing import Optional
+from xml.etree.ElementTree import ParseError
 
 import httpx
 
@@ -100,7 +101,10 @@ def _metadata_from_abs(arxiv_id: str) -> dict:
     from bs4 import BeautifulSoup
     from datetime import date
 
-    response = _get_with_retry(_ABS_URL.format(id=arxiv_id), timeout=_TIMEOUT)
+    # Try the direct page once before spending the fallback API retry budget.
+    response = _get_with_retry(
+        _ABS_URL.format(id=arxiv_id), timeout=_TIMEOUT, max_retries=0,
+    )
     soup = BeautifulSoup(response.text, "lxml")
 
     def values(name: str) -> list[str]:
@@ -140,29 +144,26 @@ def _metadata_from_abs(arxiv_id: str) -> dict:
 
 
 def fetch_metadata(arxiv_id: str) -> dict:
-    """Prefer the export API; recover transient failures from the abs page."""
+    """Read the abs page directly; consult the API only if that path fails."""
+    try:
+        return _metadata_from_abs(arxiv_id)
+    except (httpx.HTTPError, ValueError) as error:
+        detail = f"abs page {type(error).__name__}: {error}"
+
     try:
         resp = _get_with_retry(_META_URL.format(id=arxiv_id), timeout=_TIMEOUT)
-    except httpx.HTTPError as error:
-        detail = f"export API {type(error).__name__}: {error}"
-        if _is_transient_http(error):
-            try:
-                metadata = _metadata_from_abs(arxiv_id)
-            except (httpx.HTTPError, ValueError) as fallback_error:
-                detail += f"; abs fallback {type(fallback_error).__name__}: {fallback_error}"
-            else:
-                _log.warning(
-                    "[ingest] %s: export API failed (%s); using abs metadata",
-                    arxiv_id, type(error).__name__,
-                )
-                return metadata
-        # Metadata precedes corpus writes. This is a known failure; marking it
-        # outcome_unknown would prevent a failed capture from being resubmitted.
+        entries = parse_atom(resp.text)
+        # Atom error feeds and unexpected IDs must never be indexed as the paper.
+        metadata = next((entry for entry in entries
+                         if entry.get("arxiv_id") == arxiv_id and entry.get("title")), None)
+        if metadata is None:
+            raise ValueError("export API did not return the requested paper")
+    except (httpx.HTTPError, ValueError, ParseError) as error:
+        detail += f"; export API fallback {type(error).__name__}: {error}"
+        # Both failures precede corpus writes, so the outcome is known.
         raise IngestError(f"arxiv metadata lookup failed for {arxiv_id}: {detail}") from error
-    entries = parse_atom(resp.text)
-    if not entries:
-        raise IngestError(f"no arxiv metadata for {arxiv_id}")
-    return entries[0]
+    _log.warning("[ingest] %s: %s; using export API metadata", arxiv_id, detail)
+    return metadata
 
 
 def _html_to_markdown(html: str, base_url: str = "") -> tuple[str, list[tuple[str, str]]]:
