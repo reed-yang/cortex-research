@@ -1,5 +1,12 @@
 # Release notes
 
+## 0.1.22
+
+Read arXiv metadata directly from the abs page by default and retain direct HTML
+full-text ingestion. A valid page makes no export API request, avoiding API
+retry delays. Use the API only after page request or validation failure, and
+validate its returned identity before ingestion.
+
 ## 0.1.21
 
 Recover transient arXiv metadata failures from validated abs-page metadata and

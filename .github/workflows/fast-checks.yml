@@ -59,11 +59,12 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: uv sync --frozen --python 3.12
+      - run: uv sync --frozen --python 3.12 --managed-python
       - name: Verify ingestion imports belong to this checkout
         run: |
           .venv/bin/python - <<'PYTHON'
-          import pathlib, cortex_platform, cortex_research
+          import pathlib, sqlite3, cortex_platform, cortex_research
+          assert hasattr(sqlite3.Connection, "enable_load_extension")
           root = pathlib.Path.cwd()
           for module in (cortex_platform, cortex_research):
               assert pathlib.Path(module.__file__).resolve().is_relative_to(root)

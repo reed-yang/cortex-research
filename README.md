@@ -42,9 +42,10 @@ Hermes gen9 runtime is supplied separately. See
 - **arXiv ingestion.** The engine's supported child operations are
   `ingest_arxiv`, `checkpoint`, `reconcile_arxiv` and `self_check`. Ingestion is
   strict: a paper with no arXiv HTML is refused with a typed error rather than
-  silently degraded. Metadata uses the HTTPS export API, with a validated abs-page
-  fallback after transient API failures. Exhausting both paths reports a known
-  metadata failure before corpus writes.
+  silently degraded. Metadata is read directly from the HTTPS abs page; a valid
+  page avoids the export API entirely. The API is used only if the page request
+  or metadata validation fails. Full text is read directly from the HTML URL.
+  Exhausting metadata paths reports a known failure before corpus writes.
 - **Managed runtime lifecycle.** One attested worker generation, with protocol
   handshake, a restart-durable operation ledger, cancellation, session
   continuity and rollback. Health reports `unbound` and refuses dispatch when no

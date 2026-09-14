@@ -11,7 +11,9 @@ instructions. The following files are intentionally tracked and public.
 | [Web user guide](runbooks/cortex-web-user-guide.md) | Operator UI and research workflow |
 | [Web verification](runbooks/web-verification.md) | Test tiers and their limits |
 | [Hermes acceptance](runbooks/hermes-acceptance.md) | Worker qualification and continuity |
-| [0.1.20](releases/0.1.20.md) | Released composition and acceptance record |
+| [0.1.22](releases/0.1.22.md) | Current direct-page default and installed acceptance |
+| [0.1.21](releases/0.1.21.md) | Previous ingestion repair and installed acceptance |
+| [0.1.20](releases/0.1.20.md) | Previous composition and acceptance record |
 | [PR review tooling](../tools/pr_review/README.md) | Hosted packet review, setup and unavailable-lane boundaries |
 | [ADR index](adr/README.md) | Retained architectural decisions |
 
