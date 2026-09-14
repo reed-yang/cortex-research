@@ -103,10 +103,15 @@ font byte that is not one of these.
 ## Web shell dependencies
 
 The Web shell is built on the assistant-ui registry components and shadcn
-primitives. Every package below is a direct dependency of `apps/web` and is
-bundled into `client/assets`; no separate license file is shipped for these
-MIT/ISC/Apache-2.0 packages because their license text is embedded in the
-published package.
+primitives. The packages below are selected dependencies of `apps/web`, not a
+complete inventory of emitted code or its transitive dependency closure.
+
+Package metadata and acquired npm tarballs retain the upstream declarations.
+A minified Web build does not necessarily preserve complete license texts.
+Binary distributions must carry the accompanying supplemental third-party
+notices, including the available license texts and any explicitly recorded
+attribution limitations. Those notices belong beside the sealed bundle; this
+source overview alone is not the complete binary attribution record.
 
 ## @assistant-ui/react@0.15.18
 
