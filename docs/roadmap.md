@@ -1,6 +1,6 @@
 # Roadmap after research-only extraction
 
-## Release0.1.20
+## Release 0.1.20
 
 The standalone product is built and installed, retains the existing qualified
 worker/session state, and has passed live Web/Telegram research checks. Public
@@ -30,6 +30,9 @@ installed round. A model answer alone does not close this milestone.
   continuity before replacing the accepted gen9 slot.
 - Model roles: retain the configured primary model; any escalation is explicit
   policy. Two roles using the same model are not independent corroboration.
+- Telegram long-poll reliability: trace the observed45-second frame timeouts.
+  The current poller recovers automatically, but the timeout source and delay
+  require a dedicated diagnosis. Keep native session/worker ownership intact.
 - Product ergonomics: clearer bounded research results, transport rendering and
   useful failure recovery, with live acceptance for affected paths.
 - Public distribution: choose an owned-code license, resolve any upstream notice

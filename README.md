@@ -14,7 +14,7 @@ entry point unless you configure the optional private-access path.
 [`docs/runbooks/cortex-web-user-guide.md`](docs/runbooks/cortex-web-user-guide.md)
 walks through the surfaces once it is running.
 
-Product0.1.20 uses installation sequence20 and Control schema19. The qualified
+Product 0.1.20 uses installation sequence 20 and Control schema 19. The qualified
 Hermes gen9 runtime is supplied separately. See
 [`CHANGELOG.md`](CHANGELOG.md) for changes and
 [`docs/releases/0.1.20.md`](docs/releases/0.1.20.md) for validation boundaries.
@@ -52,7 +52,8 @@ Hermes gen9 runtime is supplied separately. See
   start by default and never publishes a launchd descriptor by itself.
 - **Official local distribution.** Build, verify, install, start/stop, doctor,
   upgrade, rollback and a data-preserving uninstall of a self-contained bundle
-  that vendors its own CPython, Node runtime and Web payload.
+  that includes its own CPython and Web payload, and stages an explicitly
+  supplied Node runtime during installation.
 
 ### Not included
 
