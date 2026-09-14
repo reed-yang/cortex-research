@@ -84,3 +84,13 @@ to remove repository tooling; no product release or database rollback is needed.
 
 Product 0.1.20, Control schema 19 and the qualified Hermes gen9 runtime do not
 change as a result of this repository-tooling integration.
+
+## Existing PR compatibility
+
+The first live PR retained its original base object after the default branch
+advanced. Both workflow jobs therefore checkout `github.sha`, the immutable
+trusted workflow revision, instead of the PR's older base object (which may
+predate the tool). Manual dispatch is restricted to the default branch;
+`pull_request_target` runs in default-branch context. Packet base/head identity
+and stale-result checks remain separate. See the official GitHub
+[trigger reference](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target).
