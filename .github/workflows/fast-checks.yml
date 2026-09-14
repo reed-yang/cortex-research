@@ -1,6 +1,6 @@
 # The browser-free tier only: `apps/web` unit, contract and typecheck work, and
 # the provider-free Control, artifact and ingestion contracts. It does not run the Web
-# build, the browser acceptances, macOS-only work, an installed bundle or
+# build, browser acceptances, host lifecycle/Keychain work, an installed bundle or
 # anything needing a provider credential. Those gates and the full chain are in
 # docs/runbooks/web-verification.md.
 name: Fast checks
@@ -47,8 +47,29 @@ jobs:
           assert Version(version("cortex")) == Version(release["product"]["version"])
           PYTHON
           git diff --exit-code -- uv.lock
-      - name: Run provider-free Control, artifact and ingestion contracts
-        run: .venv/bin/python -m pytest cortex_platform/tests/product/control cortex_platform/tests/product/artifacts cortex_platform/tests/product/engine profiles/research/tests -q
+      - name: Run provider-free Control and artifact contracts
+        run: .venv/bin/python -m pytest cortex_platform/tests/product/control cortex_platform/tests/product/artifacts -q
+
+  ingestion:
+    # The engine survivor scanner uses Darwin sysctl and must run on macOS.
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --python 3.12
+      - name: Verify ingestion imports belong to this checkout
+        run: |
+          .venv/bin/python - <<'PYTHON'
+          import pathlib, cortex_platform, cortex_research
+          root = pathlib.Path.cwd()
+          for module in (cortex_platform, cortex_research):
+              assert pathlib.Path(module.__file__).resolve().is_relative_to(root)
+          PYTHON
+      - name: Run offline engine and research contracts
+        run: .venv/bin/python -m pytest cortex_platform/tests/product/engine profiles/research/tests -q
 
   web:
     runs-on: ubuntu-latest

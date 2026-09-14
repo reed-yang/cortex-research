@@ -60,14 +60,16 @@ failing screenshot check pass: investigate the drift first.
 
 ## Hosted CI — `.github/workflows/fast-checks.yml`
 
-Two ubuntu jobs: the Control job runs `uv sync --frozen`, asserts the checkout
+The Ubuntu Control job runs `uv sync --frozen`, asserts the checkout
 owns the imported `cortex_platform` and that the installed version matches
 `distribution/release.toml`, checks `uv.lock` is unchanged, and runs the
-provider-free Control, artifact and ingestion contracts; the Web job runs `npm ci` and
-`npm run test:fast`.
+provider-free Control and artifact contracts. The Ubuntu Web job runs `npm ci`
+and `npm run test:fast`. A macOS ingestion job runs the offline engine/research
+suites, including the Darwin process scanner. The Ubuntu review-tools job tests
+repository review tooling without credentials.
 
-CI cannot run the browser acceptances, the build, macOS-only work, the
-installed bundle or anything needing a provider. Those are named gates below,
+These jobs do not run browser acceptances, the build, macOS launch jobs or
+Keychain integration, the installed bundle, or anything needing a provider. Those are named gates below,
 not silent gaps. Whether a workflow file exists says nothing about whether a
 run passed or whether any branch requires it; check the Actions run and the
 branch settings.
