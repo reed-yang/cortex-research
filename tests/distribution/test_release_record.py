@@ -96,16 +96,15 @@ def _record(**overrides: object) -> dict[str, object]:
 def test_the_checked_in_descriptor_parses_and_names_this_release() -> None:
     """The one handwritten input, read as shipped.
 
-    The LOCAL auto-research candidate (plan 10.7 #1). `0.1.20-a1` carries the
-    separator `_PRODUCT_VERSION` requires; the built metadata normalizes it to
-    `0.1.20a1`, which is why nothing compares the two as strings.
+    Product version, installation sequence, Control schema and worker release
+    remain independently selected by the release descriptor.
     """
 
     descriptor = load_descriptor(REPOSITORY / "distribution" / "release.toml")
 
-    assert descriptor.product_version == "0.1.20-a1"
-    assert descriptor.release_id == "cortex-auto-research-19-local"
-    assert descriptor.release_sequence == 19
+    assert descriptor.product_version == "0.1.20"
+    assert descriptor.release_id == "cortex-research-20"
+    assert descriptor.release_sequence == 20
     assert descriptor.target_schema == 19
     assert descriptor.upgrade_from_schemas == (16, 17, 18)
     assert descriptor.worker_release_id == "hermes-0.15.0-gen9"
