@@ -13,9 +13,9 @@
 format_version = 1
 
 [product]
-version = "0.1.20"
-release_id = "cortex-research-20"
-release_sequence = 20
+version = "0.1.21"
+release_id = "cortex-research-21"
+release_sequence = 21
 
 [control]
 target_schema = 19

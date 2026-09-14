@@ -1,5 +1,12 @@
 # Release notes
 
+## 0.1.21
+
+Recover transient arXiv metadata failures from validated abs-page metadata and
+use HTTPS directly. Report known metadata failures with both endpoint errors.
+Exclude preexisting unrelated processes from the effect child survivor scan.
+The product retains its strict HTML-only ingestion boundary and existing worker.
+
 ## 0.1.20
 
 Cortex Research is now a standalone single-operator research product. Existing
