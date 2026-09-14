@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -189,6 +190,23 @@ def test_a_live_detached_lock_is_a_survivor(
     assert not execution.ok
     assert execution.failure_category == "outcome_unknown"
     assert execution.survivors["supervisor"]["locks"]
+
+
+def test_a_preexisting_engine_process_does_not_invalidate_success(
+    supervisor: ResearchEffectSupervisor,
+) -> None:
+    """An unrelated older engine process belongs to neither survivor report."""
+    decoy = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", "-m cortex_research"]
+    )
+    try:
+        execution = supervisor.run("checkpoint")
+    finally:
+        decoy.terminate()
+        decoy.wait(timeout=10)
+    assert execution.ok, execution.failure_message
+    assert not execution.survivors["child"]["processes"]
+    assert not execution.survivors["supervisor"]["processes"]
 
 
 def test_a_dead_detached_lock_is_not_a_survivor(

@@ -237,6 +237,9 @@ _HANDLERS = {
 def run(request: EffectRequest) -> dict[str, Any]:
     audit = _WriteAudit()
     audit.install()
+    # Snapshot before the handler: older engine processes are not this effect's
+    # descendants and must not turn a successful result into an unknown outcome.
+    baseline = survivors.snapshot_processes()
     watch = {name: Path(root) for name, root in request.watch_roots.items()}
     before = digests.sample_trees(watch) if watch else None
 
@@ -276,6 +279,7 @@ def run(request: EffectRequest) -> dict[str, Any]:
         state_dir=Path(request.state_dir),
         marker=request.marker,
         needles=(request.marker, "-m cortex_research", request.state_dir),
+        baseline=baseline,
     )
     result["survivors"] = report.to_dict()
     if watch:
