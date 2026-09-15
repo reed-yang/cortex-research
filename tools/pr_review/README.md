@@ -160,3 +160,16 @@ gh workflow run review-diagnostics.yml --ref main \
 Use the original report's bundle identity, not a newly edited packet. If the
 one-day input artifact has expired, collect a fresh eligible review rather than
 weakening artifact identity checks or retrieving provider Secrets locally.
+
+
+## Runtime regression evidence
+
+Replaying PR #13's immutable 31-file packet reduced source collection from
+234 GitHub API reads to 13 while preserving exactly the same supplied files and
+related context. The local collection check took 5.77 seconds; that timing is not
+a hosted-runner benchmark or a model-latency guarantee.
+
+Native OAuth replay also recovered a literal three-line quote from one diff hunk
+that the former raw-diff string check rejected. Quote validation establishes source
+provenance only: the proposed bug still needs independent verification, and a
+rejected sibling keeps the review partial instead of advancing its baseline.
