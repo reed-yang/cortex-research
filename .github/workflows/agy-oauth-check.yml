@@ -23,7 +23,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Verify native renewal and a single review turn
-        uses: reed-yang/independent-pr-review@8dbc8c83f0b21307e6e4fcfd9737a74edad2f684
+        uses: reed-yang/independent-pr-review@3765272fad086142ef9aa2af77750998f37be564
         with:
           phase: auth-check
           output: ${{ runner.temp }}/review-auth-check

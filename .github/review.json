@@ -16,9 +16,9 @@
     "max_runs_per_pr": 8,
     "max_tokens_per_pr": 8000000,
     "max_inline_comments": 5,
-    "packet_chars": 4000000,
-    "context_chars": 2500000,
-    "max_context_files": 100,
+    "packet_chars": 800000,
+    "context_chars": 400000,
+    "max_context_files": 20,
     "max_api_reads": 300
   },
   "inline_comments": true,
