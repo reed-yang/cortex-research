@@ -29,7 +29,13 @@ jobs:
       (github.event_name != 'issue_comment' ||
        (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review') && github.event.comment.user.type != 'Bot'))
     # Reviewed standalone release; project policy and Secrets stay in Cortex.
-    uses: reed-yang/independent-pr-review/.github/workflows/review.yml@dc7cfb8e552bd26d89f03425e94798915285d8f1
+    uses: reed-yang/independent-pr-review/.github/workflows/review.yml@e1da61721a5593c022ee98615fd70e4ed3ea9ba7
     with:
       pr_number: ${{ inputs.pr_number && format('{0}', inputs.pr_number) || '' }}
       mode: ${{ inputs.mode || 'review' }}
+    # Explicit names enable protected Environment resolution in the called jobs.
+    secrets:
+      REVIEW_STATE_KEY: ${{ secrets.REVIEW_STATE_KEY }}
+      GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+      AGY_OAUTH_JSON: ${{ secrets.AGY_OAUTH_JSON }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
