@@ -22,7 +22,7 @@ production state, or a new background service on the mini.
 ## Deployed behavior
 
 The pipeline keeps Grok `grok-4.6` on the explicitly selected gateway and Gemini
-`gemini-3.1-pro-high` on official agy 1.2.2 with personal Google OAuth. It obtains
+`gemini-3.8-flash-medium` on official agy 1.2.2 with personal Google OAuth. It obtains
 independent opinions and performs an extra cross-family verification pass when
 candidates or unresolved issues need examination. It fetches bounded related source
 through GitHub; it never executes PR code or follows PR-supplied instructions.
@@ -37,6 +37,30 @@ successful model baselines and falls back to full review on changed base/config 
 non-ancestor history. `/review`, `/review full`, `/review pause`, `/review resume`
 and `/review verify <finding-id>` require current repository write access. Commands
 cannot bypass fork/draft/default-branch restrictions or configured budgets.
+
+## Effort and context
+
+| Reviewer | Explicit effort | Configured model window |
+| --- | --- | --- |
+| Grok 4.6 | xhigh | 500,000 tokens |
+| Gemini 3.8 Flash through agy | medium, its next-to-highest level | 1,048,576 tokens |
+
+The operator explicitly accepted Grok 4.6's 500k ceiling. Setting a client field
+to 1M cannot enlarge that provider limit. Variables `GROK_EFFORT`,
+`GROK_CONTEXT_WINDOW`, `GEMINI_EFFORT`, and `GEMINI_CONTEXT_WINDOW` control these
+settings; the selected native model slug must agree with its effort variant.
+
+The collector allows 4M serialized characters, 2.5M additional source characters,
+100 related files and 300 API reads. Each model receives its own projection, so
+Grok's smaller window does not restrict Gemini's input. Whole diffs and requested
+verification evidence are preserved; omissions are recorded. Token estimates use
+UTF-8 bytes/3 with a ten-percent window reserve, not an exact provider tokenizer.
+These settings are capacities and budgets, not a full-window accuracy benchmark.
+
+The per-PR token accounting ceiling is 8M to allow a large-context review and its
+verification. The hard run cap remains eight. Small PRs use only relevant context;
+the harness never pads input to fill a window. Model/effort/window changes invalidate
+cached baselines. Reports display actual model selection and requested settings.
 
 ## Credentials and activation
 
