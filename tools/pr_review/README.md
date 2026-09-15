@@ -145,7 +145,7 @@ adapter and current repository model variables. It cannot publish to the PR,
 change review baselines or run verification; it holds no state key or OAuth.
 Provider credentials enter only the inference step. Diagnostic calls are manual
 and separate from the per-PR automatic reservation ledger; each dispatch permits
-one call bounded to 1800 seconds, with a 32-minute job limit and no automatic retry.
+one call bounded to 3600 seconds, with a 62-minute job limit and no automatic retry.
 The one-day artifact contains normalized, redacted diagnostics, never raw network
 responses or credentials.
 
