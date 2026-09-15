@@ -167,6 +167,15 @@ class AgyRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(agy_runner.AgyError, "invalid_review_json"):
             agy_runner.result_payload(result, b"")
 
+    def test_non_string_cli_responses_are_redacted_failures(self):
+        for response in [None, [], {}, 7]:
+            result = self.result()
+            del result["structured_output"]
+            result["response"] = response
+            with self.subTest(response=response):
+                with self.assertRaisesRegex(agy_runner.AgyError, "invalid_review_json"):
+                    agy_runner.result_payload(result, b"")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,7 +56,8 @@ def refreshed_credentials(original, updated):
         valid = expiry > datetime.now(timezone.utc)
     except (KeyError, TypeError, ValueError):
         valid = False
-    if not valid or updated["token"].get("access_token") == "expired-for-native-refresh":
+    access = updated["token"].get("access_token")
+    if not valid or not isinstance(access, str) or not access or access == "expired-for-native-refresh":
         raise AgyError("agy_native_refresh_not_verified")
 
 
@@ -106,7 +107,7 @@ def result_payload(result, stderr):
             if response.startswith("```json\n") and response.endswith("```"):
                 response = response[8:-3].strip()
             payload = json.loads(response)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, AttributeError):
             raise AgyError("agy_invalid_review_json") from None
     if not isinstance(payload, dict):
         raise AgyError("agy_invalid_review_json")

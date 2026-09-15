@@ -21,7 +21,7 @@ product wheel, Hermes backend and installed runtime.
 
 Local qualification completed on September 14, 2026: native sign-in, fresh-process
 reuse, forced native renewal from a clean HOME, unchanged refresh token, and a
-single JSON response passed. Hosted qualification is the next deployment gate;
+single JSON response and an actual PR review passed. Hosted qualification is the next deployment gate;
 installation or mocked tests alone are not acceptance evidence.
 
 ## Public repository boundary
