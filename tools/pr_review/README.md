@@ -50,7 +50,7 @@ to 1M cannot enlarge that provider limit. Variables `GROK_EFFORT`,
 `GROK_CONTEXT_WINDOW`, `GEMINI_EFFORT`, and `GEMINI_CONTEXT_WINDOW` control these
 settings; the selected native model slug must agree with its effort variant.
 
-Ordinary collection allows 800k serialized characters, 400k source characters,
+Ordinary collection allows 160k serialized characters, 50k source characters,
 20 related files and 300 API reads. Current changed-file text precedes base
 versions, and missing head/base text is reported. These retrieval budgets were
 tuned after a large PR timed out with excessive context; they do not reduce the
@@ -59,6 +59,13 @@ Grok's smaller window does not restrict Gemini's input. Whole diffs and requeste
 verification evidence are preserved; omissions are recorded. Token estimates use
 UTF-8 bytes/3 with a ten-percent window reserve, not an exact provider tokenizer.
 These settings are capacities and budgets, not a full-window accuracy benchmark.
+
+PR #13 exposed an operational limit: a roughly 504k-character packet timed out
+at the Grok gateway, and native agy returned an opinion explicitly reporting
+truncated input. Consequently, the configured 1M Gemini model window is not a
+qualified end-to-end CLI input capacity. The smaller ordinary retrieval budget
+keeps complete diffs ahead of optional source text. Larger changes can still
+report omissions and must not be represented as complete reviews.
 
 The per-PR token accounting ceiling is 8M to allow a large-context review and its
 verification. The hard run cap remains eight. Small PRs use only relevant context;
