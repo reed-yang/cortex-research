@@ -155,8 +155,10 @@ Return only JSON with this exact shape:
 "title":"specific bug", "body":"trigger, consequence, evidence",
 "evidence":"an exact substring in that file's patch or supplied head_text"}]}
 Use P1 or P2 only, at most 5 findings; use an empty array when none qualify.
-Report in simplified Chinese. Lines refer to the new file; for deletions use
-line=null. Do not claim full repository coverage or that any tests were run.
+Write the summary, limitations, finding titles and explanations in English.
+Preserve quoted evidence and identifiers in their original language. Lines refer
+to the new file; for deletions use line=null. Do not claim full repository
+coverage or that any tests were run.
 Trusted review policy and the data packet follow as JSON:
 """ + json.dumps(packet, ensure_ascii=False)
 
@@ -352,28 +354,28 @@ def plain(value):
 
 
 def render(result):
-    lines = ["<!-- independent-pr-review:v1 -->", "## 自动代码审查", "",
-             f"状态：**{plain(result['status'])}** · 提交 `{result['head_sha']}`", "",
-             "范围：有界 PR diff 与选定的变更文件；没有执行测试，也未审查完整仓库。", ""]
+    lines = ["<!-- independent-pr-review:v1 -->", "## Independent code review", "",
+             f"Status: **{plain(result['status'])}** · Commit `{result['head_sha']}`", "",
+             "Scope: bounded PR diff and selected changed files. No tests were run; this is not a full repository review.", ""]
     for review in result["reviews"]:
         lines.extend([f"### {plain(review['slot'])} — {review['status']}", ""])
         if review["status"] != "completed":
-            message = "仅收集 PR 输入，未调用模型；配置存在不等于认证已通过。" if review["status"] == "not_run" else "该审查未完成，不代表没有问题。"
+            message = "PR input collected without calling models. Configuration presence does not establish successful authentication." if review["status"] == "not_run" else "This review did not complete; it does not establish that no issues exist."
             lines.extend([message, plain(review["attempts"]), ""])
             continue
-        lines.extend([f"后端：{plain(review['backend'])} · 模型：{plain(review['model'])} · 配置的认证方式：{plain(review['auth_mode'])}", "", plain(review["summary"]), ""])
+        lines.extend([f"Backend: {plain(review['backend'])} · Model: {plain(review['model'])} · Configured authentication: {plain(review['auth_mode'])}", "", plain(review["summary"]), ""])
         if not review["findings"]:
-            lines.extend(["本次没有返回符合阈值的发现；这不是正确性保证。", ""])
+            lines.extend(["No findings met the reporting threshold in this review. This is not a guarantee of correctness.", ""])
         for finding in review["findings"]:
             lines.extend([f"- **{finding['severity']} {plain(finding['title'])}** — {plain(finding['path'])}:{finding['line'] or '?'}",
-                          f"  {plain(finding['body'])}", f"  证据：{plain(finding['evidence'])}"])
-        lines.extend(["", "限制：" + plain("；".join(review["limitations"]) or "仍受输入范围限制"), ""])
+                          f"  {plain(finding['body'])}", f"  Evidence: {plain(finding['evidence'])}"])
+        lines.extend(["", "Limitations: " + plain("; ".join(review["limitations"]) or "Limited to the supplied input"), ""])
     # Preserve disagreements and unique findings; no majority-vote suppression.
-    lines.extend(["可用意见分别保留；未做语义裁决，未完成的栏位不算一份意见。", "",
-                  "未纳入内容：" + plain(result["omitted"]), ""])
+    lines.extend(["Available opinions are preserved independently without semantic adjudication. Incomplete reviews do not count as opinions.", "",
+                  "Omitted content: " + plain(result["omitted"]), ""])
     body = "\n".join(lines)
     if len(body) > 55_000:
-        body = body[:54_000] + "\n\n报告展示已截断，完整内容见该次运行的 result.json。"
+        body = body[:54_000] + "\n\nReport display truncated. See this run's result.json for the complete result."
     return body
 
 

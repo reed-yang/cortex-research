@@ -6,6 +6,9 @@ changed files, validates quoted evidence, and emits JSON and Markdown reports.
 It never checks out, imports or executes a PR head. This is outside the Cortex
 product wheel, Hermes backend and installed runtime.
 
+Review summaries, findings, limitations and report labels are written in English.
+Quoted source evidence and identifiers retain their original language.
+
 ## Execution and authentication
 
 - Grok uses the explicitly configured compatible HTTP gateway and review key.
