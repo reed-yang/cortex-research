@@ -148,3 +148,15 @@ and separate from the per-PR automatic reservation ledger; each dispatch permits
 one call bounded to 600 seconds, with a 12-minute job limit and no automatic retry.
 The one-day artifact contains normalized, redacted diagnostics, never raw network
 responses or credentials.
+
+Run a single diagnostic from an authenticated maintainer terminal:
+
+```bash
+gh workflow run review-diagnostics.yml --ref main \
+  -f run_id=REVIEW_RUN_ID -f run_attempt=1 \
+  -f bundle_id=BUNDLE_ID_FROM_RESULT_JSON
+```
+
+Use the original report's bundle identity, not a newly edited packet. If the
+one-day input artifact has expired, collect a fresh eligible review rather than
+weakening artifact identity checks or retrieving provider Secrets locally.
