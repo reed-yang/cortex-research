@@ -14,10 +14,10 @@ entry point unless you configure the optional private-access path.
 [`docs/runbooks/cortex-web-user-guide.md`](docs/runbooks/cortex-web-user-guide.md)
 walks through the surfaces once it is running.
 
-Product 0.1.20 uses installation sequence 20 and Control schema 19. The qualified
+Product 0.1.23 uses installation sequence 23 and Control schema 19. The qualified
 Hermes gen9 runtime is supplied separately. See
 [`CHANGELOG.md`](CHANGELOG.md) for changes and
-[`docs/releases/0.1.20.md`](docs/releases/0.1.20.md) for validation boundaries.
+[`docs/releases/0.1.23.md`](docs/releases/0.1.23.md) for validation boundaries.
 
 ## Supported operations
 

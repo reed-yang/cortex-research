@@ -12,7 +12,8 @@ instructions. The following files are intentionally tracked and public.
 | [Readings publication](runbooks/readings-publication.md) | Opt-in external publication, permissions, recovery and status |
 | [Web verification](runbooks/web-verification.md) | Test tiers and their limits |
 | [Hermes acceptance](runbooks/hermes-acceptance.md) | Worker qualification and continuity |
-| [0.1.22](releases/0.1.22.md) | Current direct-page default and installed acceptance |
+| [0.1.23](releases/0.1.23.md) | Readings publication release and validation boundaries |
+| [0.1.22](releases/0.1.22.md) | Previous direct-page default and installed acceptance |
 | [0.1.21](releases/0.1.21.md) | Previous ingestion repair and installed acceptance |
 | [0.1.20](releases/0.1.20.md) | Previous composition and acceptance record |
 | [PR review tooling](../tools/pr_review/README.md) | Standalone workflow consumer, English feedback, OAuth setup and review boundaries |
