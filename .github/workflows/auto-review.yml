@@ -37,6 +37,10 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     environment: pr-review
+    # Serialize native refreshes across different PRs and OAuth health checks.
+    concurrency:
+      group: agy-subscription-account
+      cancel-in-progress: false
     timeout-minutes: 12
     permissions:
       contents: read
@@ -79,27 +83,33 @@ jobs:
         env:
           GROK_BASE_URL: ${{ vars.GROK_BASE_URL }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}
-          GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_MODEL: ${{ vars.AGY_MODEL }}
         run: >-
           python3 tools/pr_review/review.py run --dry-run
           --packet "$RUNNER_TEMP/review-output/packet.json"
           --config tools/pr_review/backends.json
           --out "$RUNNER_TEMP/review-output/result.json"
+      - name: Install verified official agy
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'review'
+        run: python3 tools/pr_review/install_agy.py --out "$RUNNER_TEMP/agy-bin/agy"
       - name: Run independent reviewers
         if: github.event_name != 'workflow_dispatch' || inputs.mode == 'review'
         env:
           GROK_BASE_URL: ${{ vars.GROK_BASE_URL }}
           GROK_MODEL: ${{ vars.GROK_MODEL }}
           GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
-          GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.AGY_MODEL }}
+          AGY_BIN: ${{ runner.temp }}/agy-bin/agy
+          AGY_WORK_ROOT: ${{ runner.temp }}/agy-state
+          AGY_OAUTH_JSON: ${{ secrets.AGY_OAUTH_JSON }}
         run: >-
           python3 tools/pr_review/review.py run
           --packet "$RUNNER_TEMP/review-output/packet.json"
           --config tools/pr_review/backends.json
           --out "$RUNNER_TEMP/review-output/result.json"
+      - name: Remove private native state
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/agy-state"
       - name: Show actual review status
         if: always()
         run: |

@@ -102,15 +102,16 @@ class OutputTests(unittest.TestCase):
 
 
 class RoutingTests(unittest.TestCase):
-    def test_shipped_config_blocks_unqualified_subscription_before_invoking_harness(self):
+    def test_disabled_backend_blocks_invocation(self):
         config = review.load(Path(__file__).with_name("backends.json"))
+        config["backends"]["gemini-ai-pro"]["disabled_reason"] = "operator_disabled"
         slot = dict(config["slots"][1], backends=["gemini-ai-pro"])
         def unexpected(*args):
             self.fail("Unqualified subscription adapter must not run")
         result = review.run_slot(slot, config["backends"], packet(),
                                  {"antigravity_packet": unexpected})
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["attempts"][0]["error"], "antigravity_subscription_hosted_auth_unqualified")
+        self.assertEqual(result["attempts"][0]["error"], "operator_disabled")
 
     def test_transport_failure_uses_configured_alternative(self):
         config = configuration()
@@ -153,14 +154,14 @@ class AuthenticationTests(unittest.TestCase):
             result = review.configuration_status(review.load(Path(__file__).with_name("backends.json")))
         self.assertEqual(result[0]["status"], "configured")
         self.assertEqual(result[1]["status"], "unconfigured")
-        self.assertEqual(result[1]["missing"], ["GEMINI_API_KEY", "GEMINI_BASE_URL", "GEMINI_MODEL"])
+        self.assertEqual(result[1]["missing"], ["AGY_BIN", "AGY_WORK_ROOT", "AGY_OAUTH_JSON", "GEMINI_MODEL"])
         self.assertNotIn("secret-value", json.dumps(result))
 
     def test_missing_review_configuration_is_explicit(self):
         with patch.dict(os.environ, {}, clear=True):
             result = review.configuration_status(configuration())
         self.assertEqual(result[0]["missing"], ["GROK_API_KEY", "GROK_BASE_URL", "GROK_MODEL"])
-        self.assertEqual(result[1]["reason"], "harness_not_implemented")
+        self.assertEqual(result[1]["missing"], ["AGY_BIN", "AGY_WORK_ROOT", "AGY_OAUTH_JSON", "GEMINI_MODEL"])
 
     def test_provider_truncation_is_not_clean_review(self):
         backend = configuration()["backends"]["grok-gateway"]
@@ -225,7 +226,8 @@ class GatewayTests(unittest.TestCase):
                 review.run_gemini(self.backend, "test")
             request.assert_not_called()
 
-    def test_live_config_uses_independent_keys_and_protocols(self):
+    def test_optional_gateway_config_uses_independent_keys_and_protocols(self):
+        self.config["slots"][1]["backends"] = ["gemini-gateway"]
         def reply(url, key, data, **kwargs):
             if "/chat/completions" in url:
                 self.assertEqual(key, "grok-secret")

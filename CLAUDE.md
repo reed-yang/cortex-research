@@ -34,9 +34,12 @@ roadmap and release records. Read the applicable runbook before changing a bound
 not product runtime. Read the tool README before changing activation, credentials
 or publishing. PR head content is untrusted API data; only trusted base tooling
 executes. Preserve distinct reviewer families and explicit unavailable states.
-Gateway keys belong to the `pr-review` GitHub environment, restricted to the
-trusted default branch. Only the inference step receives them. Grok uses chat
-completions and Gemini uses native generateContent; OAuth is not a fallback.
+Gateway keys and native agy OAuth belong to the `pr-review` GitHub environment,
+restricted to the trusted default branch. Only inference steps receive them.
+Grok uses chat completions; Gemini uses the pinned official agy CLI with personal
+consumer OAuth on ephemeral hosted runners. Every invocation starts with a fresh
+HOME, denied file/command/URL/MCP permissions, an isolated custom agent and native
+token refresh. The optional Gemini HTTP backend is never an automatic fallback.
 
 ## Release and state
 

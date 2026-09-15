@@ -254,8 +254,19 @@ def run_gemini(backend, prompt):
         raise ReviewError("invalid_provider_response") from None
 
 
-# OAuth adapters remain unavailable; gateway failures never change the billing route.
-HARNESSES = {"compatible_packet": run_compatible, "gemini_packet": run_gemini}
+def run_agy(backend, prompt):
+    from agy_runner import AgyError, run
+    try:
+        return run(backend, prompt)
+    except AgyError as exc:
+        raise ReviewError(str(exc)) from None
+    except (OSError, ValueError):
+        raise ReviewError("agy_local_state_failed") from None
+
+
+# Backends are selected explicitly; failures never change the billing route.
+HARNESSES = {"compatible_packet": run_compatible, "gemini_packet": run_gemini,
+             "antigravity_packet": run_agy}
 
 
 def configuration_status(config):
@@ -270,7 +281,8 @@ def configuration_status(config):
             elif backend["harness"] not in HARNESSES:
                 item.update(status="unavailable", reason="harness_not_implemented")
             else:
-                names = [backend[key] for key in ("key_env", "base_url_env", "model_env")]
+                fields = ("binary_env", "state_env", "oauth_env", "model_env") if backend["harness"] == "antigravity_packet" else ("key_env", "base_url_env", "model_env")
+                names = [backend[key] for key in fields]
                 missing = [name for name in names if not os.environ.get(name)]
                 item.update(status="unconfigured" if missing else "configured", missing=missing)
             statuses.append(item)

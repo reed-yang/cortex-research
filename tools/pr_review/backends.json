@@ -11,7 +11,7 @@
       "id": "Gemini",
       "opinion_family": "gemini",
       "backends": [
-        "gemini-gateway"
+        "gemini-ai-pro"
       ]
     }
   ],
@@ -43,10 +43,12 @@
       "fallback_on": []
     },
     "gemini-ai-pro": {
-      "disabled_reason": "antigravity_subscription_hosted_auth_unqualified",
       "harness": "antigravity_packet",
       "opinion_family": "gemini",
       "auth_mode": "google_ai_pro_subscription",
+      "binary_env": "AGY_BIN",
+      "state_env": "AGY_WORK_ROOT",
+      "oauth_env": "AGY_OAUTH_JSON",
       "model_env": "GEMINI_MODEL",
       "timeout_seconds": 300,
       "fallback_on": []
