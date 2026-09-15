@@ -1,9 +1,14 @@
 # PR review quality and delivery
 
-Status: researched design, September 14, 2026. English model output and report
-labels are deployed. The publication and harness improvements below are proposed;
-automatic PR comments remain disabled. The current operational contract is in
-[the tool README](../../tools/pr_review/README.md).
+Status: the portable implementation is deployed through
+[independent-pr-review](https://github.com/reed-yang/independent-pr-review) and
+[Cortex PR #6](https://github.com/reed-yang/cortex-research/pull/6). English summary
+publication, contextual collection, candidate verification, signed budgets,
+per-lane incremental state, owned inline lifecycle and maintainer commands are
+implemented. The research below remains the design evidence and broader roadmap;
+it is not a claim to reproduce the private SaaS harnesses. Current limits and
+operational behavior are in [the consumer README](../../tools/pr_review/README.md)
+and the standalone engine documentation.
 
 ## Recommendation
 
@@ -266,3 +271,39 @@ This work should evolve the existing collector, adapters, validator and publishe
 Keep reusable policies in trusted repository files and operational evidence in
 ignored logs. Evaluate each phase on real PRs before enabling the next. The
 commercial apps' private orchestration does not need to be recreated wholesale.
+
+## Portable harness acceptance
+
+The standalone workflow is pinned to
+`f18e2a9517e0049cd807a806f010b911818c6162`, with engine
+`6431291de77f76e6c978552f73b2ec1d55a62080`. Generic implementation and tests live
+outside Cortex; project rules and encrypted credentials remain in this consumer.
+
+- The engine has 66 provider-free tests covering native OAuth isolation, provider
+  failure handling, signed reservations, stable anchors, cross-family verification,
+  incremental state, commands, 64-bit comment IDs and owned thread resolution.
+- [Hosted run 34920770954](https://github.com/reed-yang/cortex-research/actions/runs/34920770954)
+  completed Grok 4.6 and native agy Gemini 3.1 Pro High, then published the
+  [persistent English summary](https://github.com/reed-yang/cortex-research/pull/7#issuecomment-5673682267).
+- [Run 34920933671](https://github.com/reed-yang/cortex-research/actions/runs/34920933671)
+  reused the same snapshot without model calls or a new reservation.
+  [Run 34921754912](https://github.com/reed-yang/cortex-research/actions/runs/34921754912)
+  restored Completed after pause/resume while retaining the existing 2/8 budget.
+- [Run 34921755572](https://github.com/reed-yang/cortex-research/actions/runs/34921755572)
+  completed incremental review of a subsequent PR head in both lanes and updated
+  its existing summary. Both lanes selected the three changed workflow paths.
+- The code-only handoff and normalized artifacts were inspected for credential
+  patterns; native HOME, OAuth files and raw CLI output were not artifacts.
+
+These small documentation/workflow runs produced no qualifying bug findings, so
+live positive inline publication and automatic resolution are not claimed here.
+Those paths have API contract tests using GitHub's observed 64-bit IDs and typed
+Bot identities. This is not an accuracy benchmark or full-repository audit.
+
+Current practical limits are documented in the standalone operations guide:
+bounded deterministic context, per-PR run caps, soft token accounting, account
+concurrency scoped to each repository, and interactive reprovisioning if Google
+revokes or rotates the refresh token. Cross-repository Environment Secrets require
+explicit caller/callee name mappings; Environment binding alone was insufficient
+in hosted acceptance. No blanket inheritance or repository-level credential copies
+were introduced.

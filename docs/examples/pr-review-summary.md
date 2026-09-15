@@ -1,9 +1,12 @@
-# Proposed English PR summary
+# English PR summary design example
 
-Presentation preview only; this comment has not been posted. It uses the completed
+Historical presentation preview; this exact example was not posted. It uses the completed
 PR #3 report from [run 34913343300](https://github.com/reed-yang/cortex-research/actions/runs/34913343300).
-Prose is translated and condensed to illustrate the proposed layout, not another
-model run. The current renderer still uses the longer per-reviewer report format.
+Prose is translated and condensed to illustrate the selected layout, not another
+model run. The deployed standalone renderer now maintains a concise English summary
+with signed state and optional verified inline findings. Full normalized opinions
+remain in short-lived Actions artifacts. See the [consumer README](../../tools/pr_review/README.md)
+for the current workflow and controls.
 
 ---
 
@@ -38,8 +41,8 @@ No actionable defects were identified in the supplied documentation changes.
 
 ---
 
-For a partial run, the first line should say **Review incomplete**, the failed
+For a partial run, the status must say **Partial** or **Failed**, the failed
 reviewer should say **Unavailable**, and available findings should remain visible.
-A future inline comment should give one specific trigger, consequence and smallest
+An inline comment should give one specific trigger, consequence and smallest
 relevant changed range. Only verified findings get an inline thread; missing
 anchors remain in this summary. Do not add an all-clear comment after every push.
