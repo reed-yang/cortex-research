@@ -25,8 +25,11 @@ PR review passed. Two independent GitHub-hosted Ubuntu VMs then restored the
 same original encrypted credential and each completed native renewal and Gemini
 inference in [OAuth check 34912971769](https://github.com/reed-yang/cortex-research/actions/runs/34912971769).
 The implementation was deployed through PR #2; no persistent reviewer host is
-required. Automatic PR inference and publication remain off during final
-end-to-end report acceptance.
+required. [Hosted review 34913128892](https://github.com/reed-yang/cortex-research/actions/runs/34913128892)
+completed both Grok 4.6 and agy Gemini 3.1 Pro High on PR #3, with immutable
+base/head identity and JSON/Markdown artifacts. Automatic review is enabled for
+eligible PR events; comment publication remains disabled. Reports are available
+in the Actions run summary and artifacts.
 
 ## Public repository boundary
 
