@@ -173,3 +173,21 @@ Native OAuth replay also recovered a literal three-line quote from one diff hunk
 that the former raw-diff string check rejected. Quote validation establishes source
 provenance only: the proposed bug still needs independent verification, and a
 rejected sibling keeps the review partial instead of advancing its baseline.
+
+
+## Long reasoning and evidence failures
+
+Grok 4.6/xhigh can spend many minutes reasoning before final review text. The
+unchanged original PR #13 packet completed through the configured gateway in
+1,414 seconds, with 81,669 reasoning tokens; native OAuth completed in 1,774 seconds.
+The earlier 600-second budget expired before valid reasoning finished. Each Grok
+phase now has a 3,600-second ceiling, with no automatic retry. Small reviews return
+as soon as they finish. The hosted diagnostic spent about five seconds preparing
+before inference; changing login methods did not eliminate the model latency.
+
+A verification quote must preserve source whitespace and line breaks. Joining a
+wrapped sentence caused a real agy verification failure. Invalid decisions now
+remain uncertain while valid siblings are retained; the overall result remains
+partial and cannot advance a successful baseline. Reports and PR summaries are in
+English. Model confirmation still requires maintainer judgment about reachability
+and intended behavior; a matching quote alone does not prove a defect.
