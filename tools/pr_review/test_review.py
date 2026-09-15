@@ -91,7 +91,7 @@ class OutputTests(unittest.TestCase):
             "antigravity_packet": fail,
         })
         self.assertEqual(result["status"], "partial")
-        self.assertIn("该审查未完成", review.render(result))
+        self.assertIn("This review did not complete", review.render(result))
 
     def test_mentions_and_model_links_are_not_rendered_as_active_markup(self):
         escaped = review.plain("@reed [click](https://example.com) <img> `code`\nnext")
