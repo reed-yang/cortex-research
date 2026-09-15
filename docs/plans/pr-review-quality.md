@@ -272,9 +272,9 @@ Keep reusable policies in trusted repository files and operational evidence in
 ignored logs. Evaluate each phase on real PRs before enabling the next. The
 commercial apps' private orchestration does not need to be recreated wholesale.
 
-## Portable harness acceptance
+## Historical v0.1 portable harness acceptance
 
-The standalone workflow is pinned to
+The v0.1 acceptance used standalone workflow
 `f18e2a9517e0049cd807a806f010b911818c6162`, with engine
 `6431291de77f76e6c978552f73b2ec1d55a62080`. Generic implementation and tests live
 outside Cortex; project rules and encrypted credentials remain in this consumer.
@@ -307,3 +307,13 @@ revokes or rotates the refresh token. Cross-repository Environment Secrets requi
 explicit caller/callee name mappings; Environment binding alone was insufficient
 in hosted acceptance. No blanket inheritance or repository-level credential copies
 were introduced.
+
+
+## Current v0.2 model and context configuration
+
+The operator selected Gemini 3.8 Flash Medium with a 1,048,576-token window and
+Grok 4.6 xhigh with its supported 500,000-token limit. Model effort is passed
+explicitly, and each lane budgets its own input. Collector character limits and
+per-PR token accounting were expanded to support large inputs without pretending
+that characters are tokens. The current operating contract is in the consumer
+README; v0.1 results above remain historical evidence, not the active model choice.

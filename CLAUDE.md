@@ -46,6 +46,8 @@ Provider credentials and a per-repository `REVIEW_STATE_KEY` belong to the
 `pr-review` GitHub Environment restricted to the default branch. Only inference
 steps receive provider credentials; they receive neither a GitHub write token nor
 the state signing key. Native agy OAuth refreshes in disposable hosted HOME state.
+The current lanes are Grok 4.6 xhigh/500k and Gemini 3.8 Flash Medium/1M. Context
+projection is per lane; token estimates and provider capacities are distinct.
 Consumer CI validates project configuration; engine tests run in its own repository.
 
 ## Release and state
