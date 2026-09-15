@@ -1,9 +1,14 @@
 # PR review quality and delivery
 
-Status: researched design, September 14, 2026. English model output and report
-labels are deployed. The publication and harness improvements below are proposed;
-automatic PR comments remain disabled. The current operational contract is in
-[the tool README](../../tools/pr_review/README.md).
+Status: the portable implementation is deployed through
+[independent-pr-review](https://github.com/reed-yang/independent-pr-review) and
+[Cortex PR #6](https://github.com/reed-yang/cortex-research/pull/6). English summary
+publication, contextual collection, candidate verification, signed budgets,
+per-lane incremental state, owned inline lifecycle and maintainer commands are
+implemented. The research below remains the design evidence and broader roadmap;
+it is not a claim to reproduce the private SaaS harnesses. Current limits and
+operational behavior are in [the consumer README](../../tools/pr_review/README.md)
+and the standalone engine documentation.
 
 ## Recommendation
 
