@@ -19,10 +19,17 @@ product wheel, Hermes backend and installed runtime.
 - One completed opinion and one failure is **partial**, exits nonzero, and saves
   the available report. Findings remain independent; they are not majority-voted.
 
-Local qualification completed on September 14, 2026: native sign-in, fresh-process
-reuse, forced native renewal from a clean HOME, unchanged refresh token, and a
-single JSON response and an actual PR review passed. Hosted qualification is the next deployment gate;
-installation or mocked tests alone are not acceptance evidence.
+Qualification completed on September 14, 2026: native sign-in, fresh-process
+reuse, forced renewal from a clean HOME, unchanged refresh token, and an actual
+PR review passed. Two independent GitHub-hosted Ubuntu VMs then restored the
+same original encrypted credential and each completed native renewal and Gemini
+inference in [OAuth check 34912971769](https://github.com/reed-yang/cortex-research/actions/runs/34912971769).
+The implementation was deployed through PR #2; no persistent reviewer host is
+required. [Hosted review 34913128892](https://github.com/reed-yang/cortex-research/actions/runs/34913128892)
+completed both Grok 4.6 and agy Gemini 3.1 Pro High on PR #3, with immutable
+base/head identity and JSON/Markdown artifacts. Automatic review is enabled for
+eligible PR events; comment publication remains disabled. Reports are available
+in the Actions run summary and artifacts.
 
 ## Public repository boundary
 

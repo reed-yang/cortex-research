@@ -149,15 +149,18 @@ and stale-result checks remain separate. See the official GitHub
 Implementation update: the selected deployment now uses GitHub-hosted Ubuntu
 with restored native consumer OAuth, rather than a persistent worker. Local
 agy 1.2.2 qualification proved fresh-HOME renewal with an unchanged refresh
-token and validated JSON output; two independent hosted jobs remain the next
-gate. The operational contract is in [the tool README](../../tools/pr_review/README.md).
+token and validated JSON output. Both fresh Ubuntu jobs in
+[hosted check 34912971769](https://github.com/reed-yang/cortex-research/actions/runs/34912971769)
+then passed native renewal and inference from the same encrypted source. The
+operational contract is in [the tool README](../../tools/pr_review/README.md).
 The research below records the options considered before this live evidence.
 
-Researched September 14, 2026. This is a proposed deployment design, not an
-installed or accepted OAuth workflow. The requirement is to retain the official
-agy executable and the operator's personal Google subscription login while
-automating PR reviews through GitHub Actions. Existing gateway credentials and
-PR #2 remain available; no route is silently substituted.
+Historical study, researched September 14, 2026 before installation. Its worker
+recommendation and pending qualification gates are superseded by the deployment
+update above and the operational README. The requirement was to retain the
+official agy executable and personal Google subscription login while automating
+PR reviews. The evaluated alternatives below explain the tradeoffs; they are
+not instructions for the currently deployed hosted workflow.
 
 ### Recommendation
 
