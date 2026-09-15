@@ -1,5 +1,19 @@
 # Release notes
 
+## 0.1.23
+
+Optionally publish captured papers into an existing readings library. Preserve
+notes and manual edits, track publication independently of Capture, and reconcile
+interrupted writes through a durable journal and retained recovery copies. The
+Web Library and authenticated API expose publication status. The macOS publisher
+child denies deletion and uses bounded, descriptor-relative filesystem access.
+
+Publication requires an explicitly configured destination and does not export
+previously adopted papers unless scheduled. Control schema 19 and the qualified
+Hermes generation 9 are unchanged. See the
+[publication runbook](docs/runbooks/readings-publication.md) for enablement,
+filesystem requirements and recovery limits.
+
 ## 0.1.22
 
 Read arXiv metadata directly from the abs page by default and retain direct HTML

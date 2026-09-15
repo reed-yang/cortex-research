@@ -100,6 +100,7 @@ class ControlAPI:
         transport_windows: object | None = None,
         turn_bridge: object | None = None,
         research_catalog: object | None = None,
+        readings_service: object | None = None,
     ) -> None:
         if len(access_token) < 32:
             raise ValueError("API access token must contain at least 32 characters")
@@ -123,6 +124,7 @@ class ControlAPI:
         self._transport_windows = transport_windows
         self._turn_bridge = turn_bridge
         self._research_catalog = research_catalog
+        self._readings_service = readings_service
 
     def handle(
         self,
@@ -252,6 +254,10 @@ class ControlAPI:
                     },
                 )
             self._authenticate(headers, client_host=client_host)
+            if method == "GET" and path == "/api/v1/readings":
+                if split.query:
+                    raise ValueError("readings query parameters are not supported")
+                return APIResponse(200, self._readings_service.status() if self._readings_service else {"enabled": False, "items": []})
             if method == "GET":
                 return self._get(path, parse_qs(split.query, keep_blank_values=True))
             if method == "POST":

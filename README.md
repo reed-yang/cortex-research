@@ -14,10 +14,10 @@ entry point unless you configure the optional private-access path.
 [`docs/runbooks/cortex-web-user-guide.md`](docs/runbooks/cortex-web-user-guide.md)
 walks through the surfaces once it is running.
 
-Product 0.1.20 uses installation sequence 20 and Control schema 19. The qualified
+Product 0.1.23 uses installation sequence 23 and Control schema 19. The qualified
 Hermes gen9 runtime is supplied separately. See
 [`CHANGELOG.md`](CHANGELOG.md) for changes and
-[`docs/releases/0.1.20.md`](docs/releases/0.1.20.md) for validation boundaries.
+[`docs/releases/0.1.23.md`](docs/releases/0.1.23.md) for validation boundaries.
 
 ## Supported operations
 
@@ -46,6 +46,11 @@ Hermes gen9 runtime is supplied separately. See
   page avoids the export API entirely. The API is used only if the page request
   or metadata validation fails. Full text is read directly from the HTML URL.
   Exhausting metadata paths reports a known failure before corpus writes.
+- **External readings publication.** Opt-in macOS publication to an existing
+  readings directory, with automatic additions, generated-file updates and
+  protected notes. Publication runs in a no-delete sandbox and has separate
+  status/recovery. See the [runbook](docs/runbooks/readings-publication.md) for
+  the exact enforcement boundary and external index/backup requirements.
 - **Managed runtime lifecycle.** One attested worker generation, with protocol
   handshake, a restart-durable operation ledger, cancellation, session
   continuity and rollback. Health reports `unbound` and refuses dispatch when no

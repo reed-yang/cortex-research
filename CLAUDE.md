@@ -15,6 +15,10 @@ roadmap and release records. Read the applicable runbook before changing a bound
   Metadata uses the product-bound abs page directly; the export API is a
   fallback when that page cannot provide valid metadata. Both paths must
   identify the requested paper. Full text uses the direct HTML endpoint.
+- `product/readings/` owns opt-in external publication and its separate journal.
+  Keep Capture outcomes independent, preserve existing notes and require
+  provenance/hash matches for generated-file updates. External writes belong
+  only in the sandboxed publisher; never add deletion or mirror semantics.
 - Research catalog items and adopted dossiers are durable evidence. Opening an
   item or sending `/research` does not run autonomous idea/exploration rounds.
 - `cortex_platform/runtime/` implements RuntimePort through managed Hermes.

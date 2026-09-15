@@ -51,6 +51,24 @@ The product continues to refuse papers without usable HTML. Direct PDF download
 alone does not provide structured text, formulas, figures or an indexed source;
 PDF parsing/OCR remains a separate capability.
 
+## External readings publication
+
+`product/readings/` reconciles newly adopted sources into an explicitly configured
+external library. The internal corpus remains the evidence root. A private
+SQLite publication journal owns baseline/identity, staged manifests, file
+ownership, retries and recovery; it does not change Control schema or Capture
+success. Existing notes and manually modified files are preserved. Generated
+files can update only against their last recorded hash, with both versions
+retained before in-place writing.
+
+A dedicated publisher child performs all external writes under a macOS
+no-delete sandbox. Capture children get read-only access to the target and
+publication state; Hermes keeps its separate existing sandbox. The trusted
+controller/launchers are outside this new OS boundary. Library and the operator
+CLI expose publication status independently of internal import. See the
+[publication runbook](runbooks/readings-publication.md) for enablement, exact
+process guarantees, interruption recovery and external indexing/backup limits.
+
 ## Composition and upgrade
 
 The product, Control schema, installation sequence and Hermes worker generation

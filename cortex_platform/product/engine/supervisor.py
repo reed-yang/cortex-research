@@ -106,6 +106,7 @@ class ResearchEffectSupervisor:
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         watch_roots: Mapping[str, Path] | None = None,
         literal_overrides: Mapping[str, str] | None = None,
+        read_only_roots: tuple[Path, ...] = (),
     ) -> None:
         self._store = store
         self._roots = roots
@@ -119,6 +120,7 @@ class ResearchEffectSupervisor:
         # Only slots the table already declares can move (`bindings.py` refuses
         # anything else), so the child environment stays describable by it.
         self._literal_overrides = dict(literal_overrides or {})
+        self._read_only_roots = read_only_roots
         # The child of the effect currently running, so a daemon shutdown can
         # end it rather than orphan it.
         self._in_flight: subprocess.Popen[str] | None = None
@@ -217,9 +219,14 @@ class ResearchEffectSupervisor:
             },
         )
         baseline = survivors.snapshot_processes()
+        prefix: list[str] = []
+        if self._read_only_roots:
+            from ..readings.sandbox import read_only_profile
+
+            prefix = ["/usr/bin/sandbox-exec", "-p", read_only_profile(self._read_only_roots)]
         try:
             process = subprocess.Popen(
-                [
+                prefix + [
                     str(self._python),
                     "-I",
                     "-B",

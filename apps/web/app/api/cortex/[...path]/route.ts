@@ -7,6 +7,7 @@ const GET_ROUTES = [
   // health payload; a route the proxy does not forward is a 404 the client
   // reads as "unknown", and the copy the gate decides never appears.
   /^health$/,
+  /^readings$/,
   /^workspaces$/,
   new RegExp(`^workspaces\\/${ID}$`),
   /^threads$/,
