@@ -1,0 +1,84 @@
+name: Review provider diagnostics
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Review run containing the code-only input artifact
+        type: string
+        required: true
+      run_attempt:
+        description: Original run attempt
+        type: string
+        default: '1'
+      bundle_id:
+        description: Expected bundle_id from the original normalized result
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: review-provider-diagnostics
+  cancel-in-progress: false
+jobs:
+  grok:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    environment: pr-review
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: reed-yang/independent-pr-review
+          ref: 1ee51f0288e562fa5cfdbdc70aa0a3c98345c6c3
+          persist-credentials: false
+          path: engine
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: review-input-${{ inputs.run_id }}-${{ inputs.run_attempt }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/review-diagnostics
+      - name: Replay one Grok call with the pinned adapter
+        shell: bash
+        env:
+          EXPECTED_BUNDLE_ID: ${{ inputs.bundle_id }}
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          GROK_BASE_URL: ${{ vars.GROK_BASE_URL }}
+          GROK_MODEL: ${{ vars.GROK_MODEL }}
+          GROK_EFFORT: ${{ vars.GROK_EFFORT }}
+          GROK_CONTEXT_WINDOW: ${{ vars.GROK_CONTEXT_WINDOW }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path(os.environ['GITHUB_WORKSPACE']) / 'engine'))
+          from independent_review import core
+          from independent_review.cli import assert_no_credentials
+          root = Path(os.environ['RUNNER_TEMP']) / 'review-diagnostics'
+          bundle = core.load(root / 'bundle.json')
+          expected = os.environ['EXPECTED_BUNDLE_ID']
+          if not re.fullmatch(r'[0-9a-f]{64}', expected) or core.digest(bundle) != expected:
+              raise SystemExit('Diagnostic bundle identity mismatch')
+          packet = bundle['packet']
+          if packet['repository'] != os.environ['GITHUB_REPOSITORY']:
+              raise SystemExit('Diagnostic repository mismatch')
+          config = core.load(Path(core.__file__).with_name('backends.json'))
+          lane = core.run_slot(config['slots'][0], config['backends'], packet)
+          result = {'diagnostic_only': True, 'bundle_id': expected,
+                    'head_sha': packet['head_sha'], 'review': lane}
+          assert_no_credentials(result)
+          core.save(root / 'diagnostic.json', result)
+          text = json.dumps({key: lane.get(key) for key in ('status', 'elapsed_seconds', 'attempts', 'usage')}, indent=2)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('One diagnostic call; no PR publication, verification or baseline update.\n\n```json\n' + text + '\n```\n')
+          if lane['status'] != 'completed':
+              raise SystemExit('Provider diagnostic incomplete; inspect the redacted artifact')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: review-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}/review-diagnostics/diagnostic.json
+          if-no-files-found: warn
+          retention-days: 1

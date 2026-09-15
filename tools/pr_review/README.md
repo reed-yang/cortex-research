@@ -122,3 +122,29 @@ The v0.2 engine has 71 provider-free tests covering explicit effort requests,
 independent context projection and budget reservations. Its larger windows are
 configured capacities; this qualification does not claim that a full-window
 accuracy benchmark was run. Current immutable pins are in the workflow files.
+
+
+## Runtime and provider diagnostics
+
+The engine streams Grok with bounded connect/idle/total deadlines, reconstructs
+literal source quotes from diff hunks, and keeps valid candidates when a sibling
+is rejected. Rejected output stays partial. Context collection skips downloads
+that cannot fit, and native installation overlaps Grok on the same runner.
+Models, effort and context capacities remain unchanged.
+
+Standard hosted runner compute is free for this public repository; private
+consumers use their included allowance. See [GitHub billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+Artifact storage is separate. Normal review retains separate preparation,
+inference and publication jobs and never installs the product environment.
+
+Maintainers can manually dispatch `review-diagnostics.yml` on the default branch
+with a previous review run ID, run attempt and the exact `bundle_id` from its
+normalized result. While that code-only input artifact is retained, the workflow
+checks the bundle digest/repository and replays one Grok call using the pinned
+adapter and current repository model variables. It cannot publish to the PR,
+change review baselines or run verification; it holds no state key or OAuth.
+Provider credentials enter only the inference step. Diagnostic calls are manual
+and separate from the per-PR automatic reservation ledger; each dispatch permits
+one call bounded to 600 seconds, with a 12-minute job limit and no automatic retry.
+The one-day artifact contains normalized, redacted diagnostics, never raw network
+responses or credentials.
