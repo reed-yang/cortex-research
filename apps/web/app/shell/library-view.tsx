@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { SourceContentReader, SourceKnowledgeSearch } from "../control/source-knowledge";
 import { copy } from "./copy";
+import { ReadingsPublication } from "./readings-publication";
 import { SourceRecord } from "./source-record";
 import type { ViewProps } from "./types";
 
@@ -21,6 +22,7 @@ export function LibraryView({ state, actions, client }: ViewProps) {
     <section aria-label={copy.library.title} className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto bg-background p-6 text-foreground lg:grid-cols-[minmax(280px,1fr)_2fr] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden">
       <div className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto">
         <h2 className="text-lg font-semibold">{copy.library.title}</h2>
+        <ReadingsPublication client={client} sourceId={selectedSourceId} />
         <SourceKnowledgeSearch client={client} onSelect={actions.selectSource} />
         {sourcesLoading ? (
           <div className="flex flex-col gap-2">

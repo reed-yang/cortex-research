@@ -385,3 +385,29 @@ def test_doctor_names_the_unusable_aliases_and_still_exits_healthy(
         encoding="utf-8",
     )
     assert "secret_refs" not in doctor(registry, environ={}).render()
+
+
+def test_capture_publishes_to_readings_after_internal_success(
+    store, service, roots, paths, arxiv, tmp_path,
+) -> None:
+    from cortex_platform.product.readings.service import build_readings_service
+
+    target = tmp_path.resolve() / "original-readings" / "papers"
+    target.mkdir(parents=True)
+    config = {"readings": {"papers_root": str(target)}}
+    publication = build_readings_service(config=config, paths=paths, store=store)
+    engine = build_engine_service(
+        store=store, paths=paths, config=config,
+        literal_overrides=arxiv.literal_overrides(),
+    )
+    engine.supervisor._skip_embed = True
+    capture_id = _approve(store, HTML_PAPER, "readings")
+    outcome = engine.consumer.run_once()
+    assert outcome is not None and outcome.state == "consumed"
+    publication.tick()
+    item = publication.status()["items"][0]
+    assert item["state"] == "published", item
+    assert (target / item["paper_dir"] / "full_text.md").is_file()
+    assert (roots.corpus_root / item["paper_dir"] / "full_text.md").is_file()
+    assert store.get_capture(capture_id)["state"] == "consumed"
+    assert engine.supervisor._read_only_roots[0] == target

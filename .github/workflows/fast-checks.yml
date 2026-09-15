@@ -70,7 +70,7 @@ jobs:
               assert pathlib.Path(module.__file__).resolve().is_relative_to(root)
           PYTHON
       - name: Run offline engine and research contracts
-        run: .venv/bin/python -m pytest cortex_platform/tests/product/engine profiles/research/tests -q
+        run: .venv/bin/python -m pytest cortex_platform/tests/product/engine cortex_platform/tests/product/readings profiles/research/tests -q
 
   web:
     runs-on: ubuntu-latest

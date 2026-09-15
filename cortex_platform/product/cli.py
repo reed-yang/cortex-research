@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from typing import Mapping, Sequence
@@ -42,6 +43,11 @@ def _parser() -> argparse.ArgumentParser:
     stop_parser.add_argument("--timeout", type=float, default=10.0)
     add_runtime_parser(subparsers, common=common)
     add_transport_parser(subparsers, common=common)
+    readings = subparsers.add_parser("readings")
+    actions = readings.add_subparsers(dest="readings_action", required=True)
+    actions.add_parser("status", parents=[common])
+    retry = actions.add_parser("retry", parents=[common])
+    retry.add_argument("--source-id", required=True)
     return parser
 
 
@@ -108,6 +114,24 @@ def main(
             return run_runtime_command(arguments, paths, environ=environment)
         if arguments.command == "transport":
             return run_transport_command(arguments, paths)
+        if arguments.command == "readings":
+            from .config import load_config
+            from .control import ControlStore
+            from .readings.service import build_readings_service, read_status
+
+            config = load_config(paths.config_file)
+            if arguments.readings_action == "status":
+                print(json.dumps(read_status(paths, enabled=bool(config.get("readings"))), ensure_ascii=False))
+                return 0
+            store = ControlStore(paths.control_database_file)
+            service = build_readings_service(config=config, paths=paths, store=store)
+            if service is None:
+                print(json.dumps({"enabled": False, "items": []}))
+                return 0
+            if arguments.readings_action == "retry":
+                service.retry(arguments.source_id)
+            print(json.dumps(service.status(), ensure_ascii=False))
+            return 0
     except (ConfigError, LifecycleError, RuntimeUpdateError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

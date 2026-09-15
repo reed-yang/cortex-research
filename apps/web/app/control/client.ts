@@ -1,3 +1,4 @@
+import { decodeReadingsStatus, type ReadingsStatus } from "./readings-contracts";
 import {
   ContractDecodeError,
   decodeCapture,
@@ -205,6 +206,10 @@ export class CortexControlClient {
         return decoded;
       },
     );
+  }
+
+  getReadingsStatus(): Promise<ReadingsStatus> {
+    return this.read("/readings", decodeReadingsStatus);
   }
 
   listSources(): Promise<ListEnvelope<SourceProjection>> {

@@ -25,6 +25,7 @@ _TOP_LEVEL_KEYS = {
     "transports",
     "runtime",
     "web",
+    "readings",
 }
 # ⟦P7⟧ The web section is the Web front door's shape and nothing else: a fixed
 # loopback port so a tunnel ingress has a stable target, and the ONE public
@@ -463,6 +464,14 @@ def validate_config(raw: object) -> dict[str, object]:
         validated["runtime"] = runtime
     if "web" in raw:
         validated["web"] = _validate_web(raw["web"])
+    if "readings" in raw:
+        readings = _string_mapping(raw["readings"], section="readings")
+        if set(readings) != {"papers_root"}:
+            raise ConfigError("readings requires only papers_root")
+        root = Path(readings["papers_root"])
+        if not root.is_absolute() or root == Path(root.anchor) or "\0" in str(root) or ".." in root.parts:
+            raise ConfigError("readings.papers_root must be an absolute non-root path")
+        validated["readings"] = readings
     return validated
 
 
@@ -491,7 +500,7 @@ def _toml_value(value: object) -> str:
 def _render_config(config: Mapping[str, object]) -> str:
     validated = validate_config(dict(config))
     lines = [f"config_version = {CONFIG_VERSION}"]
-    for section in ("paths", "asset_roots", "secret_refs", "transports", "runtime", "web"):
+    for section in ("paths", "asset_roots", "secret_refs", "transports", "runtime", "web", "readings"):
         entries = validated.get(section)
         if not entries:
             continue

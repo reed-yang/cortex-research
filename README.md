@@ -46,6 +46,11 @@ Hermes gen9 runtime is supplied separately. See
   page avoids the export API entirely. The API is used only if the page request
   or metadata validation fails. Full text is read directly from the HTML URL.
   Exhausting metadata paths reports a known failure before corpus writes.
+- **External readings publication.** Opt-in macOS publication to an existing
+  readings directory, with automatic additions, generated-file updates and
+  protected notes. Publication runs in a no-delete sandbox and has separate
+  status/recovery. See the [runbook](docs/runbooks/readings-publication.md) for
+  the exact enforcement boundary and external index/backup requirements.
 - **Managed runtime lifecycle.** One attested worker generation, with protocol
   handshake, a restart-durable operation ledger, cancellation, session
   continuity and rollback. Health reports `unbound` and refuses dispatch when no

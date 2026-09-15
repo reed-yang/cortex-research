@@ -121,6 +121,13 @@ def build_engine_service(
         return None
     plan = leases or LeasePlan()
     roots = EngineRoots.resolve(paths, corpus_root=Path(root.private_path))
+    from ..readings.service import configured_root
+
+    readings_root = configured_root(dict(config or {}), paths)
+    read_only_roots = (
+        (readings_root, paths.state_dir / "readings", paths.config_file)
+        if readings_root is not None else ()
+    )
     provider, dropped = _secret_provider(config or {}, keychain_only=keychain_only)
     supervisor = ResearchEffectSupervisor(
         store=store,
@@ -132,6 +139,7 @@ def build_engine_service(
         # acceptance ever set it, by hand.
         watch_roots=roots.watch_roots,
         literal_overrides=literal_overrides,
+        read_only_roots=read_only_roots,
     )
     holder: dict[str, CaptureConsumer] = {}
     engine = ProductResearchEngine(

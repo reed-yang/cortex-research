@@ -514,6 +514,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     stop_requested = threading.Event()
     server: CortexHTTPServer | None = None
     schedule_runner: ResearchScheduleRunner | None = None
+    readings_service = None
     window_supervisor: TransportWindowSupervisor | None = None
     managed_worker: ManagedTransportWorker | None = None
     turn_bridge: InboundTurnBridge | None = None
@@ -534,6 +535,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # than through a literal. The mode travels now because it decides
         # whether the adapter, once built, may touch its client at all.
         product_config = load_config(paths.config_file)
+        from .readings.service import build_readings_service
+
+        # Validate publication before any workers start. The controller only
+        # prepares private staging; all external writes run in the publisher.
+        readings_service = build_readings_service(config=product_config, paths=paths, store=control_store)
         # P5.4: one managed worker per daemon, for the ACTIVE release only,
         # resolved through the attempt-free derivation and refused unless the
         # operator has approved its exact bytes (D6). Binding launches nothing
@@ -633,6 +639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             managed_worker=managed_worker,
             transport_windows=window_supervisor,
             turn_bridge=turn_bridge,
+            readings_service=readings_service,
         )
         server = create_server(
             host=arguments.host,
@@ -664,7 +671,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # P4.3: the whole of the daemon's engine wiring. Returns None on an
         # installation that has adopted no corpus, so cortexd starts exactly as
         # before rather than pointing the engine at a guessed directory.
-        schedule_runner = start_research_schedules(store=control_store, paths=paths)
+        schedule_runner = start_research_schedules(store=control_store, paths=paths, config=product_config)
+        if readings_service is not None:
+            readings_service.start()
         if turn_bridge is not None:
             # Recovery BEFORE the loops: an attempt a previous daemon left in
             # flight has to be converged before a new message can be told the
@@ -700,6 +709,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             managed_worker.close()
         if schedule_runner is not None:
             schedule_runner.stop()
+        if readings_service is not None:
+            readings_service.stop()
         if server is not None:
             server.server_close()
         _remove_own_metadata(paths, arguments.instance_id)
