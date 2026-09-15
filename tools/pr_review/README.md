@@ -175,6 +175,14 @@ Keep `AUTO_REVIEW_PUBLISH=false` for reports in Actions only. Removing this tool
 needs no product version or schema rollback. For the earlier deployment research
 and alternatives, see the [OAuth study](../../docs/plans/pr-review-workflow.md#agy-cli-and-oauth-actions-deployment-study).
 
+## Review quality roadmap
+
+The [T3 Code case study and adaptation design](../../docs/plans/pr-review-quality.md)
+cover contextual verification, incremental review and proposed PR comments.
+An [English comment preview](../../docs/examples/pr-review-summary.md) is available
+for selecting the presentation before enabling publication. These are proposed
+extensions; the operational behavior above remains the deployed contract.
+
 ## Limits
 
 The 180,000-character packet budget is a heuristic, not a token count. Collection
