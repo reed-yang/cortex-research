@@ -42,7 +42,11 @@ cannot bypass fork/draft/default-branch restrictions or configured budgets.
 
 The `pr-review` Environment allows only `main`. It stores `GROK_API_KEY`, native
 `AGY_OAUTH_JSON`, and the unique state-signing `REVIEW_STATE_KEY`. No credential is
-stored in the public engine repository. Repository Variables select models and
+stored in the public engine repository. Preserve the caller's explicit secret name
+mappings and the reusable workflow declarations: Environment binding alone did
+not expose Secrets in hosted acceptance. Values still come from the protected
+consumer Environment, with no blanket inheritance or repository-level copies.
+Repository Variables select models and
 routes; `AUTO_REVIEW_ENABLED=true` and `AUTO_REVIEW_PUBLISH=true` activate automatic
 review and persistent state/comments. A manual `dry-run` performs no provider calls
 or PR writes. Normal reviews require publication because they reserve durable budget
