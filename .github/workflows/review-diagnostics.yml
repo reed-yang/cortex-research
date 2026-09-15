@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: reed-yang/independent-pr-review
-          ref: 1ee51f0288e562fa5cfdbdc70aa0a3c98345c6c3
+          ref: 36fd1dc4139ce67233b1de09d5e95d3e060a5e3e
           persist-credentials: false
           path: engine
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

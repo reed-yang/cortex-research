@@ -126,7 +126,7 @@ accuracy benchmark was run. Current immutable pins are in the workflow files.
 
 ## Runtime and provider diagnostics
 
-The engine streams Grok with bounded connect/idle/total deadlines, reconstructs
+The engine uses native Grok Responses with bounded connect/idle/total deadlines, reconstructs
 literal source quotes from diff hunks, and keeps valid candidates when a sibling
 is rejected. Rejected output stays partial. Context collection skips downloads
 that cannot fit, and native installation overlaps Grok on the same runner.
@@ -148,3 +148,15 @@ and separate from the per-PR automatic reservation ledger; each dispatch permits
 one call bounded to 600 seconds, with a 12-minute job limit and no automatic retry.
 The one-day artifact contains normalized, redacted diagnostics, never raw network
 responses or credentials.
+
+Run a single diagnostic from an authenticated maintainer terminal:
+
+```bash
+gh workflow run review-diagnostics.yml --ref main \
+  -f run_id=REVIEW_RUN_ID -f run_attempt=1 \
+  -f bundle_id=BUNDLE_ID_FROM_RESULT_JSON
+```
+
+Use the original report's bundle identity, not a newly edited packet. If the
+one-day input artifact has expired, collect a fresh eligible review rather than
+weakening artifact identity checks or retrieving provider Secrets locally.
