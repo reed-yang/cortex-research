@@ -126,7 +126,7 @@ accuracy benchmark was run. Current immutable pins are in the workflow files.
 
 ## Runtime and provider diagnostics
 
-The engine streams Grok with bounded connect/idle/total deadlines, reconstructs
+The engine uses native Grok Responses with bounded connect/idle/total deadlines, reconstructs
 literal source quotes from diff hunks, and keeps valid candidates when a sibling
 is rejected. Rejected output stays partial. Context collection skips downloads
 that cannot fit, and native installation overlaps Grok on the same runner.
