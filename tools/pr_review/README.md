@@ -105,3 +105,10 @@ The [mature review study](../../docs/plans/pr-review-quality.md) and
 [English summary preview](../../docs/examples/pr-review-summary.md) explain the
 adopted design. The original [OAuth study](../../docs/plans/pr-review-workflow.md)
 is historical context; the standalone engine docs describe current operations.
+
+The Flash model's native OAuth setup was qualified on two fresh hosted runners in
+[run 34922741592](https://github.com/reed-yang/cortex-research/actions/runs/34922741592).
+The v0.2 engine has 71 provider-free tests covering explicit effort requests,
+independent context projection and budget reservations. Its larger windows are
+configured capacities; this qualification does not claim that a full-window
+accuracy benchmark was run. Current immutable pins are in the workflow files.
