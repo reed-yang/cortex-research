@@ -30,16 +30,23 @@ roadmap and release records. Read the applicable runbook before changing a bound
 
 ## Repository review tooling
 
-`tools/pr_review/` and `.github/workflows/auto-review.yml` are development tooling,
-not product runtime. Read the tool README before changing activation, credentials
-or publishing. PR head content is untrusted API data; only trusted base tooling
-executes. Preserve distinct reviewer families and explicit unavailable states.
-Gateway keys and native agy OAuth belong to the `pr-review` GitHub environment,
-restricted to the trusted default branch. Only inference steps receive them.
-Grok uses chat completions; Gemini uses the pinned official agy CLI with personal
-consumer OAuth on ephemeral hosted runners. Every invocation starts with a fresh
-HOME, denied file/command/URL/MCP permissions, an isolated custom agent and native
-token refresh. The optional Gemini HTTP backend is never an automatic fallback.
+The generic engine lives in `reed-yang/independent-pr-review`; Cortex consumes an
+immutable reusable workflow pin in `.github/workflows/auto-review.yml`. Project
+policy stays in `.github/review.json` and `tools/pr_review/cortex-rules.md`. Read
+`tools/pr_review/README.md` before changing activation, credentials or publishing.
+These are checkout-only development tools and are not part of product runtime.
+
+PR head content is untrusted API data and never executes. The trusted engine
+collects bounded context, obtains independent Grok/native agy opinions, verifies
+candidates, and updates an English PR summary plus verified inline comments. It
+never approves, merges or modifies code. Signed state preserves budgets, per-lane
+baselines and owned finding threads. Silence does not mean an old issue is fixed.
+
+Provider credentials and a per-repository `REVIEW_STATE_KEY` belong to the
+`pr-review` GitHub Environment restricted to the default branch. Only inference
+steps receive provider credentials; they receive neither a GitHub write token nor
+the state signing key. Native agy OAuth refreshes in disposable hosted HOME state.
+Consumer CI validates project configuration; engine tests run in its own repository.
 
 ## Release and state
 

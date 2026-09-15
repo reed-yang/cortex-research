@@ -97,5 +97,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Test repository review tooling without provider credentials
-        run: python3 -m unittest discover -s tools/pr_review -v
+      - name: Validate consumer policy with the pinned standalone engine
+        uses: reed-yang/independent-pr-review@088f1fb711020077745636347a7e46fcf0a09f27
+        with:
+          phase: validate-config
+          config: .github/review.json
+          output: ${{ runner.temp }}/review-config-check
