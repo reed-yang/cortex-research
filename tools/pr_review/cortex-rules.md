@@ -24,7 +24,7 @@ code and public contracts take precedence over historical design documents.
   rendered Markdown/math and Preview/Source behavior. Do not change a fixture just
   to make a failing workflow pass without confirming the actual contract.
 - Hosted fast-checks cover provider-free Control/artifact contracts, Web test:fast
-  and review-tool unit tests. Passing them does not prove installed, browser,
+  and review consumer configuration. Passing them does not prove installed, browser,
   macOS, real-provider or production behavior. This review tool executes no tests.
 - Report introduced, demonstrable P1/P2 bugs with triggers and packet evidence.
   Avoid formatting, speculative refactors and generic test requests. Identify

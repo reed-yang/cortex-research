@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "rules": [
+    "tools/pr_review/cortex-rules.md"
+  ],
+  "policies": [],
+  "context": {
+    "include": [
+      "CLAUDE.md",
+      "pyproject.toml",
+      "apps/web/package.json"
+    ],
+    "source_roots": []
+  },
+  "limits": {
+    "max_runs_per_pr": 8,
+    "max_tokens_per_pr": 750000,
+    "max_inline_comments": 5
+  },
+  "inline_comments": true,
+  "verification": true
+}

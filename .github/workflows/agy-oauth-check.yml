@@ -22,19 +22,11 @@ jobs:
       group: agy-subscription-account
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Install verified official agy
-        run: python3 tools/pr_review/install_agy.py --out "$RUNNER_TEMP/agy-bin/agy"
       - name: Verify native renewal and a single review turn
+        uses: reed-yang/independent-pr-review@19c1e07929adc4f052818385147c04058537259d
+        with:
+          phase: auth-check
+          output: ${{ runner.temp }}/review-auth-check
         env:
-          AGY_BIN: ${{ runner.temp }}/agy-bin/agy
-          AGY_WORK_ROOT: ${{ runner.temp }}/agy-state
           AGY_OAUTH_JSON: ${{ secrets.AGY_OAUTH_JSON }}
           GEMINI_MODEL: ${{ vars.AGY_MODEL }}
-        run: python3 tools/pr_review/agy_auth.py check
-      - name: Remove private native state
-        if: always()
-        run: rm -rf -- "$RUNNER_TEMP/agy-state"

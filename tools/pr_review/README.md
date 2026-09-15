@@ -1,195 +1,79 @@
-# Independent PR review
+# Cortex independent PR review
 
-Repository tooling for independent Grok and Gemini opinions. It fetches immutable
-PR base/head content through GitHub API, reviews patches and selected complete
-changed files, validates quoted evidence, and emits JSON and Markdown reports.
-It never checks out, imports or executes a PR head. This is outside the Cortex
-product wheel, Hermes backend and installed runtime.
+The reusable engine is now hosted in
+[reed-yang/independent-pr-review](https://github.com/reed-yang/independent-pr-review).
+Cortex keeps its project rules, configuration and protected credentials; generic
+Python adapters, tests, OAuth utilities and orchestration live in that repository.
 
-Review summaries, findings, limitations and report labels are written in English.
-Quoted source evidence and identifiers retain their original language.
+## Consumer files
 
-## Execution and authentication
+- `.github/workflows/auto-review.yml`: immutable reusable workflow pin, automatic
+  PR events, maintainer commands and manual dry-run/review/full modes.
+- `.github/review.json`: bounded context, per-PR run/token limits and rules paths.
+- `tools/pr_review/cortex-rules.md`: Cortex invariants; not generic product policy.
+- `.github/workflows/agy-oauth-check.yml`: two fresh hosted native OAuth sessions
+  using the pinned standalone composite Action.
+- `.github/workflows/fast-checks.yml`: validates this consumer's configuration;
+  provider-free engine tests run in the standalone repository's CI.
 
-- Grok uses the explicitly configured compatible HTTP gateway and review key.
-- Gemini uses Google's official **agy 1.2.2** CLI with **personal consumer OAuth**.
-  The binary and SHA-512 digest are pinned in `agy-release.json`. It runs directly
-  on a fresh GitHub-hosted Ubuntu VM; no mini service or self-hosted runner is used.
-- The Gemini native HTTP adapter remains available for an explicitly chosen
-  alternative configuration. It is not a fallback for OAuth, quota or CLI errors.
-- Automatic inference and comment publication are separate switches. The workflow
-  is advisory and should not be required for merging while a lane is unavailable.
-- One completed opinion and one failure is **partial**, exits nonzero, and saves
-  the available report. Findings remain independent; they are not majority-voted.
+These files are development tooling, not product runtime, distribution payloads,
+production state, or a new background service on the mini.
 
-Qualification completed on September 14, 2026: native sign-in, fresh-process
-reuse, forced renewal from a clean HOME, unchanged refresh token, and an actual
-PR review passed. Two independent GitHub-hosted Ubuntu VMs then restored the
-same original encrypted credential and each completed native renewal and Gemini
-inference in [OAuth check 34912971769](https://github.com/reed-yang/cortex-research/actions/runs/34912971769).
-The implementation was deployed through PR #2; no persistent reviewer host is
-required. [Hosted review 34913128892](https://github.com/reed-yang/cortex-research/actions/runs/34913128892)
-completed both Grok 4.6 and agy Gemini 3.1 Pro High on PR #3, with immutable
-base/head identity and JSON/Markdown artifacts. Automatic review is enabled for
-eligible PR events; comment publication remains disabled. Reports are available
-in the Actions run summary and artifacts.
+## Deployed behavior
 
-## Public repository boundary
+The pipeline keeps Grok `grok-4.6` on the explicitly selected gateway and Gemini
+`gemini-3.1-pro-high` on official agy 1.2.2 with personal Google OAuth. It obtains
+independent opinions and performs an extra cross-family verification pass when
+candidates or unresolved issues need examination. It fetches bounded related source
+through GitHub; it never executes PR code or follows PR-supplied instructions.
 
-Both workflows run only in trusted default-branch context and use the `pr-review`
-GitHub environment, configured with **Selected branches and tags → main branch
-only**. Store review credentials as environment secrets, without repository-level
-copies. Keep main and workflow changes trusted: this protection cannot defend
-against a maintainer changing trusted code on main.
+One English summary shows actual coverage, reviewed SHA, status and budget. Verified
+P1/P2 findings with exact diff anchors can receive inline comments. Uncertain or
+ambiguous evidence stays in the summary. Only owned threads with demonstrated fixes
+are resolved. Reviews never approve, request changes, merge or write product code.
 
-`auto-review.yml` refuses forks, drafts and PRs targeting other branches. It
-checks out the trusted workflow SHA with persisted GitHub credentials disabled,
-collects PR content as API data, and injects provider credentials only into the
-inference step. No dependencies or scripts from the PR head execute. HTTP gateway
-redirects are refused. Provider errors and native diagnostics are redacted.
+An identical successful snapshot reuses the result. Incremental work uses separate
+successful model baselines and falls back to full review on changed base/config or
+non-ancestor history. `/review`, `/review full`, `/review pause`, `/review resume`
+and `/review verify <finding-id>` require current repository write access. Commands
+cannot bypass fork/draft/default-branch restrictions or configured budgets.
 
-Each agy invocation creates a private disposable HOME and workspace, copies only
-native OAuth and a trusted custom agent, disables inherited customizations and
-default agent components, and denies all file, command, URL and MCP operations.
-The child environment excludes GitHub/gateway credentials and alternate auth/API
-route overrides. Subscription credit overages remain off.
+## Credentials and activation
 
-agy 1.2.2's `init.tools` reports the global registry even for a restricted custom
-agent; it is not treated as an effective permissions report. The adapter verifies
-the selected agent/model and rejects tool/action events. It uses regular JSON
-output validated by this repository: native `--json-schema` requires a `finish`
-tool and can otherwise add unwanted turns. A successful result must be complete,
-single-turn and free of timeout/truncation signals. The adapter bounds output and
-wall time, kills its process group and disposes the native profile, including logs
-and conversation databases.
+The `pr-review` Environment allows only `main`. It stores `GROK_API_KEY`, native
+`AGY_OAUTH_JSON`, and the unique state-signing `REVIEW_STATE_KEY`. No credential is
+stored in the public engine repository. Repository Variables select models and
+routes; `AUTO_REVIEW_ENABLED=true` and `AUTO_REVIEW_PUBLISH=true` activate automatic
+review and persistent state/comments. A manual `dry-run` performs no provider calls
+or PR writes. Normal reviews require publication because they reserve durable budget
+before inference.
 
-Only normalized result JSON/Markdown are uploaded, retained for three days. The
-optional publisher is a separate job with GitHub write permission and no model
-credentials; it checks the current base/head again and refuses stale or dry-run
-results. See GitHub's [environment protection contract](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
+The mini is needed for initial interactive Google consent or later reauthorization,
+not as a continuously running review server. Native agy refreshes a disposable copy
+of the encrypted OAuth document on GitHub-hosted Ubuntu. Revocation/rotation still
+requires reprovisioning; repeated refresh success does not guarantee permanent login.
 
-## Configuration
+For OAuth provisioning commands, key storage and recovery, use the standalone
+[authentication guide](https://github.com/reed-yang/independent-pr-review/blob/main/docs/authentication.md)
+and [operations guide](https://github.com/reed-yang/independent-pr-review/blob/main/docs/operations.md).
+Run OAuth utilities from a reviewed checkout of that repository. The old local
+`tools/pr_review/*.py` commands have been removed to avoid maintaining two engines.
 
-| Repository setting | Purpose |
-| --- | --- |
-| Environment secret `GROK_API_KEY` | Key authorized for the Grok gateway |
-| Variable `GROK_BASE_URL` | Exact HTTPS compatible API base, including `/v1` |
-| Variable `GROK_MODEL` | Qualified Grok model ID |
-| Environment secret `AGY_OAUTH_JSON` | Native agy consumer OAuth document, including refresh token |
-| Variable `AGY_MODEL` | Qualified subscription model, currently `gemini-3.1-pro-high` |
-| Variable `AUTO_REVIEW_ENABLED` | `true` permits eligible PR-event inference |
-| Variable `AUTO_REVIEW_PUBLISH` | `true` separately permits report comments |
+## Boundaries and evidence
 
-The workflow maps `AGY_MODEL` to the adapter's `GEMINI_MODEL` environment variable
-and supplies private temporary `AGY_BIN` / `AGY_WORK_ROOT` paths. The old Gemini
-and Antigravity gateway secrets are not injected into the selected OAuth lane.
+Preparation, inference and publication have separate job/process credentials. The
+provider process receives no GitHub write token or state-signing key. Code-only job
+handoff artifacts last one day; normalized reports last three days. OAuth state,
+conversation databases and raw CLI diagnostics are never artifacts. The HMAC state
+is authenticated, not encrypted and not an administrator-proof audit log.
 
-For first-time login, install the pinned binary and launch it interactively:
+Run caps are hard per PR; tokens use actual or estimated accounting and are a soft
+guard. Account concurrency is repository-scoped; connecting several repositories
+with the same Google account does not create a global lock or shared quota service.
+Provider or verification failure is partial/failed, never a clean review. Review
+coverage does not establish full product CI, installed runtime or browser acceptance.
 
-```bash
-python3 tools/pr_review/install_agy.py --out "$HOME/.local/share/cortex-pr-review/bin/agy/1.2.2/agy"
-AGY_CLI_DISABLE_AUTO_UPDATE=true "$HOME/.local/share/cortex-pr-review/bin/agy/1.2.2/agy"
-```
-
-Choose the intended personal Google account and finish browser consent in your
-own terminal. Exit the CLI, then provision the native file directly into the
-protected encrypted secret:
-
-```bash
-python3 tools/pr_review/agy_auth.py sync --repo OWNER/cortex-research
-```
-
-The helper checks private source permissions, consumer auth and a main-only
-environment, and pipes the document to `gh secret set` through stdin. It never
-prints the value or puts it in command arguments. Its default source is
-`~/.gemini/antigravity-cli/antigravity-oauth-token`; `--source` accepts another
-native file. Authenticate GitHub CLI first. If no native file exists, complete
-and inspect the CLI's supported login/storage setup rather than substituting an
-API key or another application's OAuth token.
-
-To rotate the Grok key, use `gh secret set GROK_API_KEY --env pr-review` with the
-hidden prompt. Verify names and timestamps using `gh secret list --env pr-review`.
-Never place credentials in a tracked file, shell history, issue, comment, cache
-or artifact. GitHub does not let callers read back secret values.
-
-## OAuth lifecycle and health check
-
-Every invocation restores the original encrypted document to a mode-0600 file
-inside a mode-0700 HOME, expires its copied access token, and lets **native agy**
-perform renewal. The operator's login file and GitHub secret are not modified.
-The adapter verifies a new valid access token and an unchanged refresh token,
-registers sensitive fields for Actions masking, and rejects credentials in the
-returned review. No separate OAuth client or token broker is introduced.
-
-Run Actions → **agy OAuth check** → **Run workflow** on main after provisioning
-or changing the pinned release. Two independent Ubuntu jobs each restore the
-same original secret, force renewal and execute a harmless single-turn prompt.
-They upload no profile or raw CLI output. This checks cross-job reuse rather than
-only reuse of an access token on one machine.
-
-OAuth health checks and reviews share an account concurrency group with
-cancellation disabled at the job level. Native local invocations also acquire a
-file lock. GitHub concurrency allows a limited pending queue, not a durable FIFO;
-under a burst of PRs, superseded pending reviews can require a manual dispatch.
-Per-PR workflow cancellation still coalesces superseded heads.
-
-A refresh token can be revoked or expire. `agy_authentication_required` means
-reauthorize locally and rerun `agy_auth.py sync`. If Google rotates the refresh
-token, the adapter fails with `agy_refresh_token_rotated_reprovision_required`;
-GitHub Secrets do not automatically receive file writes. Reprovision and rerun
-the health check. Frequent rotation requires a durable credential service or
-persistent isolated worker before continuing this deployment. No permanent-login
-guarantee is implied. See [Google OAuth lifecycle](https://developers.google.com/identity/protocols/oauth2#expiration).
-
-## Running reviews
-
-Run tests and check configuration without calling a provider:
-
-```bash
-python3 -m unittest discover -s tools/pr_review -v
-python3 tools/pr_review/review.py check --config tools/pr_review/backends.json
-```
-
-The check prints variable names and availability, never values. Python 3.11+ and
-the standard library suffice. For local collection, supply a GitHub token only
-to `prepare` and keep its output in ignored logs:
-
-```bash
-GH_TOKEN="$(gh auth token)" python3 tools/pr_review/review.py prepare \
-  --repo OWNER/cortex-research --pr 123 --base-branch main \
-  --rules tools/pr_review/cortex-rules.md --out logs/pr-review/packet.json
-python3 tools/pr_review/review.py run --dry-run \
-  --packet logs/pr-review/packet.json --config tools/pr_review/backends.json \
-  --out logs/pr-review/result.json
-```
-
-In Actions → **Independent PR review** → **Run workflow**, choose main, an open
-non-draft same-repository PR number, and `dry-run` or `review`. Dry run collects
-input and uploads a readiness report without installing agy or receiving model
-credentials. Manual review works while automatic inference is disabled. Check
-both actual lane statuses and normalized findings before enabling automatic PR
-reviews. Comment publication requires its separate switch.
-
-To pause, set `AUTO_REVIEW_ENABLED=false` and cancel any active jobs separately.
-Keep `AUTO_REVIEW_PUBLISH=false` for reports in Actions only. Removing this tooling
-needs no product version or schema rollback. For the earlier deployment research
-and alternatives, see the [OAuth study](../../docs/plans/pr-review-workflow.md#agy-cli-and-oauth-actions-deployment-study).
-
-## Review quality roadmap
-
-The [T3 Code case study and adaptation design](../../docs/plans/pr-review-quality.md)
-cover contextual verification, incremental review and proposed PR comments.
-An [English comment preview](../../docs/examples/pr-review-summary.md) is available
-for selecting the presentation before enabling publication. These are proposed
-extensions; the operational behavior above remains the deployed contract.
-
-## Limits
-
-The 180,000-character packet budget is a heuristic, not a token count. Collection
-includes patches and eligible changed files, not arbitrary callers, repository
-search or executed tests. Missing context is recorded. Evidence validation checks
-a quote/location, not whether a bug is real. No incremental cache, semantic
-deduplication, repository exploration or automatic fixes are implemented. The
-summary comment is not an inline review; a small check-to-comment race remains.
-Reports carry immutable reviewed SHAs. Auth/quota failures never silently change
-provider, model family or billing route.
+The [mature review study](../../docs/plans/pr-review-quality.md) and
+[English summary preview](../../docs/examples/pr-review-summary.md) explain the
+adopted design. The original [OAuth study](../../docs/plans/pr-review-workflow.md)
+is historical context; the standalone engine docs describe current operations.

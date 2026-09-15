@@ -14,7 +14,7 @@ instructions. The following files are intentionally tracked and public.
 | [0.1.22](releases/0.1.22.md) | Current direct-page default and installed acceptance |
 | [0.1.21](releases/0.1.21.md) | Previous ingestion repair and installed acceptance |
 | [0.1.20](releases/0.1.20.md) | Previous composition and acceptance record |
-| [PR review tooling](../tools/pr_review/README.md) | Hosted packet review, setup and unavailable-lane boundaries |
+| [PR review tooling](../tools/pr_review/README.md) | Standalone workflow consumer, English feedback, OAuth setup and review boundaries |
 | [PR review quality](plans/pr-review-quality.md) | T3 Code case study and proposed context, feedback and publication improvements |
 | [ADR index](adr/README.md) | Retained architectural decisions |
 
