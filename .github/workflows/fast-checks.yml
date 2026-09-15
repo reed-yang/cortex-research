@@ -98,7 +98,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate consumer policy with the pinned standalone engine
-        uses: reed-yang/independent-pr-review@3765272fad086142ef9aa2af77750998f37be564
+        uses: reed-yang/independent-pr-review@d5a3d8eb12be4ee73de934c69ae37077b9cb434e
         with:
           phase: validate-config
           config: .github/review.json
