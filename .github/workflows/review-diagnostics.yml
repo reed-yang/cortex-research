@@ -25,12 +25,12 @@ jobs:
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     environment: pr-review
-    timeout-minutes: 12
+    timeout-minutes: 32
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: reed-yang/independent-pr-review
-          ref: 36fd1dc4139ce67233b1de09d5e95d3e060a5e3e
+          ref: 2171d0de2da51ffd577e4d7ae6a748564cdc91a1
           persist-credentials: false
           path: engine
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
