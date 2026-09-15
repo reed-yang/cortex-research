@@ -123,6 +123,45 @@ def test_same_title_other_identity_is_not_adopted(library):
     assert (target / 'full_text.md').read_text() == 'other paper'
 
 
+@pytest.mark.parametrize('suffix', ['', '.'])
+def test_related_work_reference_does_not_establish_directory_identity(library, suffix):
+    service, store = library
+    source = add_paper(service, store)
+    target = service.root / source.name
+    target.mkdir()
+    notes = f'source: arxiv:2601.99999{suffix}\nRelated work: https://arxiv.org/abs/2601.00042\n'
+    (target / 'notes.md').write_text(notes)
+    service.tick()
+    assert status(service)['state'] == 'conflict'
+    assert status(service)['failure'] == 'ambiguous_existing_paper_identity'
+    assert sorted(p.name for p in target.iterdir()) == ['notes.md']
+    assert (target / 'notes.md').read_text() == notes
+
+
+def test_non_arxiv_host_does_not_establish_directory_identity(library):
+    service, store = library
+    source = add_paper(service, store)
+    target = service.root / source.name
+    target.mkdir()
+    (target / 'notes.md').write_text('source: https://not-arxiv.org/abs/2601.00042\n')
+    service.tick()
+    assert status(service)['state'] == 'conflict'
+    assert sorted(p.name for p in target.iterdir()) == ['notes.md']
+
+
+def test_repeated_versions_of_the_same_arxiv_identity_are_unambiguous(library):
+    service, store = library
+    source = add_paper(service, store)
+    target = service.root / source.name
+    target.mkdir()
+    notes = 'source: arxiv:2601.00042\nPDF: https://arxiv.org/pdf/2601.00042v2.pdf\n'
+    (target / 'notes.md').write_text(notes)
+    service.tick()
+    assert status(service)['state'] == 'published'
+    assert (target / 'full_text.md').read_text() == 'original generated text'
+    assert (target / 'notes.md').read_text() == notes
+
+
 def test_post_publication_crash_recovers_without_redownload(library, monkeypatch):
     service, store = library
     source = add_paper(service, store)

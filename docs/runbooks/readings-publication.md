@@ -57,7 +57,9 @@ reports busy instead of bypassing serialization.
 - For an existing directory without publisher ownership, arXiv identity must
   match an explicit arXiv reference in its `notes.md`. A title/directory match
   alone cannot adopt it. Unverified or ambiguous destinations require operator
-  reconciliation; do not rename arbitrary library folders automatically.
+  reconciliation; references to different arXiv papers are ambiguous, even when
+  one related-work citation matches the incoming paper. Repeated versions of the
+  same paper are one identity. Do not rename arbitrary library folders automatically.
 - Missing files and asset subtrees can be added automatically. Source files
   absent from a later version are retained in the destination.
 - Existing `notes.md` files are always protected, including an initial template
