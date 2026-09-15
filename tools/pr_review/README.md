@@ -50,8 +50,11 @@ to 1M cannot enlarge that provider limit. Variables `GROK_EFFORT`,
 `GROK_CONTEXT_WINDOW`, `GEMINI_EFFORT`, and `GEMINI_CONTEXT_WINDOW` control these
 settings; the selected native model slug must agree with its effort variant.
 
-The collector allows 4M serialized characters, 2.5M additional source characters,
-100 related files and 300 API reads. Each model receives its own projection, so
+Ordinary collection allows 800k serialized characters, 400k source characters,
+20 related files and 300 API reads. Current changed-file text precedes base
+versions, and missing head/base text is reported. These retrieval budgets were
+tuned after a large PR timed out with excessive context; they do not reduce the
+configured model windows. Each model receives its own projection, so
 Grok's smaller window does not restrict Gemini's input. Whole diffs and requested
 verification evidence are preserved; omissions are recorded. Token estimates use
 UTF-8 bytes/3 with a ten-percent window reserve, not an exact provider tokenizer.
