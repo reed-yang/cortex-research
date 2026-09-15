@@ -229,9 +229,44 @@ def run_compatible(backend, prompt):
         raise ReviewError("invalid_provider_response") from None
 
 
-# Personal Gemini CLI OAuth is retired. Do not retain an executable fallback.
-# Add an agy adapter only after subscription auth and tool isolation qualify.
-HARNESSES = {"compatible_packet": run_compatible}
+def run_gemini(backend, prompt):
+    key = os.environ.get(backend["key_env"], "")
+    base = os.environ.get(backend["base_url_env"], "").rstrip("/")
+    model = os.environ.get(backend["model_env"], "")
+    if not key or not base or not model:
+        raise ReviewError("backend_not_configured")
+    if not re.fullmatch(r"gemini-[A-Za-z0-9._-]+", model):
+        raise ReviewError("invalid_gemini_model")
+    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+               "generationConfig": {"maxOutputTokens": 6000, "responseMimeType": "application/json"}}
+    response = request_json(base + "/models/" + model + ":generateContent", key, payload,
+                            timeout=backend["timeout_seconds"])
+    try:
+        candidate = response["candidates"][0]
+        parts = candidate["content"]["parts"]
+        if candidate.get("finishReason") != "STOP" or any("functionCall" in part for part in parts):
+            raise ReviewError("incomplete_or_unexpected_model_output")
+        text = "".join(part["text"] for part in parts if "text" in part and not part.get("thought"))
+        if not text:
+            raise ReviewError("empty_model_output")
+        return text, response.get("modelVersion", model), response.get("usageMetadata", {})
+    except (KeyError, TypeError, IndexError):
+        raise ReviewError("invalid_provider_response") from None
+
+
+def run_agy(backend, prompt):
+    from agy_runner import AgyError, run
+    try:
+        return run(backend, prompt)
+    except AgyError as exc:
+        raise ReviewError(str(exc)) from None
+    except (OSError, ValueError):
+        raise ReviewError("agy_local_state_failed") from None
+
+
+# Backends are selected explicitly; failures never change the billing route.
+HARNESSES = {"compatible_packet": run_compatible, "gemini_packet": run_gemini,
+             "antigravity_packet": run_agy}
 
 
 def configuration_status(config):
@@ -246,7 +281,8 @@ def configuration_status(config):
             elif backend["harness"] not in HARNESSES:
                 item.update(status="unavailable", reason="harness_not_implemented")
             else:
-                names = [backend[key] for key in ("key_env", "base_url_env", "model_env")]
+                fields = ("binary_env", "state_env", "oauth_env", "model_env") if backend["harness"] == "antigravity_packet" else ("key_env", "base_url_env", "model_env")
+                names = [backend[key] for key in fields]
                 missing = [name for name in names if not os.environ.get(name)]
                 item.update(status="unconfigured" if missing else "configured", missing=missing)
             statuses.append(item)
