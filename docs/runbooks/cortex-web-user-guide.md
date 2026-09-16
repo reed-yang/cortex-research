@@ -135,6 +135,25 @@ If no usable evidence is found, try exact paper or title keywords, or verify
 Documents on the selected item. Missing retrieval is not proof that no relevant
 work exists. Non-English title matching is limited.
 
+## Retry a failed paper capture
+
+Inbox records describe individual import attempts. A failed capture stays failed
+after a configuration repair or a separate library import; it is not the current
+health of that paper. Compare its Created time and Capture id with the attempt
+you are investigating, and check Library for an already imported source.
+
+After the cause is fixed, submit the paper link again and approve the new
+capture. Terminal failed captures do not block a deliberate new submission.
+Successful arXiv imports reuse an existing indexed paper when its identity is
+already present, then record the new capture as consumed. An approved capture
+waits for the import schedule; the default interval is five minutes.
+
+Reopen applies to an uncertain capture, where the previous attempt might already
+have written data. A failed capture instead needs a new submission. The generic
+`materialization_failed` category does not identify a single cause: an operator
+must inspect the matching engine result. For embedding credential failures, see
+[paper index maintenance](paper-index-maintenance.md#credential-failures).
+
 ## Read and manage results
 
 Preview is the readable Markdown and math view. Source shows the Markdown and
