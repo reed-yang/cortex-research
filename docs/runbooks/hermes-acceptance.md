@@ -132,8 +132,20 @@ which moved; clause 5 reads sandbox denials from inside the fork process and
 Tracked, reviewed and portable. Its input handling and isolation are covered by
 `tests/packaging/test_hermes_acceptance_inputs.py`.
 
-**No re-certification has been performed.** Retaining and versioning the driver
-is not a new certification, and it does not change that `cortex-hermes certify`
-alone cannot certify. A real run needs a staged slot and a running worker; the
-certified slot remains `hermes-0.15.0-gen9` and no upgrade or replacement is
-proposed here.
+On 2026-09-16 UTC, self-packaged acceptance of the updated worker payload and
+artifact-set acceptance for `hermes-0.15.0-gen10` passed all nine proofs, with no binding failures and all
+five started workers reaped in each run. The certified artifact SHA-256 is
+`b986108db5e5a01a465ae88c8d0a67666f09085ba57e14f5fbf20a7773efb86d`.
+The retained gen9 evidence remains evidence for gen9 only.
+
+Product 0.1.24 and gen10 were then installed through the supported lifecycle.
+The nine-proof driver measures the default no-tools policy. Separate real-process
+tests cover the opt-in local-tools policy, including its credential channel and
+filesystem boundaries; an installed-worker model turn successfully called
+`terminal`, `search_files`, and `read_file` using a copy of an existing native
+session. See [managed tool access](managed-tool-access.md) for that contract.
+The model check did not send a Telegram message.
+
+`cortex-hermes certify` alone still cannot certify a release. Retaining the
+driver, passing unit tests, or validating another artifact does not replace
+acceptance against the exact artifact being activated.
