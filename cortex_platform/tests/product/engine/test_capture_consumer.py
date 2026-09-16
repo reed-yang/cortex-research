@@ -143,6 +143,27 @@ def test_the_lease_relation_is_enforced_not_documented() -> None:
 # -- the happy path -------------------------------------------------------
 
 
+def test_two_captures_for_one_paper_both_finish_without_duplicate_sources(
+    consumer: CaptureConsumer, store: ControlStore, roots: EngineRoots
+) -> None:
+    first_id = _approved_capture(store, f"https://arxiv.org/abs/{HTML_PAPER}")
+    first = consumer.run_once()
+    assert first is not None and first.state == "consumed"
+    before = sorted(path.name for path in roots.corpus_root.iterdir())
+
+    second_id = _approved_capture(store, f"https://arxiv.org/pdf/{HTML_PAPER}")
+    second = consumer.run_once()
+
+    assert second is not None and second.state == "consumed"
+    assert second_id != first_id
+    assert second.consumed_source_ids == first.consumed_source_ids
+    assert second.manifest_id == first.manifest_id
+    assert store.get_capture(first_id)["state"] == "consumed"
+    assert store.get_capture(second_id)["state"] == "consumed"
+    assert len(store.list_sources()) == 1
+    assert sorted(path.name for path in roots.corpus_root.iterdir()) == before
+
+
 def test_one_capture_becomes_one_consumed_source(
     consumer: CaptureConsumer, store: ControlStore, roots: EngineRoots
 ) -> None:

@@ -18,6 +18,9 @@ roadmap and release records. Read the applicable runbook before changing a bound
   Index refreshes preserve omitted provenance, reuse unchanged vectors and
   finish embedding calls before the write transaction. The maintenance command
   audits explicit corpus/database paths without deleting historical rows.
+  Separate captures may reuse an identical committed adoption manifest only
+  within the same corpus root and with matching ready source bindings. Bulk
+  adoption retains its original idempotency and conflict rules.
 - `product/readings/` owns opt-in external publication and its separate journal.
   Keep Capture outcomes independent, preserve existing notes and require
   provenance/hash matches for generated-file updates. External writes belong

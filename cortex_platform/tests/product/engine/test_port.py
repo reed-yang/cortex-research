@@ -66,6 +66,7 @@ def engine(
         "capture-cap1": EnginePayload("arxiv", HTML_PAPER),
         "capture-cap2": EnginePayload("arxiv", PDF_ONLY_PAPER),
         "capture-cap3": EnginePayload("blog", "https://example.com/post"),
+        "capture-cap4": EnginePayload("arxiv", HTML_PAPER),
     }
     return ProductResearchEngine(
         store=store,
@@ -181,6 +182,100 @@ def test_the_manifest_commit_is_idempotent_under_capture_id(
     assert second.manifest_id == first.manifest_id
     assert second.source_ids == first.source_ids
     assert len(store.list_sources()) == 1
+
+
+def test_separate_captures_reuse_the_same_adopted_paper(
+    engine: ProductResearchEngine, roots: EngineRoots, store: ControlStore
+) -> None:
+    first_request = _request("capture-cap1")
+    engine.import_source(first_request)
+    first = engine.outcomes[first_request.operation_id]
+    before = sorted(path.name for path in roots.corpus_root.iterdir())
+
+    second_request = _request("capture-cap4")
+    result = engine.import_source(second_request)
+    second = engine.outcomes[second_request.operation_id]
+
+    assert result.source_id == "capture-cap4"
+    assert second.manifest_id == first.manifest_id
+    assert second.source_ids == first.source_ids
+    assert second.execution.engine["already_ingested"] is True
+    assert len(store.list_sources()) == 1
+    assert sorted(path.name for path in roots.corpus_root.iterdir()) == before
+
+
+@pytest.mark.parametrize("same_root", [True, False])
+def test_capture_after_operator_adoption_checks_the_committed_corpus_root(
+    engine: ProductResearchEngine, roots: EngineRoots, store: ControlStore,
+    same_root: bool,
+) -> None:
+    from cortex_platform.product.sources.adoption import read_corpus_subset
+
+    execution = engine._supervisor.run("ingest_arxiv", {"identifier": HTML_PAPER})
+    assert execution.ok
+    read = read_corpus_subset(
+        database=roots.research_db, corpus_root=roots.corpus_root,
+        paper_dirs=execution.paper_dirs,
+    )
+    root_id = "research-corpus" if same_root else "other-corpus"
+    if not same_root:
+        store.register_asset_root(
+            root_id=root_id, private_path=roots.corpus_root.parent / "other-corpus",
+            max_bytes=1 << 30, enabled=True, actor_id="local-operator",
+            idempotency_key="other-adoption-root-01",
+        )
+    original = store.commit_adoption_manifest(
+        manifest=read.manifest, corpus_root_id=root_id, actor_id="local-operator",
+        idempotency_key="prior-operator-adoption-01",
+    )
+    request = _request("capture-cap1")
+    if not same_root:
+        with pytest.raises(EffectPermanentlyRejected) as raised:
+            engine.import_source(request)
+        assert raised.value.category == "invalid_source"
+        return
+
+    engine.import_source(request)
+    assert engine.outcomes[request.operation_id].manifest_id == original.manifest_id
+    assert store.get_adoption_manifest(original.manifest_id).actor_id == "local-operator"
+    assert len(store.list_sources()) == 1
+
+
+@pytest.mark.parametrize("refusal", ["engine_ref_conflict", "paper_dir_conflict", "corpus_root_disabled"])
+def test_existing_paper_does_not_hide_other_adoption_refusals(
+    engine: ProductResearchEngine, store: ControlStore, monkeypatch: pytest.MonkeyPatch,
+    refusal: str,
+) -> None:
+    from cortex_platform.product.control.errors import InvalidTransition
+
+    engine.import_source(_request("capture-cap1"))
+
+    def refuse(**_: object):
+        raise InvalidTransition(refusal, "adoption")
+
+    monkeypatch.setattr(store, "commit_adoption_manifest", refuse)
+    with pytest.raises(EffectPermanentlyRejected) as raised:
+        engine.import_source(_request("capture-cap4"))
+    assert raised.value.category == "invalid_source"
+
+
+@pytest.mark.parametrize("change", ["missing", "engine_ref", "import_state"])
+def test_reused_manifest_requires_current_matching_sources(
+    engine: ProductResearchEngine, store: ControlStore, monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    engine.import_source(_request("capture-cap1"))
+    sources = store.list_sources()
+    if change == "missing":
+        sources = []
+    else:
+        sources[0] = dict(sources[0])
+        sources[0][change] = "paper:other-directory" if change == "engine_ref" else "failed"
+    monkeypatch.setattr(store, "list_sources", lambda: sources)
+
+    with pytest.raises(EffectPermanentlyRejected) as raised:
+        engine.import_source(_request("capture-cap4"))
+    assert raised.value.category == "invalid_source"
 
 
 def test_reconciliation_reports_not_found_when_nothing_was_ingested(

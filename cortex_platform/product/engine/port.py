@@ -274,16 +274,28 @@ class ProductResearchEngine:
                 idempotency_key=idempotency_key,
             )
         except InvalidTransition as error:
-            # S1 A1-1: a duplicate canonical id or a paper_dir already bound to
-            # another source is the source being wrong, not the engine failing.
-            raise EffectPermanentlyRejected("invalid_source") from error
+            # A different capture may name an identical committed manifest.
+            # Reuse that evidence without recommitting the bulk adoption or
+            # treating other source/directory conflicts as successful imports.
+            if error.source != "already_adopted":
+                raise EffectPermanentlyRejected("invalid_source") from error
+            record = self._store.get_adoption_manifest(read.manifest.manifest_id)
+            if record.corpus_root_id != self._corpus_root_id:
+                raise EffectPermanentlyRejected("invalid_source") from error
         except ValueError as error:
             raise EffectPermanentlyRejected("invalid_source") from error
-        canonical = {entry.canonical_id for entry in entries}
-        source_ids = tuple(
-            str(source["id"])
+        expected_refs = {entry.canonical_id: entry.engine_ref for entry in entries}
+        sources = [
+            source
             for source in self._store.list_sources()
-            if source["canonical_id"] in canonical
-        )
+            if source["canonical_id"] in expected_refs
+        ]
+        if len(sources) != len(entries) or any(
+            source["engine_ref"] != expected_refs[source["canonical_id"]]
+            or source["import_state"] not in {"existing", "imported"}
+            for source in sources
+        ):
+            raise EffectPermanentlyRejected("invalid_source")
+        source_ids = tuple(str(source["id"]) for source in sources)
         chunk_count = int((execution.engine or {}).get("chunk_count") or 0)
         return record.manifest_id, source_ids, entries, chunk_count
