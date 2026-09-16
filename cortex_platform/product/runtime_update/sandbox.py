@@ -173,6 +173,8 @@ class SandboxPolicy:
     descriptor_path: str
     evidence_root: str
     egress_port: int
+    local_tools: bool = False
+    tool_read_roots: tuple[str, ...] = ()
 
     @property
     def read_paths(self) -> tuple[str, ...]:
@@ -191,6 +193,8 @@ class SandboxPolicy:
                     # cannot answer the identity question at all.
                     self.slot_root,
                     self.state_root,
+                    *self.tool_read_roots,
+                    *(("/bin", "/usr/bin") if self.local_tools else ()),
                 }
             )
         )
@@ -205,6 +209,8 @@ class SandboxPolicy:
         # The profile of the *next* launch lives here. A worker that could
         # rewrite it would be choosing its own successor's boundary.
         denied.add(self.evidence_root)
+        if self.local_tools:
+            denied.add(os.path.join(self.hermes_home, "auth.json"))
         return tuple(sorted(denied))
 
     @property
@@ -220,6 +226,8 @@ class SandboxPolicy:
         # all — cannot be probed without creating it. The evidence root is
         # rendered by the same rule, from the same tuple, and always exists.
         denied.add(self.evidence_root)
+        if self.local_tools:
+            denied.add(os.path.join(self.hermes_home, "auth.json"))
         return tuple(sorted(denied))
 
     def to_dict(self) -> dict[str, object]:
@@ -234,6 +242,8 @@ class SandboxPolicy:
             "descriptor_path": self.descriptor_path,
             "evidence_root": self.evidence_root,
             "egress_port": self.egress_port,
+            "local_tools": self.local_tools,
+            "tool_read_roots": list(self.tool_read_roots),
         }
 
     @property
@@ -260,6 +270,8 @@ def build_policy(
     descriptor_path: Path,
     hermes_home: Path | None = None,
     egress_port: int = DEFAULT_EGRESS_PORT,
+    local_tools: bool = False,
+    tool_read_roots: Sequence[str] = (),
 ) -> SandboxPolicy:
     """Derive the boundary from the descriptor, resolving as it goes.
 
@@ -280,6 +292,17 @@ def build_policy(
         raise SandboxError("sandbox egress port must be an integer")
     if not 1 <= egress_port <= 65535:
         raise SandboxError("sandbox egress port is out of range")
+    if type(local_tools) is not bool:
+        raise SandboxError("local_tools must be a boolean")
+    read_roots = set()
+    for value in tool_read_roots:
+        path = Path(value)
+        if not local_tools or not path.is_absolute() or not path.is_dir():
+            raise SandboxError("tool read roots require local tools and existing absolute directories")
+        canonical = path.resolve(strict=True)
+        if canonical == Path(canonical.anchor) or canonical == Path.home().resolve():
+            raise SandboxError("tool read roots must not grant a filesystem or home root")
+        read_roots.add(str(canonical))
     state_dir = Path(descriptor.state_dir)
     home = Path(hermes_home) if hermes_home is not None else state_dir / HERMES_HOME_DIRNAME
     interpreter = resolved(descriptor.interpreter_path)
@@ -299,6 +322,8 @@ def build_policy(
         descriptor_path=resolved(descriptor_path),
         evidence_root=os.path.join(state_root, EVIDENCE_DIRNAME),
         egress_port=egress_port,
+        local_tools=local_tools,
+        tool_read_roots=tuple(sorted(read_roots)),
     )
 
 
@@ -322,7 +347,7 @@ def render_profile(policy: SandboxPolicy) -> str:
         # socket rather than a bare `(allow network-outbound)`, which would
         # dissolve the port scoping below.
         f"(allow network-outbound (literal {_quote(RESOLVER_SOCKET)}))",
-        "(deny process-fork)",
+        "(allow process-fork)" if policy.local_tools else "(deny process-fork)",
         "(allow sysctl-read)",
         "(allow mach-lookup)",
         "(allow signal (target self))",
@@ -343,6 +368,9 @@ def render_profile(policy: SandboxPolicy) -> str:
         f"(allow network-outbound (remote tcp \"*:{policy.egress_port}\"))",
         "",
     ]
+    if policy.local_tools:
+        lines.insert(-1, f"(allow process-exec {_terms('subpath', ('/bin', '/usr/bin', os.path.dirname(policy.interpreter_path)))})")
+        lines.insert(-1, "(allow signal (target children))")
     return "\n".join(lines)
 
 
@@ -414,7 +442,7 @@ except BaseException as exc:
 _SPAWN_PROBE = """
 import subprocess, sys
 try:
-    subprocess.run([sys.argv[1], "-c", "exit 0"], capture_output=True, timeout=10)
+    subprocess.run([sys.argv[1], "-c", "exit 0"], capture_output=True, timeout=10, check=True)
     print("allowed")
 except BaseException as exc:
     print("denied:" + type(exc).__name__)
@@ -506,7 +534,7 @@ def probe_definitions(policy: SandboxPolicy) -> tuple[SandboxProbe, ...]:
             (os.path.join(policy.content_root, PROBE_BASENAME),),
             (os.path.join(policy.content_root, PROBE_BASENAME),),
         ),
-        SandboxProbe("spawn_shell", "denied", _SPAWN_PROBE, ("/bin/sh",)),
+        SandboxProbe("spawn_shell", "allowed" if policy.local_tools else "denied", _SPAWN_PROBE, ("/bin/sh",)),
         SandboxProbe(
             "connect_non_egress_port",
             "denied",
@@ -636,6 +664,8 @@ def prepare_sandbox(
     descriptor_path: Path,
     hermes_home: Path | None = None,
     egress_port: int = DEFAULT_EGRESS_PORT,
+    local_tools: bool = False,
+    tool_read_roots: Sequence[str] = (),
 ) -> SandboxLaunch:
     """Generate, seal, probe and record the profile for one launch.
 
@@ -649,6 +679,8 @@ def prepare_sandbox(
         descriptor_path=descriptor_path,
         hermes_home=hermes_home,
         egress_port=egress_port,
+        local_tools=local_tools,
+        tool_read_roots=tool_read_roots,
     )
     text = render_profile(policy)
     digest = profile_digest(text)

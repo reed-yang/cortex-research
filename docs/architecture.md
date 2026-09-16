@@ -22,6 +22,18 @@ Paths beginning `product/` or `runtime/` above are relative to `cortex_platform/
 The four worker owners are separate layers; merging them would combine process
 I/O, release lifecycle and transport authorization responsibilities.
 
+Managed tools have an explicit policy. The default `runtime.tools = "none"`
+exposes session history only, alongside application-provided evidence. Opt-in
+`local` mode admits terminal/file tools, system executables and the slot's Python
+inside the same OS sandbox. Commands start in a private worker workspace; enabled
+research asset roots and the configured readings destination are read-only.
+Changes to registered read roots replace the worker on its next acquisition.
+The worker advertises tool-policy v1 in local mode, removes provider/transport/
+protocol credentials from child environments, and converts permanent execution
+permission errors to exit 126 without retrying. An older worker is refused before
+a local-tool turn. This requires a newly qualified worker payload, not an edit
+to an installed slot. Hermes approval callbacks remain active.
+
 ## Data and effects
 
 Control SQLite owns product workspaces, threads, runs, attempts, research items,

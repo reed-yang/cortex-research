@@ -353,7 +353,17 @@ class WorkerSupervisorV2:
             # boundary, not an operator setting, and a caller that could unset
             # it could turn the gate off.
             "HERMES_INTERACTIVE": "1",
+            "CORTEX_LOCAL_TOOLS": "0",
         }
+        if self.sandbox is not None and self.sandbox.policy.local_tools:
+            workspace = self.descriptor.state_dir / "workspace"
+            workspace.mkdir(exist_ok=True, mode=0o700)
+            pinned.update(
+                CORTEX_LOCAL_TOOLS="1",
+                TERMINAL_ENV="local",
+                TERMINAL_CWD=str(workspace),
+                PATH=str(self.descriptor.interpreter_path.parent) + os.pathsep + os.defpath,
+            )
         if self._environment_override is not None:
             return dict(self._environment_override) | pinned
         return {
@@ -432,7 +442,12 @@ class WorkerSupervisorV2:
             health = self.request("health.check", {})
             if (
                 not isinstance(health, dict)
-                or set(health) != {"healthy", "protocol", "ledger_open", "quarantined"}
+                or set(health) not in (
+                    {"healthy", "protocol", "ledger_open", "quarantined"},
+                    {"healthy", "protocol", "ledger_open", "quarantined", "tool_policy_version"},
+                )
+                or ("tool_policy_version" in health and
+                    (type(health["tool_policy_version"]) is not int or health["tool_policy_version"] != 1))
                 or health.get("healthy") is not True
                 or health.get("protocol") != PROTOCOL_V2
                 or health.get("ledger_open") is not True

@@ -26,6 +26,7 @@ from typing import BinaryIO, Callable, Mapping, Sequence
 
 from .approval import ApprovalChoiceError
 from .confinement import confinement_for, install_write_confinement
+from .tool_policy import TOOL_POLICY_VERSION
 from .digests import canonical_json, digest_document
 from .ledger import LedgerUnavailable, OperationConflict, OperationLedger
 from .protocol import (
@@ -396,6 +397,8 @@ def serve(
                     "ledger_open": ledger is not None,
                     "quarantined": ledger.quarantined if ledger is not None else False,
                 }
+                if os.environ.get("CORTEX_LOCAL_TOOLS") == "1":
+                    result["tool_policy_version"] = TOOL_POLICY_VERSION
             elif request.method == "identity.measure":
                 if identity_error is not None:
                     raise identity_error

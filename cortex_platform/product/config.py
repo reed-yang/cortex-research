@@ -55,7 +55,7 @@ _LOOPBACK_ISSUER_PATTERN = re.compile(r"^http://127\.0\.0\.1:(?:[1-9][0-9]{0,4})
 # replaces `cortexd`'s environment with seven keys, so the allowlisted
 # `*_BASE_URL` variables the P5.4c fix read can only ever be set by an
 # acceptance driver that starts the daemon itself (⟦BLOCK-1⟧).
-_RUNTIME_KEYS = {"model", "provider", "base_url"}
+_RUNTIME_KEYS = {"model", "provider", "base_url", "tools"}
 _MODEL_PATTERN = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
 #: The fork's own provider vocabulary (`custom`, `anthropic`, `openai`, ...),
 #: which selects its API mode. A plain lowercase token, never a URL.
@@ -461,6 +461,8 @@ def validate_config(raw: object) -> dict[str, object]:
         base_url = runtime.get("base_url")
         if base_url is not None:
             _validate_runtime_base_url(base_url)
+        if runtime.get("tools", "none") not in {"none", "local"}:
+            raise ConfigError("runtime.tools must be none or local")
         validated["runtime"] = runtime
     if "web" in raw:
         validated["web"] = _validate_web(raw["web"])

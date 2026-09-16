@@ -156,6 +156,7 @@ logical aliases pointing at an external store, in exactly two syntaxes:
 model = "<model id>"
 provider = "anthropic"          # or openai, openrouter, custom
 base_url = "https://api.example.com"
+tools = "none"                # local enables sandboxed terminal/file tools
 
 [secret_refs]
 anthropic = "keychain://cortex-provider/anthropic"
@@ -190,6 +191,13 @@ bytes live under the state directory; absolute asset paths never enter a public
 DTO. The Web listener is loopback-only and the Control token stays server-side.
 Nothing is uploaded anywhere except the model turns you send to the provider you
 configured.
+
+`runtime.tools = "local"` requires a worker carrying managed tool policy v1.
+It enables commands in the private worker workspace and read-only access to
+configured research/readings roots. External writes, unrelated home reads and
+runtime configuration changes remain denied. The stock gen9 payload does not
+carry this capability and will refuse local mode until upgraded through the
+qualified runtime lifecycle. See [managed tool access](docs/runbooks/managed-tool-access.md).
 
 ## Third-party material
 

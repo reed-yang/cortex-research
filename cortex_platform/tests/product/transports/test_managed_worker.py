@@ -91,11 +91,15 @@ class _FakeBackend:
         environment_factory,
         egress_port,
         agent_options_factory=None,
+        local_tools=False,
+        tool_read_roots=(),
     ) -> None:
         self.descriptor_path = descriptor_path
         self.environment_factory = environment_factory
         self.egress_port = egress_port
         self.agent_options_factory = agent_options_factory
+        self.local_tools = local_tools
+        self.tool_read_roots = tool_read_roots
         self.environments: list[dict[str, str]] = []
         self.supervisor: _FakeSupervisor | None = None
         self.closed = 0
@@ -1272,7 +1276,7 @@ def test_a_turn_is_told_which_provider_to_use(
     assert "quiet_mode" not in options
 
 
-def test_an_installation_that_names_no_provider_is_told_nothing(
+def test_an_installation_without_a_provider_still_has_explicit_tool_limits(
     tmp_path: Path, store: ControlStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A way to answer, never a default answer."""
@@ -1281,7 +1285,48 @@ def test_an_installation_that_names_no_provider_is_told_nothing(
     worker = _worker(tmp_path, store, monkeypatch)
     assert worker.bind().bound is True
 
-    assert worker._agent_options() == {}  # noqa: SLF001
+    options = worker._agent_options()
+    assert "provider" not in options and "api_key" not in options
+    assert options["enabled_toolsets"] == ["session_search"]
+    assert "disabled" in options["ephemeral_system_prompt"]
+
+
+def test_local_tools_receive_only_enabled_research_roots_and_relaunch_on_revocation(
+    tmp_path, store, monkeypatch,
+):
+    _approve(store)
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    root = store.register_asset_root(
+        root_id="research-corpus", private_path=papers, max_bytes=10000,
+        enabled=True, actor_id="operator", idempotency_key="local-tools-root-register")
+    worker = _worker(tmp_path, store, monkeypatch, runtime={"tools": "local"})
+    assert worker.bind().bound
+    _open_window(store)
+    worker.acquire()
+    backend = _FakeBackend.instances[-1]
+    assert backend.local_tools is True
+    assert backend.tool_read_roots == (str(papers),)
+    options = worker._agent_options()
+    assert options["enabled_toolsets"] == ["session_search", "terminal", "file"]
+    assert str(papers) in options["ephemeral_system_prompt"]
+    store.update_asset_root(
+        root_id=root.root_id, private_path=root.private_path, max_bytes=root.max_bytes,
+        enabled=False, expected_revision=root.revision, actor_id="operator",
+        idempotency_key="local-tools-root-revoke")
+    worker.acquire()
+    assert backend.closed == 1
+    assert _FakeBackend.instances[-1].tool_read_roots == ()
+    assert str(papers) not in worker._agent_options()["ephemeral_system_prompt"]
+
+
+def test_a_tool_root_cannot_expose_the_control_database(tmp_path, store, monkeypatch):
+    worker = _worker(tmp_path, store, monkeypatch, runtime={"tools": "local"})
+    store.register_asset_root(
+        root_id="research-corpus", private_path=tmp_path, max_bytes=10000,
+        enabled=True, actor_id="operator", idempotency_key="local-tools-broad-root")
+    with pytest.raises(ManagedWorkerUnavailable, match="tool_root_overlaps_product_state"):
+        worker._tool_roots()
 
 
 # -- ⟦BLOCK-1⟧ the provider a SUPERVISED daemon can name ----------------------
@@ -1343,7 +1388,7 @@ def test_the_supervised_daemon_names_a_provider_from_configuration_alone(
     assert worker.bind().bound is True
     options = worker._agent_options()  # noqa: SLF001 - the turn's provider
 
-    assert options == {
+    assert {key: options[key] for key in ("provider", "base_url", "api_key", "model")} == {
         "provider": "anthropic",
         "base_url": "https://provider.invalid",
         "api_key": "sk-obviously-fake",
@@ -1517,7 +1562,9 @@ def test_an_installation_that_names_nothing_still_binds(
     )
 
     assert worker.bind().bound is True
-    assert worker._agent_options() == {}  # noqa: SLF001
+    options = worker._agent_options()
+    assert "provider" not in options and "api_key" not in options
+    assert options["enabled_toolsets"] == ["session_search"]
 
 
 # -- ⟦P54A-2⟧ a window that ends releases the worker --------------------------

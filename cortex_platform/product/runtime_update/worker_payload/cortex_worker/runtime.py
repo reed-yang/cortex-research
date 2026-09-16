@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .approval import fork_choice
+from .tool_policy import install_subprocess_environment, install_terminal_denials
 
 # The names the fork loads code, configuration or prompt text from inside
 # `HERMES_HOME`, in the order the design lists them. `.env` is a file; the rest
@@ -90,11 +91,15 @@ def load_runtime(home: Path):
 
     assert_hermes_home(home)
     try:
+        if os.environ.get("CORTEX_LOCAL_TOOLS") == "1":
+            install_subprocess_environment()
         import hermes_state  # type: ignore[import-not-found]
         from run_agent import AIAgent  # type: ignore[import-not-found]
         from tools.terminal_tool import (  # type: ignore[import-not-found]
             set_approval_callback,
         )
+        if os.environ.get("CORTEX_LOCAL_TOOLS") == "1":
+            install_terminal_denials()
     except BaseException as exc:  # noqa: BLE001 - the fork raises broadly at import
         raise RuntimeUnavailable("hermes_not_installed") from exc
     return hermes_state, AIAgent, set_approval_callback

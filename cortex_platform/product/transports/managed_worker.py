@@ -408,6 +408,9 @@ class ManagedTransportWorker:
         # module knows how to bind: an unrelated `secret_refs` entry still never
         # reaches a worker's environment.
         runtime_section = dict(config.get("runtime") or {})  # type: ignore[arg-type]
+        self._local_tools = runtime_section.get("tools", "none") == "local"
+        self._readings_config = dict(config.get("readings") or {})
+        self._active_tool_roots: tuple[str, ...] = ()
         self._model = str(runtime_section.get("model") or "") or None
         self._provider_declared = bool(runtime_section.get("provider"))
         self._provider_name = (
@@ -750,9 +753,7 @@ class ManagedTransportWorker:
         sandbox. So the product says it, from the same `secret_refs` alias and
         the same allowlisted base URL the worker's environment already carries.
 
-        An installation that names no provider gets `{}`, which is exactly what
-        the previous behaviour was -- this adds a way to answer, never a
-        default answer.
+        Tool availability is explicit even when no provider is configured.
 
         ⟦BLOCK-1⟧ The endpoint now comes from `[runtime] base_url` on every
         deployed path, and `[runtime] provider` says which of the fork's API
@@ -778,8 +779,53 @@ class ManagedTransportWorker:
             }
             if self._model:
                 options["model"] = self._model
-            return options
-        return {}
+            return options | self._tool_options()
+        return self._tool_options()
+
+    def _tool_roots(self) -> dict[str, str]:
+        if not self._local_tools:
+            return {}
+        roots = {
+            root.root_id: str(root.private_path.resolve(strict=True))
+            for root in self._store.list_asset_roots()
+            if root.enabled and root.root_id in {
+                "research-corpus", "research-documents", "research-artifacts"
+            }
+        }
+        if self._readings_config:
+            from ..readings.service import configured_root
+
+            roots["readings"] = str(configured_root(
+                {"readings": self._readings_config}, self._paths))
+        for value in roots.values():
+            root = Path(value)
+            if any(path.resolve().is_relative_to(root) for path in self._paths.directories()):
+                raise ManagedWorkerUnavailable("tool_root_overlaps_product_state")
+        return roots
+
+    def _tool_options(self) -> dict[str, object]:
+        toolsets = ["session_search"]
+        if self._local_tools:
+            toolsets += ["terminal", "file"]
+            directive = (
+                "Managed local tools are available. Use terminal and file tools for "
+                "filesystem questions, independently of an earlier research packet. "
+                "The default working directory is the private runtime workspace; "
+                "HOME is private runtime state, not the operator's home directory. "
+                "The following configured library roots are readable but not writable: "
+                + json.dumps(self._tool_roots(), ensure_ascii=False)
+                + ". Use these exact roots instead of searching the operator's home. "
+                "Permission denial for another path does not mean all directories are "
+                "unreadable. Do not retry permission failures. A paper reference is not "
+                "proof of an external file: verify the path using the file tools."
+            )
+        else:
+            directive = (
+                "Local terminal and file tools are disabled for this managed runtime. "
+                "Use the supplied evidence and session history; do not claim filesystem "
+                "searches occurred or ask for paths as if that would grant tool access."
+            )
+        return {"enabled_toolsets": toolsets, "ephemeral_system_prompt": directive}
 
     # -- the seams the turn bridge binds to --------------------------------
 
@@ -864,14 +910,21 @@ class ManagedTransportWorker:
                 )
                 self._release_locked()
                 self._last_release = None
+            tool_roots = tuple(sorted(set(self._tool_roots().values())))
+            if self._backend is not None and tool_roots != self._active_tool_roots:
+                self._release_locked()
             if self._backend is None:
                 assert self._descriptor_path is not None
+                tool_options = ({"local_tools": True, "tool_read_roots": tool_roots}
+                                if self._local_tools else {})
                 self._backend = self._backend_factory(
                     self._descriptor_path,
                     environment_factory=self._environment,
                     egress_port=self._egress_port,
                     agent_options_factory=self._agent_options,
+                    **tool_options,
                 )
+                self._active_tool_roots = tool_roots
                 # This acquisition's own reading of the gate. `_environment`
                 # re-reads it at the launch below (⟦AMD-4⟧: a relaunch must
                 # build from the gate as it is THEN), so the two can disagree

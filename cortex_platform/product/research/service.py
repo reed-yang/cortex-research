@@ -243,6 +243,8 @@ class ResearchService:
             "Indexed passages may lag current documents; file pages are bounded prefixes, not complete deep reads. "
             "No embedding provider, external search, new-paper ingestion or scheduling was performed. "
             "Use the complete conversation to interpret the question, and make retrieval limits explicit.\n"
+            "Filesystem location questions may use available file tools to verify paths; "
+            "a filesystem result is not a paper citation or a new research packet.\n"
             "Follow-up turns retain the previously selected packet; use /research for a fresh selection.\n"
             + _dossier_directive(context["snapshot"])
             + "Current context identity: " + canonical({

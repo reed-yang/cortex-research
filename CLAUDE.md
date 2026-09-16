@@ -26,6 +26,11 @@ roadmap and release records. Read the applicable runbook before changing a bound
   `runtime/managed_hermes.py` owns backend lifecycle; the runtime-update
   supervisor owns process I/O; the runtime-update service owns release state.
   These responsibilities must remain distinct.
+- Managed local tools are opt-in through `runtime.tools = "local"`. The launch
+  policy admits system commands, the slot interpreter and configured read-only
+  research/readings roots; worker tools use a private workspace. Require worker
+  tool policy v1 before dispatch, strip credentials from child environments and
+  keep external writes and sealed runtime configuration denied.
 - The product's Python dependency closure excludes the separately supplied Hermes
   slot, which carries its own interpreter and dependencies. Product installation
   with runtime health `unbound` is not a successful model-turn acceptance.

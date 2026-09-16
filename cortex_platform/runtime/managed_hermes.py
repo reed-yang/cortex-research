@@ -176,6 +176,8 @@ class ManagedHermesBackend:
         sandbox: bool = True,
         egress_port: int = DEFAULT_EGRESS_PORT,
         agent_options_factory: Callable[[], Mapping[str, object]] | None = None,
+        local_tools: bool = False,
+        tool_read_roots: tuple[str, ...] = (),
     ) -> None:
         if environment is not None and environment_factory is not None:
             raise ValueError("pass an environment or a factory, never both")
@@ -209,6 +211,8 @@ class ManagedHermesBackend:
         # 443 in production, and the only reason to move it is an acceptance
         # whose provider stand-in is a loopback server on an unprivileged port.
         self._egress_port = int(egress_port)
+        self._local_tools = local_tools
+        self._tool_read_roots = tool_read_roots
         self.sandbox_launch: SandboxLaunch | None = None
         self._turn_timeout = turn_timeout
         self._lock = threading.RLock()
@@ -248,6 +252,8 @@ class ManagedHermesBackend:
             descriptor,
             descriptor_path=descriptor_path,
             egress_port=self._egress_port,
+            local_tools=self._local_tools,
+            tool_read_roots=self._tool_read_roots,
         )
         self.sandbox_launch = launch
         return self._factory(
@@ -296,6 +302,14 @@ class ManagedHermesBackend:
                 provenance_stub = None
             supervisor = self._new_supervisor(self._descriptor_path)
             supervisor.start()
+            if self._local_tools:
+                try:
+                    health = supervisor.request("health.check", {})
+                    if not isinstance(health, dict) or health.get("tool_policy_version") != 1:
+                        raise ManagedRuntimeUnavailable("managed_local_tools_require_worker_policy_v1")
+                except BaseException:
+                    supervisor.close(force=True)
+                    raise
             self._supervisor = supervisor
             self._identity = self._read_identity(supervisor)
             if provenance_stub is not None:
