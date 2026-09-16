@@ -13,6 +13,7 @@ instructions. The following files are intentionally tracked and public.
 | [Web verification](runbooks/web-verification.md) | Test tiers and their limits |
 | [Hermes acceptance](runbooks/hermes-acceptance.md) | Worker qualification and continuity |
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
+| [0.1.25](releases/0.1.25.md) | Repeated paper capture repair and installed acceptance |
 | [0.1.23](releases/0.1.23.md) | Readings publication release and validation boundaries |
 | [0.1.22](releases/0.1.22.md) | Previous direct-page default and installed acceptance |
 | [0.1.21](releases/0.1.21.md) | Previous ingestion repair and installed acceptance |
