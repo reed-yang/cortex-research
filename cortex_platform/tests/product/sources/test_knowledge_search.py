@@ -187,3 +187,14 @@ def test_search_uses_fts_and_title_primary_key_not_embeddings(knowledge, monkeyp
     knowledge[3].search("推测解码 decoding")
     assert any("FROM chunks_fts" in sql for sql in statements)
     assert any("FROM papers WHERE paper_dir" in sql for sql in statements)
+
+
+def test_short_model_suffixes_and_versions_remain_searchable(knowledge):
+    from cortex_platform.product.sources.search import _terms
+    assert _terms("LingBot VA 2.0") == (["lingbot", "va", "2.0"], [])
+    _, _, database, reader = knowledge
+    _write(database, "UPDATE chunks SET text = ? WHERE id = 1", ("LingBot VA 2.0 model",))
+    for query in ("VA", "2.0", "LingBot VA 2.0"):
+        result = reader.search(query)
+        assert any(":chunk:1:" in hit["evidence_id"] for hit in result["results"])
+    assert reader.search("3.0")["results"] == []

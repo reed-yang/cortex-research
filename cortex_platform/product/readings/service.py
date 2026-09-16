@@ -150,20 +150,27 @@ class ReadingsService:
                 # A title/path match never establishes identity in a legacy library.
                 notes = read_file(target, 'notes.md').decode('utf-8')
                 canonical = row['canonical_id']
-                if not canonical.startswith('arxiv:'):
-                    raise PublicationConflict('unverified_existing_paper')
-                references = re.findall(
-                    r'(?<![\w./-])(?:arxiv:|(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf|html)/)'
-                    r'([0-9]{4}\.[0-9]{4,5}(?:v[1-9][0-9]*)?)(?:\.pdf)?(?![\w/]|\.[\w/])',
-                    notes, re.IGNORECASE,
-                )
-                identities = {'arxiv:' + canonicalize_arxiv_id(value).authority_id for value in references}
-                if canonical not in identities:
-                    raise PublicationConflict('unverified_existing_paper')
-                # A matching related-work citation cannot establish ownership
-                # of a directory whose notes also identify a different paper.
-                if identities != {canonical}:
-                    raise PublicationConflict('ambiguous_existing_paper_identity')
+                if canonical.startswith('sha256:'):
+                    primary = next((name for name in ('full_text.md', 'notes.md') if name in hashes), None)
+                    expected = canonical.removeprefix('sha256:')
+                    if (primary is None or hashes[primary] != expected
+                            or digest(read_file(target, primary)) != expected):
+                        raise PublicationConflict('unverified_existing_paper')
+                else:
+                    if not canonical.startswith('arxiv:'):
+                        raise PublicationConflict('unverified_existing_paper')
+                    references = re.findall(
+                        r'(?<![\w./-])(?:arxiv:|(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf|html)/)'
+                        r'([0-9]{4}\.[0-9]{4,5}(?:v[1-9][0-9]*)?)(?:\.pdf)?(?![\w/]|\.[\w/])',
+                        notes, re.IGNORECASE,
+                    )
+                    identities = {'arxiv:' + canonicalize_arxiv_id(value).authority_id for value in references}
+                    if canonical not in identities:
+                        raise PublicationConflict('unverified_existing_paper')
+                    # A matching related-work citation cannot establish ownership
+                    # of a directory whose notes also identify a different paper.
+                    if identities != {canonical}:
+                        raise PublicationConflict('ambiguous_existing_paper_identity')
         stage = self.state / 'staging' / uuid.uuid4().hex
         (stage / 'new').mkdir(parents=True, mode=0o700)
         files = {}

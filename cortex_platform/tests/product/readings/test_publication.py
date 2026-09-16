@@ -360,3 +360,22 @@ def test_separate_installations_share_the_library_lock(library):
     with service.lock():
         with pytest.raises(BlockingIOError):
             other.tick()
+
+
+@pytest.mark.parametrize('matching', [True, False])
+def test_content_identified_existing_paper_requires_exact_primary_digest(library, matching):
+    from cortex_platform.product.readings.files import digest
+    service, store = library
+    source = add_paper(service, store)
+    store.sources[0]['canonical_id'] = 'sha256:' + digest((source / 'full_text.md').read_bytes())
+    target = service.root / source.name
+    target.mkdir()
+    notes = 'Existing human notes without an arXiv identifier'
+    (target / 'notes.md').write_text(notes)
+    (target / 'full_text.md').write_text('original generated text' if matching else 'different paper')
+    service.tick()
+    assert status(service)['state'] == ('published' if matching else 'conflict')
+    assert (target / 'notes.md').read_text() == notes
+    with service.connect() as db:
+        owned = json.loads(db.execute('SELECT owned FROM publications').fetchone()[0])
+    assert 'full_text.md' not in owned

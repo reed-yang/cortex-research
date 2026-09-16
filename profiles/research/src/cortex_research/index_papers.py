@@ -1,7 +1,9 @@
 """Index agent-readings papers (READ-ONLY) into research.db (papers/chunks/vec0/fts5)."""
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import struct
 from datetime import datetime, timezone
@@ -38,90 +40,118 @@ def _catalog_chunk_text(entry: dict) -> str:
     return f"{entry['title']} | {kws} | {entry.get('summary','')}"
 
 
-def index_paper(notes_path: Path, *, source: str = "reader",
+def _input_digest(notes_path: Path) -> str:
+    digest = hashlib.sha256()
+    for path in (notes_path, notes_path.parent / "full_text.md"):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes() if path.exists() else b"<absent>")
+    return digest.hexdigest()
+
+
+def _chunk_rows(notes_path: Path, entry: dict) -> list[tuple[str, str]]:
+    rows = [("__catalog__", _catalog_chunk_text(entry))]
+    ft = notes_path.parent / "full_text.md"
+    if ft.exists():
+        rows.extend((c["section"], c["text"]) for c in chunk_paper(ft, entry["title"]))
+    return rows
+
+
+def _valid_vector(vector, *, allow_zero: bool = False) -> bool:
+    return (len(vector) == 4096 and all(math.isfinite(x) for x in vector)
+            and (allow_zero or any(vector)))
+
+
+def index_paper(notes_path: Path, *, source: str | None = None,
                 arxiv_id: str | None = None,
                 published_at: str | None = None,
                 full_text_source: str | None = None,
-                source_url: str | None = None) -> bool:
-    """Index a single paper's notes.md into research.db. Returns True if indexed.
+                source_url: str | None = None,
+                skip_unchanged: bool = False) -> bool:
+    """Atomically index a paper, preserving omitted identity/provenance fields.
 
-    F5: `source` kwarg defaults to 'reader' (M1a/M1b behavior, backward compat).
-    M1f's radar_index.py wrapper passes source='radar'.
-
-    `arxiv_id` is the authoritative dedup key, stored in papers.arxiv_id so that
-    membership checks no longer depend on the paper_dir naming convention (which
-    is now full-title for agent ingests). NULL for non-arxiv (reader) papers.
-
-    `full_text_source` ('html'|'ocr'|'pdf') records how the body was extracted (the
-    value fetch_full_text returns). NULL for reader/legacy papers. A 'pdf' value
-    flags a plain-text (no-formula, no-image) dump that a backfill can target.
-
-    `source_url` is the normalized origin URL for a NON-arxiv PDF ingest
-    (ingest_pdf_url) — the dedup key so re-ingesting the same URL is an update,
-    not a duplicate. NULL for arxiv/reader papers.
+    New papers default to source='reader'. Unchanged text reuses valid vectors;
+    embedding calls finish before taking the SQLite write lock. Returns False
+    when skip_unchanged finds a fully current index. Source files are read-only.
     """
     paper_dir = notes_path.parent.name
+    fingerprint = _input_digest(notes_path)
     entry = parse_notes(notes_path)
     if entry is None:
         return False
-
-    now = datetime.now(timezone.utc).isoformat()
+    chunk_rows = _chunk_rows(notes_path, entry)
+    skip_embed = os.environ.get("CORTEX_SKIP_EMBED") == "1"
     conn = connect()
     apply_schema(conn)
     from .radar_schema import ensure_radar_schema
     ensure_radar_schema(conn)
-
     try:
+        previous = conn.execute("SELECT * FROM papers WHERE paper_dir=?", (paper_dir,)).fetchone()
+        old_chunks = conn.execute(
+            "SELECT c.section,c.text,e.embedding FROM chunks c "
+            "LEFT JOIN chunk_embeddings e ON e.chunk_id=c.id "
+            "WHERE c.paper_dir=? ORDER BY c.chunk_idx,c.id", (paper_dir,)).fetchall()
+        reusable = {}
+        for row in old_chunks:
+            blob = row["embedding"]
+            if blob is not None and len(blob) == 4096 * 4:
+                vector = struct.unpack("4096f", blob)
+                if _valid_vector(vector, allow_zero=skip_embed):
+                    reusable[row["text"]] = vector
+        values = (entry["title"], entry.get("date"),
+                  json.dumps(entry.get("keywords") or []), entry.get("summary"),
+                  json.dumps(entry.get("projects") or []))
+        same_metadata = previous is not None and values == tuple(
+            previous[name] for name in ("title", "date", "keywords", "summary", "projects"))
+        supplied = {"source": source, "arxiv_id": arxiv_id, "published_at": published_at,
+                    "full_text_source": full_text_source, "source_url": source_url}
+        same_provenance = previous is not None and all(
+            value is None or previous[name] == value for name, value in supplied.items())
+        if (skip_unchanged and same_metadata and same_provenance
+                and chunk_rows == [(r["section"], r["text"]) for r in old_chunks]
+                and all(text in reusable for _, text in chunk_rows)):
+            return False
+        missing = list(dict.fromkeys(text for _, text in chunk_rows if text not in reusable))
+        if missing:
+            vectors = [[0.0] * 4096 for _ in missing] if skip_embed else embed_texts(missing)
+            if len(vectors) != len(missing) or not all(
+                    _valid_vector(v, allow_zero=skip_embed) for v in vectors):
+                raise ValueError("Embedding response count, dimensions or values are invalid")
+            reusable.update(zip(missing, vectors))
+        if _input_digest(notes_path) != fingerprint:
+            raise RuntimeError("Paper changed while indexing; retry with the current files")
+
+        now = datetime.now(timezone.utc).isoformat()
         with conn:
-            old_ids = [r[0] for r in conn.execute(
-                "SELECT id FROM chunks WHERE paper_dir = ?", (paper_dir,))]
-            if old_ids:
-                # vec0 has no ON DELETE CASCADE — purge old embeddings explicitly
-                conn.execute(
-                    f"DELETE FROM chunk_embeddings WHERE chunk_id IN ({','.join('?' * len(old_ids))})",
-                    old_ids,
-                )
-            conn.execute("DELETE FROM chunks WHERE paper_dir = ?", (paper_dir,))
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT * FROM papers WHERE paper_dir=?", (paper_dir,)).fetchone()
+            if (dict(current) if current else None) != (dict(previous) if previous else None):
+                raise RuntimeError("Paper index changed concurrently; retry maintenance")
+            conn.execute(
+                "DELETE FROM chunk_embeddings WHERE chunk_id IN "
+                "(SELECT id FROM chunks WHERE paper_dir=?)", (paper_dir,))
+            conn.execute("DELETE FROM chunks WHERE paper_dir=?", (paper_dir,))
             conn.execute(
                 """INSERT INTO papers (paper_dir,title,date,keywords,summary,projects,indexed_at,source,arxiv_id,published_at,full_text_source,source_url)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(paper_dir) DO UPDATE SET
                      title=excluded.title, date=excluded.date, keywords=excluded.keywords,
                      summary=excluded.summary, projects=excluded.projects,
-                     indexed_at=excluded.indexed_at, source=excluded.source,
-                     arxiv_id=excluded.arxiv_id, published_at=excluded.published_at,
-                     full_text_source=excluded.full_text_source,
-                     source_url=excluded.source_url""",
-                (paper_dir, entry["title"], entry.get("date"),
-                 json.dumps(entry.get("keywords") or []), entry.get("summary"),
-                 json.dumps(entry.get("projects") or []), now, source, arxiv_id,
-                 published_at, full_text_source, source_url),
+                     indexed_at=excluded.indexed_at, source=COALESCE(?,papers.source),
+                     arxiv_id=COALESCE(excluded.arxiv_id,papers.arxiv_id),
+                     published_at=COALESCE(excluded.published_at,papers.published_at),
+                     full_text_source=COALESCE(excluded.full_text_source,papers.full_text_source),
+                     source_url=COALESCE(excluded.source_url,papers.source_url)""",
+                (paper_dir, *values, now, source or "reader", arxiv_id,
+                 published_at, full_text_source, source_url, source),
             )
-            # build chunk list: catalog pseudo-chunk + real chunks
-            chunk_rows = [("__catalog__", 0, _catalog_chunk_text(entry))]
-            ft = notes_path.parent / "full_text.md"
-            if ft.exists():
-                for c in chunk_paper(ft, entry["title"]):
-                    chunk_rows.append((c["section"], c["chunk_idx"], c["text"]))
-            texts = [t for (_, _, t) in chunk_rows]
-            if os.environ.get("CORTEX_SKIP_EMBED") == "1":
-                vectors = [[0.0] * 4096 for _ in texts]
-            else:
-                vectors = embed_texts(texts)
-            # Assign a paper-GLOBAL sequential chunk_idx in document order.
-            # chunk_rows are already in document order (catalog, then
-            # section-by-section); the chunker's per-section `_section_idx` is
-            # NOT globally meaningful (single-sub-chunk sections all get 0), so
-            # `ORDER BY chunk_idx` across a paper would be useless without this.
-            for global_idx, ((section, _section_idx, text), vec) in enumerate(zip(chunk_rows, vectors)):
+            for global_idx, (section, text) in enumerate(chunk_rows):
                 cur = conn.execute(
                     "INSERT INTO chunks (paper_dir,section,chunk_idx,text) VALUES (?,?,?,?)",
                     (paper_dir, section, global_idx, text),
                 )
-                blob = struct.pack(f"{len(vec)}f", *vec)
                 conn.execute(
                     "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
-                    (cur.lastrowid, blob),
+                    (cur.lastrowid, struct.pack("4096f", *reusable[text])),
                 )
         return True
     finally:
@@ -191,17 +221,8 @@ def build_index(full: bool = False, papers_dir: Path | None = None) -> int:
     Default source='reader' for all papers indexed via this entry point.
     """
     papers_dir = papers_dir or agent_readings_papers()
-    conn = connect()
-    apply_schema(conn)
-    existing = {r[0] for r in conn.execute("SELECT paper_dir FROM papers")}
-    conn.close()
-
     indexed = 0
     for notes_path in sorted(papers_dir.glob("*/notes.md")):
-        paper_dir = notes_path.parent.name
-        if not full and paper_dir in existing:
-            continue
-        if index_paper(notes_path, source="reader"):
+        if index_paper(notes_path, skip_unchanged=not full):
             indexed += 1
     return indexed
-

@@ -26,11 +26,11 @@ _STOP = frozenset(
 
 
 def _terms(query: str) -> tuple[list[str], list[str]]:
-    # Match legacy _fts_or_query's English OR/stop-word semantics verbatim in
-    # behavior, without importing the MCP module's provider-capable dependency tree.
+    # Preserve short model suffixes and dotted versions; quote them for FTS5.
+    # Stop-word filtering and bounded OR retrieval remain provider-independent.
     english = list(dict.fromkeys(
-        term for term in re.findall(r"[a-z0-9]+", query.lower())
-        if len(term) >= 3 and term not in _STOP
+        term for term in re.findall(r"[a-z0-9]+(?:\.[0-9]+)*", query.lower())
+        if len(term) >= 2 and term not in _STOP
     ))
     unicode = list(dict.fromkeys(
         term for term in re.findall(r"[^\W_]+", query.casefold())
@@ -91,7 +91,7 @@ def search_knowledge(reader, query, *, limit=10) -> dict:
                 results = []
                 if english and sources:
                     placeholders = ",".join("?" for _ in sources)
-                    expression = " OR ".join(english)
+                    expression = " OR ".join(f'"{term}"' for term in english)
                     rows = connection.execute(
                         f"""SELECT c.id, c.paper_dir,
                                    CASE WHEN length(CAST(c.section AS BLOB)) <= 4000

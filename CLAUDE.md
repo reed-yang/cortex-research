@@ -15,6 +15,9 @@ roadmap and release records. Read the applicable runbook before changing a bound
   Metadata uses the product-bound abs page directly; the export API is a
   fallback when that page cannot provide valid metadata. Both paths must
   identify the requested paper. Full text uses the direct HTML endpoint.
+  Index refreshes preserve omitted provenance, reuse unchanged vectors and
+  finish embedding calls before the write transaction. The maintenance command
+  audits explicit corpus/database paths without deleting historical rows.
 - `product/readings/` owns opt-in external publication and its separate journal.
   Keep Capture outcomes independent, preserve existing notes and require
   provenance/hash matches for generated-file updates. External writes belong

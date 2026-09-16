@@ -42,6 +42,8 @@ def embed_texts(texts: list[str], max_retries: int = 3) -> list[list[float]]:
                 )
                 resp.raise_for_status()
                 data = sorted(resp.json()["data"], key=lambda d: d["index"])
+                if [d["index"] for d in data] != list(range(len(batch))):
+                    raise ValueError("Embedding response indexes do not match the input batch")
                 out.extend([d["embedding"] for d in data])
                 break
             except (httpx.HTTPError, KeyError) as e:
