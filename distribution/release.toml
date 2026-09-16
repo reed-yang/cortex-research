@@ -13,14 +13,14 @@
 format_version = 1
 
 [product]
-version = "0.1.23"
-release_id = "cortex-research-23"
-release_sequence = 23
+version = "0.1.24"
+release_id = "cortex-research-24"
+release_sequence = 24
 
 [control]
 target_schema = 19
 upgrade_from_schemas = [16, 17, 18]
 
 [worker]
-release_id = "hermes-0.15.0-gen9"
+release_id = "hermes-0.15.0-gen10"
 adapter_protocol = "cortex-worker/2"
