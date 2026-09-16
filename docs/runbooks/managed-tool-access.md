@@ -26,8 +26,10 @@ and egress policy; cancellation can signal the worker's children.
 
 File tools can read and search the configured libraries and write outputs in
 the private workspace. This does not grant arbitrary host-home access or writes
-to paper libraries. Model/provider/Telegram/protocol credentials are not copied
-to subprocess environments. Hermes auth.json and the sealed sandbox evidence
+to paper libraries. Provider, Telegram and protocol credentials reach the worker through an
+anonymous pipe after exec, so macOS startup-environment queries do not reveal
+them. The pipe closes before tools load. Credentials are also omitted from
+all tool subprocess environments. Hermes auth.json and the sealed sandbox evidence
 remain unreadable; plugins, hooks and managed configuration remain protected.
 Runtime write authority otherwise remains the existing worker-state subtree.
 

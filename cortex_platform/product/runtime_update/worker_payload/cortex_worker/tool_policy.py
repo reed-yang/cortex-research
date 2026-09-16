@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import subprocess
 
@@ -63,3 +64,37 @@ def install_terminal_denials():
 
     execute._cortex_denials = True
     LocalEnvironment.execute = execute
+
+
+PRIVATE_ENVIRONMENT_FD = "CORTEX_PRIVATE_ENVIRONMENT_FD"
+PRIVATE_ENVIRONMENT_KEYS = frozenset({
+    "CORTEX_WORKER_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+    "TELEGRAM_BOT_TOKEN_RESEARCH",
+})
+MAX_PRIVATE_ENVIRONMENT_BYTES = 65536
+
+
+def receive_private_environment():
+    """Receive credentials after exec so the kernel's startup env has none.
+
+    macOS KERN_PROCARGS2 exposes a same-user process's initial stack even when
+    os.environ later removes a key. An inherited anonymous pipe avoids placing
+    these values on that stack in the first place; it closes before tools load.
+    """
+    raw = os.environ.pop(PRIVATE_ENVIRONMENT_FD, None)
+    if raw is None:
+        return
+    if os.environ.get("CORTEX_LOCAL_TOOLS") != "1" or not raw.isdigit() or int(raw) < 3:
+        raise ValueError("Invalid private environment channel")
+    descriptor = int(raw)
+    os.set_inheritable(descriptor, False)
+    with os.fdopen(descriptor, "rb") as handle:
+        payload = handle.read(MAX_PRIVATE_ENVIRONMENT_BYTES + 1)
+    if len(payload) > MAX_PRIVATE_ENVIRONMENT_BYTES:
+        raise ValueError("Private environment exceeds its bound")
+    values = json.loads(payload)
+    if (not isinstance(values, dict) or not set(values) <= PRIVATE_ENVIRONMENT_KEYS
+            or any(not isinstance(v, str) or "\x00" in v for v in values.values())):
+        raise ValueError("Invalid private environment fields")
+    os.environ.update(values)

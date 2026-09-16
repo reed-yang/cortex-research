@@ -22,6 +22,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Mapping
 
+from .worker_payload.cortex_worker.tool_policy import (
+    MAX_PRIVATE_ENVIRONMENT_BYTES, PRIVATE_ENVIRONMENT_FD, PRIVATE_ENVIRONMENT_KEYS,
+)
 from ..secrets import SecretResolver
 from .worker import PROTOCOL_VERSION
 from .worker_payload.cortex_worker.turn import EVENT_FINISH, EVENT_HEARTBEAT
@@ -398,20 +401,56 @@ class WorkerSupervisorV2:
         ]
         if self.sandbox is not None:
             argv = self.sandbox.wrap(argv)
-        self._process = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            # ⟦AMD-5⟧ An unread PIPE is a deadlock the slot controls: fill the
-            # pipe buffer and the worker blocks forever inside a write nobody
-            # will ever read. Drained, bounded, into the state dir.
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            env=environment,
-            cwd=self.descriptor.state_dir,
-            close_fds=True,
-        )
+        private_read = private_write = None
+        private_payload = None
+        if self.sandbox is not None and self.sandbox.policy.local_tools:
+            private = {key: environment.pop(key) for key in PRIVATE_ENVIRONMENT_KEYS if key in environment}
+            private_payload = json.dumps(private).encode("utf-8")
+            if len(private_payload) > MAX_PRIVATE_ENVIRONMENT_BYTES:
+                raise WorkerEnvironmentError("private worker environment exceeds its bound")
+            private_read, private_write = os.pipe()
+            environment[PRIVATE_ENVIRONMENT_FD] = str(private_read)
+        try:
+            self._process = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                # ⟦AMD-5⟧ An unread PIPE is a deadlock the slot controls: fill the
+                # pipe buffer and the worker blocks forever inside a write nobody
+                # will ever read. Drained, bounded, into the state dir.
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+                cwd=self.descriptor.state_dir,
+                close_fds=True,
+                pass_fds=() if private_read is None else (private_read,),
+            )
+        except BaseException:
+            if private_write is not None:
+                os.close(private_write)
+            raise
+        finally:
+            if private_read is not None:
+                os.close(private_read)
+        if private_write is not None:
+            try:
+                with os.fdopen(private_write, "wb", buffering=0) as channel:
+                    os.set_blocking(channel.fileno(), False)
+                    deadline = time.monotonic() + self.HANDSHAKE_TIMEOUT
+                    remaining = memoryview(private_payload)
+                    while remaining:
+                        timeout = max(0.0, deadline - time.monotonic())
+                        if not select.select([], [channel.fileno()], [], timeout)[1]:
+                            raise WorkerProtocolError("private environment channel timed out")
+                        try:
+                            written = os.write(channel.fileno(), remaining)
+                        except BlockingIOError:
+                            continue
+                        remaining = remaining[written:]
+            except BaseException:
+                self.close(force=True)
+                raise
         self._closed.clear()
         self._last_frame = time.monotonic()
         # ⟦AMD-5⟧ The `Popen` travels as a thread argument rather than being

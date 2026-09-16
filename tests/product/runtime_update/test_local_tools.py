@@ -50,10 +50,23 @@ def test_local_commands_read_libraries_without_modifying_them(tmp_path):
     supervisor = WorkerSupervisorV2(descriptor_path, sandbox=launch)
     environment = supervisor._environment()
     workspace = Path(environment["TERMINAL_CWD"])
+    policy_module = descriptor.state_dir / "tool_policy.py"
+    policy_module.write_bytes(Path(tool_policy.__file__).read_bytes())
+    private_read, private_write = os.pipe()
+    os.write(private_write, json.dumps({"OPENAI_API_KEY": "private-parent-credential-fixture"}).encode())
+    os.close(private_write)
+    environment[tool_policy.PRIVATE_ENVIRONMENT_FD] = str(private_read)
     script = r'''
-import json,subprocess,sys
+import json,os,subprocess,sys
 library,outside,home,workspace=sys.argv[1:]
+sys.path.insert(0,os.environ['HOME'])
+from tool_policy import receive_private_environment,install_subprocess_environment
+receive_private_environment()
+assert os.environ['OPENAI_API_KEY']
+install_subprocess_environment()
 commands={
+ 'read_parent_environment':['/bin/ps','eww','-p',str(os.getpid())],
+ 'read_parent_args':[sys.executable,'-I','-c',"import ctypes,sys; lib=ctypes.CDLL('/usr/lib/libSystem.B.dylib',use_errno=True); mib=(ctypes.c_int*3)(1,49,int(sys.argv[1])); size=ctypes.c_size_t(262144); buf=ctypes.create_string_buffer(size.value); rc=lib.sysctl(mib,3,buf,ctypes.byref(size),None,0); print(repr(buf.raw[:size.value]) if rc==0 else 'denied')",str(os.getpid())],
  'pwd':['/bin/pwd'],
  'read':['/bin/cat',library+'/notes.md'],
  'write_workspace':['/bin/sh','-c','echo writable > output.txt; cat output.txt'],
@@ -65,8 +78,12 @@ commands={
  'read_auth':['/bin/cat',home+'/auth.json'],
 }
 for name,argv in commands.items():
- p=subprocess.run(argv,cwd=workspace,capture_output=True,text=True)
- print(json.dumps({'name':name,'returncode':p.returncode,'output':p.stdout}))
+ try:
+  p=subprocess.run(argv,cwd=workspace,capture_output=True,text=True)
+  result={'name':name,'returncode':p.returncode,'output':p.stdout}
+ except PermissionError:
+  result={'name':name,'returncode':126,'output':'permission denied'}
+ print(json.dumps(result))
 '''
     home = descriptor.state_dir / "hermes-home"
     (home / "hooks").mkdir()
@@ -74,13 +91,17 @@ for name,argv in commands.items():
     completed = subprocess.run(launch.wrap([
         str(descriptor.interpreter_path), "-I", "-c", script,
         str(library), str(outside), str(home), str(workspace),
-    ]), env=environment, cwd=workspace, capture_output=True, text=True, timeout=30)
+    ]), env=environment, cwd=workspace, capture_output=True, text=True, timeout=30, pass_fds=(private_read,))
+    os.close(private_read)
     assert completed.returncode == 0, completed.stderr
     results = {r["name"]: r for r in map(json.loads, completed.stdout.splitlines())}
     for name in ("pwd", "read", "write_workspace"):
         assert results[name]["returncode"] == 0, results[name]
     for name in ("write_library", "delete_library", "read_outside", "read_escape", "write_hook", "read_auth"):
         assert results[name]["returncode"] != 0, results[name]
+    assert results["read_parent_args"]["returncode"] == 0
+    for name in ("read_parent_environment", "read_parent_args"):
+        assert "private-parent-credential-fixture" not in results[name]["output"]
     assert notes.read_text() == "retained notes\n"
     assert (workspace / "output.txt").read_text() == "writable\n"
 
@@ -247,3 +268,24 @@ def hermes_tool_root():
     # macOS places pytest's default temporary root. Use an ordinary scratch root.
     with tempfile.TemporaryDirectory(prefix="cortex-local-tools-", dir="/tmp") as value:
         yield Path(value).resolve()
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="Darwin startup environment")
+def test_local_worker_authenticates_without_credentials_in_startup_environment(tmp_path):
+    import ctypes
+    path, descriptor = _descriptor(tmp_path)
+    launch = prepare_sandbox(descriptor, descriptor_path=path, local_tools=True)
+    supervisor = WorkerSupervisorV2(path, sandbox=launch, environment={
+        'HOME': str(descriptor.state_dir), 'PATH': os.defpath,
+        'OPENAI_API_KEY': 'private-worker-provider-fixture',
+    })
+    with supervisor:
+        assert supervisor.request('health.check', {})['tool_policy_version'] == 1
+        library = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+        mib = (ctypes.c_int * 3)(1, 49, supervisor._process.pid)
+        size = ctypes.c_size_t(262144)
+        buffer = ctypes.create_string_buffer(size.value)
+        assert library.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) == 0
+        initial = buffer.raw[:size.value]
+        assert b'private-worker-provider-fixture' not in initial
+        assert supervisor._token.encode() not in initial

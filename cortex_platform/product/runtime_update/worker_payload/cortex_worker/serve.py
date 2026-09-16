@@ -26,7 +26,7 @@ from typing import BinaryIO, Callable, Mapping, Sequence
 
 from .approval import ApprovalChoiceError
 from .confinement import confinement_for, install_write_confinement
-from .tool_policy import TOOL_POLICY_VERSION
+from .tool_policy import TOOL_POLICY_VERSION, receive_private_environment
 from .digests import canonical_json, digest_document
 from .ledger import LedgerUnavailable, OperationConflict, OperationLedger
 from .protocol import (
@@ -321,6 +321,10 @@ def serve(
     `operation_conflict` rather than a queue.
     """
 
+    try:
+        receive_private_environment()
+    except (OSError, ValueError):
+        return 2
     token = os.environ.pop("CORTEX_WORKER_TOKEN", "")
     if len(token) < 32:
         return 2
