@@ -7,9 +7,10 @@ has not adopted a corpus gets no engine service at all rather than a service
 pointed at a guessed directory.
 
 ⟦AMD-8⟧'s credential rule lives here: under the supervised path only
-`keychain://` references resolve, because a cold start cannot depend on an
+`keychain://` and `age://` references resolve, because a cold start cannot depend on an
 interactive shell's environment. `env://` stays available for a deliberate
-foreground run, which is what `keychain_only=False` means.
+foreground run, which is what `keychain_only=False` means. The legacy keyword
+name now selects durable stores (Keychain and age), not only Keychain.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ def unusable_secret_aliases(config: Mapping[str, Any]) -> tuple[str, ...]:
             alias
             for alias, reference in dict(config.get("secret_refs") or {}).items()
             if alias in engine_secret_aliases()
-            and not str(reference).startswith("keychain://")
+            and not str(reference).startswith(("keychain://", "age://"))
         )
     )
 
@@ -87,7 +88,7 @@ def _secret_provider(
         references = {
             alias: reference
             for alias, reference in references.items()
-            if reference.startswith("keychain://")
+            if reference.startswith(("keychain://", "age://"))
         }
 
     def provide() -> dict[str, SecretValue]:

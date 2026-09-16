@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import shlex
 import subprocess
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import (
@@ -128,6 +130,40 @@ def _system_keychain_lookup(service: str, account: str) -> str | None:
     return completed.stdout.rstrip("\n")
 
 
+def _system_age_lookup(store: str, name: str) -> str | None:
+    """Decrypt the named local store without evaluating shell assignments."""
+    root = Path.home() / ".config" / store
+    executable = next((Path(path) for path in (
+        "/opt/homebrew/bin/age", "/usr/local/bin/age", "/usr/bin/age"
+    ) if Path(path).is_file()), None)
+    try:
+        if executable is None or (root / "secrets.age").stat().st_size > 1048576:
+            return None
+        completed = subprocess.run(
+            [str(executable), "--decrypt", "--identity", str(root / "age-key.txt"),
+             str(root / "secrets.age")],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if completed.returncode or len(completed.stdout) > 1048576:
+            return None
+        found = None
+        for line in completed.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            key, separator, encoded = line.partition("=")
+            if not separator or key.strip() != name:
+                continue
+            tokens = shlex.split(encoded, comments=True, posix=True)
+            if len(tokens) != 1 or found is not None or "\0" in tokens[0]:
+                return None
+            found = tokens[0]
+        return found
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        # Never attach subprocess output or plaintext parsing errors.
+        return None
+
+
 class SecretResolver:
     """Resolve validated `secret_refs` entries into revealable values."""
 
@@ -136,7 +172,9 @@ class SecretResolver:
         *,
         environment: Mapping[str, str],
         keychain_lookup: KeychainLookup | None = None,
+        age_lookup: KeychainLookup | None = None,
     ) -> None:
+        self._age_lookup = age_lookup or _system_age_lookup
         self._environment = environment
         self._keychain_lookup = keychain_lookup or _system_keychain_lookup
 
@@ -155,7 +193,7 @@ class SecretResolver:
         except ValueError as exc:
             raise SecretResolutionError(alias, "reference is malformed") from exc
         if (
-            parsed.scheme not in {"env", "keychain"}
+            parsed.scheme not in {"env", "keychain", "age"}
             or parsed.username is not None
             or parsed.password is not None
             or port is not None
@@ -165,6 +203,18 @@ class SecretResolver:
             raise SecretResolutionError(alias, "reference scheme is not supported")
         if parsed.scheme == "env":
             return self._resolve_environment(alias, parsed.netloc, parsed.path)
+        if parsed.scheme == "age":
+            variable = parsed.path.removeprefix("/")
+            if (
+                _KEYCHAIN_IDENTIFIER_PATTERN.fullmatch(parsed.netloc) is None
+                or parsed.path != f"/{variable}"
+                or _ENVIRONMENT_NAME_PATTERN.fullmatch(variable) is None
+            ):
+                raise SecretResolutionError(alias, "reference must use age://store/VARIABLE_NAME")
+            value = self._age_lookup(parsed.netloc, variable)
+            if not value:
+                raise SecretNotFound(alias, "age credential is unavailable or the store cannot be decrypted")
+            return SecretValue(alias, value)
         return self._resolve_keychain(alias, parsed.netloc, parsed.path)
 
     def resolve_all(self, references: Mapping[str, str]) -> dict[str, SecretValue]:

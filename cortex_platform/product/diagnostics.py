@@ -123,14 +123,14 @@ def _transport_secret_check(
             )
         ]
     scheme = reference.split("://", 1)[0]
-    if scheme == "keychain":
+    if scheme in {"keychain", "age"}:
         return []
     return [
         (
             "transport_secret_refs",
             f"secret_refs.{TELEGRAM_SECRET_ALIAS} uses {scheme}://; the "
             "supervised daemon is started with a replaced environment, so only "
-            "keychain:// resolves there and a window would refuse every send",
+            "keychain:// or age:// resolves there and a window would refuse every send",
         )
     ]
 
@@ -210,13 +210,13 @@ def _runtime_provider_check(
     for alias in aliases:
         reference = str(references[alias])
         scheme = reference.split("://", 1)[0]
-        if scheme != "keychain":
+        if scheme not in {"keychain", "age"}:
             checks.append(
                 (
                     "runtime_provider",
                     f"secret_refs.{alias} uses {scheme}://; the supervised "
                     "daemon is started with a replaced environment, so only "
-                    "keychain:// resolves there and every turn would be "
+                    "keychain:// or age:// resolves there and every turn would be "
                     "refused with provider_credential_unavailable",
                 )
             )
@@ -263,7 +263,7 @@ def doctor(paths: PathRegistry, *, environ: Mapping[str, str]) -> DoctorReport:
         loaded = True
         checks.append(("config", "ok"))
 
-    # ⟦AMD-8⟧ The supervised daemon resolves `keychain://` only, and dropped
+    # ⟦AMD-8⟧ The supervised daemon resolves durable `keychain://` and `age://` references, and dropped
     # every other reference in silence -- on no surface an operator could read.
     # Advisory, never fatal: the rule is correct, and the aliases are named
     # without their references so nothing here can carry a secret.

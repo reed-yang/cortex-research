@@ -32,6 +32,10 @@ roadmap and release records. Read the applicable runbook before changing a bound
   `runtime/managed_hermes.py` owns backend lifecycle; the runtime-update
   supervisor owns process I/O; the runtime-update service owns release state.
   These responsibilities must remain distinct.
+- Runtime credentials use explicit Keychain or age references, resolved in memory
+  at component boundaries. Age stores live under `~/.config/<store>/`; their
+  identity and plaintext must never enter model tools, Web, logs or Control state.
+  The checkout-only `tools.with_engine_secrets` wrapper uses engine bindings.
 - Managed local tools are opt-in through `runtime.tools = "local"`. The launch
   policy admits system commands, the slot interpreter and configured read-only
   research/readings roots; worker tools use a private workspace. Require worker

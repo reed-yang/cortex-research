@@ -149,7 +149,7 @@ file itself. `control.db` always lives under the data directory. No path is
 hardcoded to a personal location.
 
 **No secret value is ever written to configuration.** `secret_refs` holds
-logical aliases pointing at an external store, in exactly two syntaxes:
+logical aliases pointing at an external store, using Keychain, age, or foreground environment references:
 
 ```toml
 [runtime]
@@ -160,17 +160,22 @@ tools = "none"                # local enables sandboxed terminal/file tools
 
 [secret_refs]
 anthropic = "keychain://cortex-provider/anthropic"
-research_bot = "env://CORTEX_RESEARCH_BOT_TOKEN"
+research_bot = "keychain://cortex-provider/research_bot"
+glm = "age://cortex/GLM_API_KEY"
+glm-app-id = "age://cortex/GLM_API_ID"
 ```
 
-`keychain://service/account` is the only scheme the supervised daemon resolves,
-because a launchd start has no shell environment to read. `env://VARIABLE_NAME`
+The supervised daemon resolves `keychain://service/account` and
+`age://store/VARIABLE_NAME`. An age reference reads `~/.config/store/secrets.age`
+using the adjacent `age-key.txt`; it does not depend on shell exports. `env://VARIABLE_NAME`
 is accepted for foreground use and reported — not silently dropped — by
 `cortex doctor`. A provider alias must be one of `anthropic`, `openai` or
 `openrouter`, which is what binds the resolved key to the variable the worker
 reads; `research_bot` binds the Telegram token. Resolution happens only at the
 effect boundary, in `cortex_platform/product/secrets.py`, and a resolved value
 is carried by an object that refuses to print itself.
+See [runtime credentials](docs/runbooks/runtime-credentials.md) for age setup and
+the checkout command wrapper.
 
 `[web]` carries the loopback port and, when a public door is configured, the one
 exact HTTPS origin plus the Cloudflare Access issuer and audience the adapter

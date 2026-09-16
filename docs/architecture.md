@@ -99,3 +99,13 @@ The browser never receives the Control token. Web routes forward only an
 allowlist; the listeners remain loopback-bound. Optional remote access must
 retain its configured identity/Origin validation. Research data, secrets,
 session databases and operator context do not belong in the source repository.
+
+## Runtime credential stores
+
+The shared product resolver supports explicit Keychain and age references. Age
+uses a per-user encrypted store and adjacent identity, decrypts only in memory,
+and returns a redacted `SecretValue` for the requested assignment. Supervised
+engine launches accept both durable stores; ambient environment references stay
+foreground-only. Component binding tables determine which credentials reach
+each effect. Managed model tools retain sanitized environments and cannot read
+the credential store. See [runtime credentials](runbooks/runtime-credentials.md).

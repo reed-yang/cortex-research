@@ -49,8 +49,10 @@ old MCP implementation must restart once after the code upgrade.
 
 `OPENROUTER_API_KEY not set` after files were downloaded means materialization
 stopped during embedding. The supervised engine resolves only configured
-`keychain://` references, independently of the model provider used by Telegram.
+`keychain://` or `age://` references, independently of the model provider used by Telegram.
 Add the OpenRouter embedding reference through the normal secret configuration,
 reload the daemon through the installed lifecycle, and re-index the existing
 files without overwriting notes. Keep credential values out of argv, logs,
 configuration files and database rows.
+
+Runtime credentials can also use explicit age references; see [runtime credentials](runtime-credentials.md).

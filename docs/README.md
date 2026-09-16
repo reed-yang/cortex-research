@@ -12,6 +12,7 @@ instructions. The following files are intentionally tracked and public.
 | [Readings publication](runbooks/readings-publication.md) | Opt-in external publication, permissions, recovery and status |
 | [Web verification](runbooks/web-verification.md) | Test tiers and their limits |
 | [Hermes acceptance](runbooks/hermes-acceptance.md) | Worker qualification and continuity |
+| [Runtime credentials](runbooks/runtime-credentials.md) | Keychain and age references, scoped checkout commands |
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
 | [0.1.25](releases/0.1.25.md) | Repeated paper capture repair and installed acceptance |
 | [0.1.23](releases/0.1.23.md) | Readings publication release and validation boundaries |

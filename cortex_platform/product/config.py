@@ -125,16 +125,7 @@ def _validate_asset_roots(value: object) -> dict[str, str]:
 
 
 def _validate_secret_reference(name: str, reference: str) -> None:
-    """Accept the two reference syntaxes, and say what each one can be used for.
-
-    Both are valid configuration, but they are not interchangeable at runtime:
-    ⟦AMD-8⟧ makes `keychain://` the ONLY scheme the supervised daemon resolves,
-    because reading a variable under launchd would depend on whatever
-    environment launchd happened to export. `env://` is therefore a
-    FOREGROUND-ONLY reference -- accepted here, and unusable by `cortexd`, which
-    reports the aliases it had to drop through `cortex doctor`'s `secret_refs`
-    check rather than dropping them in silence.
-    """
+    """Validate durable Keychain/age references and foreground-only env references."""
 
     if not _SECRET_ALIAS_PATTERN.fullmatch(name) or _CREDENTIAL_KEY_PATTERN.search(
         name
@@ -146,7 +137,7 @@ def _validate_secret_reference(name: str, reference: str) -> None:
     except ValueError as exc:
         raise ConfigError(f"secret_refs.{name} must be a safe external reference") from exc
     if (
-        parsed.scheme not in {"keychain", "env"}
+        parsed.scheme not in {"keychain", "env", "age"}
         or parsed.username is not None
         or parsed.password is not None
         or port is not None
@@ -154,6 +145,17 @@ def _validate_secret_reference(name: str, reference: str) -> None:
         or parsed.fragment
     ):
         raise ConfigError(f"secret_refs.{name} must be a safe external reference")
+    if parsed.scheme == "age":
+        variable = parsed.path.removeprefix("/")
+        if (
+            not _KEYCHAIN_IDENTIFIER_PATTERN.fullmatch(parsed.netloc)
+            or parsed.path != f"/{variable}"
+            or not _ENVIRONMENT_NAME_PATTERN.fullmatch(variable)
+        ):
+            raise ConfigError(
+                f"secret_refs.{name} reference must use age://store/VARIABLE_NAME"
+            )
+        return
     if parsed.scheme == "keychain":
         account = parsed.path.removeprefix("/")
         if (
@@ -171,7 +173,7 @@ def _validate_secret_reference(name: str, reference: str) -> None:
     ):
         raise ConfigError(
             f"secret_refs.{name} reference must use env://VARIABLE_NAME "
-            "(foreground only; the supervised daemon resolves keychain:// only)"
+            "(foreground only; the supervised daemon resolves keychain:// and age://)"
         )
 
 
