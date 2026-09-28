@@ -117,6 +117,11 @@ export const copy = Object.freeze({
     maybeKnown: "May already be in your library",
     blocked: "A run still holds this capture. It can be decided once that run ends.",
     failed: "Cortex could not finish with this one.",
+    // `capability_unavailable`: the paper has no HTML version and this
+    // installation has no accepted OCR skill. The paper is fine; capturing it
+    // again works once OCR is ready, and the reason is on the Cortex machine.
+    ocrUnavailable:
+      "This paper is PDF only, and OCR is not ready on this Cortex installation. Run cortex skills status there to see why, then capture it again.",
     importedOne: "Imported into your library.",
     reopenExplanation:
       "Reopening puts this capture back in the approved queue and accepts that the reader that lost it may already have imported it once.",

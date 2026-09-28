@@ -195,3 +195,29 @@ def test_ocr_returns_none_when_skill_missing(tmp_path, monkeypatch):
         raise AssertionError("must not spawn when skill is missing")
     monkeypatch.setattr(paper_ingest.subprocess, "Popen", _never)
     assert paper_ingest._ocr_pdf_via_skill("2603.04379", out) is None
+
+
+def test_a_bound_interpreter_runs_the_skill_without_uv(tmp_path, monkeypatch):
+    """The product binds the accepted skill's own interpreter; uv is not used
+    even when it exists, and the skill never sees the embedding credential."""
+    python = tmp_path / "paper-ingestion" / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True); python.write_text("#stub"); python.chmod(0o755)
+    monkeypatch.setattr(paper_ingest, "_SKILL_PYTHON", python)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "embedding-only")
+    captured: dict = {}
+    out = tmp_path / "out"; out.mkdir()
+    monkeypatch.setattr(paper_ingest.subprocess, "Popen", _fake_skill(out, captured=captured))
+    assert paper_ingest._ocr_pdf_via_skill("2603.04379", out) is not None
+    argv = captured["argv"]
+    assert argv[:3] == [str(python), "-B", str(paper_ingest._SKILL_INGEST)]
+    assert paper_ingest._UV_BIN not in argv
+    assert "OPENROUTER_API_KEY" not in captured["env"]
+    assert captured["env"]["GLM_API_KEY"] == "key"
+
+
+def test_a_bound_interpreter_that_is_missing_means_no_runner(tmp_path, monkeypatch):
+    monkeypatch.setattr(paper_ingest, "_SKILL_PYTHON", tmp_path / "absent" / "python")
+    monkeypatch.setattr(paper_ingest.subprocess, "Popen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("spawned")))
+    assert paper_ingest._ocr_runner() is None
+    assert paper_ingest._ocr_pdf_via_skill("2603.04379", tmp_path) is None

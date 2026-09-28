@@ -284,7 +284,8 @@ def test_a_pdf_only_paper_fails_the_capture_and_writes_nothing(
     capture_id = _approved_capture(store, f"https://arxiv.org/abs/{PDF_ONLY_PAPER}")
     outcome = consumer.run_once()
     assert outcome.state == "failed"
-    assert outcome.failure_category == "materialization_failed"
+    assert outcome.failure_category == "capability_unavailable"
+    assert store.get_capture(capture_id)["failure_category"] == "capability_unavailable"
     assert list(roots.corpus_root.iterdir()) == []
     connection = sqlite3.connect(str(roots.research_db))
     try:

@@ -1467,19 +1467,19 @@ class InboundTurnBridge:
         # for a BOUND attempt, so `_undriven` answered None for it there too.
         # The second producer is `ControlStore.resume_run`, which is reachable
         # only from `paused` (its `source_state="paused"`,
-        # control/store.py:6493), and
+        # control/store.py:6495), and
         # a conversation turn can never be `paused`: the transition into it
-        # refuses an attempt with no `checkpoint_uri` (control/store.py:5420-5423)
+        # refuses an attempt with no `checkpoint_uri` (control/store.py:5422-5425)
         # and the resume out of it refuses the same shape
-        # (control/store.py:6647-6648), both raising
+        # (control/store.py:6649-6650), both raising
         # `InvalidTransition("checkpoint_missing", ...)`.
         #
         # ⟦P9-3 FV-3⟧ And the load-bearing clause, "a Hermes turn writes none",
         # is checkable rather than asserted: `attempts.checkpoint_uri` has one
         # writer in the whole store, the `UPDATE attempts SET checkpoint_uri`
-        # inside `ControlStore.commit_checkpoint` (control/store.py:6520, the
-        # write at control/store.py:6590) -- the attempt INSERTs set only
-        # `source_checkpoint_uri` (control/store.py:6649-6652) -- and that
+        # inside `ControlStore.commit_checkpoint` (control/store.py:6522, the
+        # write at control/store.py:6592) -- the attempt INSERTs set only
+        # `source_checkpoint_uri` (control/store.py:6651-6654) -- and that
         # method is defined once and called
         # from tests only, never from a turn. Which is also why
         # `pause_requested` converges to `canceled` rather than to `paused` at

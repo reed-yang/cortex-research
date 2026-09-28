@@ -79,6 +79,12 @@ class Binding:
             return None
         return self.source.partition(":")[2]
 
+    @property
+    def capability_slot(self) -> str | None:
+        if self.source is None or not self.source.startswith("capability:"):
+            return None
+        return self.source.partition(":")[2]
+
 
 @dataclass(frozen=True)
 class DynamicSite:
@@ -157,11 +163,12 @@ ENGINE_BINDINGS: Mapping[str, Binding] = {
     "CORTEX_INGEST_MAX_IMAGES": Binding("CORTEX_INGEST_MAX_IMAGES", BOUND, "literal:ingest_max_images", "Bounded figure download."),
     "CORTEX_OCR_ENGINES": Binding("CORTEX_OCR_ENGINES", BOUND, "literal:ocr_engines", "The product owns the OCR chain order."),
     "CORTEX_OCR_TIMEOUT": Binding("CORTEX_OCR_TIMEOUT", BOUND, "literal:ocr_timeout", "The product owns the OCR wall clock."),
-    "CORTEX_PAPER_INGEST_SKILL": Binding("CORTEX_PAPER_INGEST_SKILL", DENIED, None, "The bundle does not ship ~/.claude/skills/paper-ingestion."),
+    "CORTEX_PAPER_INGEST_PYTHON": Binding("CORTEX_PAPER_INGEST_PYTHON", BOUND, "capability:ocr.interpreter", "The accepted OCR skill's own prepared interpreter, bound with its entry or not at all."),
+    "CORTEX_PAPER_INGEST_SKILL": Binding("CORTEX_PAPER_INGEST_SKILL", BOUND, "capability:ocr.entry", "The bundle ships no OCR skill. Present only while the operator's accepted skill matches its recorded digest (`skills.py`); absent otherwise, which fails the engine closed."),
     "CORTEX_RADAR_SKIP_NETWORK": Binding("CORTEX_RADAR_SKIP_NETWORK", DENIED, None, "A skip-network switch may not be settable from ambient environment."),
     "CORTEX_RESEARCH_DB": Binding("CORTEX_RESEARCH_DB", BOUND, "path:research_db", "F5: six modules re-derive this variable, so only the variable is total."),
     "CORTEX_SKIP_EMBED": Binding("CORTEX_SKIP_EMBED", BOUND, "literal:skip_embed", "Whether this installation can reach an embedding provider."),
-    "CORTEX_UV_BIN": Binding("CORTEX_UV_BIN", DENIED, None, "The OCR shim's packaged default is an out-of-tree uv the bundle does not ship."),
+    "CORTEX_UV_BIN": Binding("CORTEX_UV_BIN", DENIED, None, "An effect runs the accepted skill's own interpreter. uv prepares that environment on the operator's side; inside an effect `uv run` could download an interpreter and write into the skill."),
     "GLM_API_ID": Binding("GLM_API_ID", BOUND, "secret:glm-app-id", "Resolved in cortexd from secret_refs only; absent when the installation configures no reference, which fails the engine closed."),
     "GLM_API_KEY": Binding("GLM_API_KEY", BOUND, "secret:glm", "Resolved in cortexd from secret_refs only; absent when the installation configures no reference, which fails the engine closed."),
     "NOVITA_API_KEY": Binding("NOVITA_API_KEY", BOUND, "secret:novita", "Resolved in cortexd from secret_refs only; absent when the installation configures no reference, which fails the engine closed."),
@@ -188,9 +195,10 @@ ENGINE_BINDINGS: Mapping[str, Binding] = {
 }
 
 
-# One value per BOUND literal slot, each the engine's own shipped default. The
-# Telegram kill switch that used to sit here is gone with the module it
-# disabled: the engine has no Telegram sender to switch off any more.
+# One value per BOUND literal slot, each the engine's own shipped default except
+# where a comment says why not. The Telegram kill switch that used to sit here
+# is gone with the module it disabled: the engine has no Telegram sender to
+# switch off any more.
 _LITERAL_VALUES: Mapping[str, str] = {
     "path": os.defpath,
     "locale": "C",
@@ -200,7 +208,11 @@ _LITERAL_VALUES: Mapping[str, str] = {
     "arxiv_html_base": "https://arxiv.org/html",
     "arxiv_pdf_base": "https://arxiv.org/pdf",
     "ocr_engines": "deepseek-ocr,glm-ocr",
-    "ocr_timeout": "1000",
+    # Not the engine's 1000 s default: the whole OCR chain has to finish inside
+    # the 600 s child hard timeout (`LeasePlan`) with room left for the HTML
+    # probe, the PDF pre-download, figure copies and embedding. An OCR still
+    # running at the hard timeout turns a slow paper into an unknown outcome.
+    "ocr_timeout": "420",
     "ingest_max_images": "200",
 }
 
@@ -358,6 +370,16 @@ def engine_secret_aliases() -> Mapping[str, str]:
     }
 
 
+def engine_capability_slots() -> Mapping[str, str]:
+    """Map each capability slot (`ocr.entry`) onto the variable it lands in."""
+
+    return {
+        binding.capability_slot: name
+        for name, binding in ENGINE_BINDINGS.items()
+        if binding.capability_slot is not None
+    }
+
+
 def research_effect_environment(
     *,
     roots: EngineRoots,
@@ -365,6 +387,7 @@ def research_effect_environment(
     effect_marker: str,
     skip_embed: bool = False,
     literal_overrides: Mapping[str, str] | None = None,
+    capabilities: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the fully replacing environment for one engine effect child.
 
@@ -372,7 +395,9 @@ def research_effect_environment(
     which is what makes `DENIED` and `INERT` real rather than aspirational. The
     resolved secrets arrive already revealed from cortexd -- `SecretValue`
     refuses to serialize itself (`secrets.py:71`), so the reveal happens exactly
-    here, at the boundary that hands them to the child.
+    here, at the boundary that hands them to the child. `capabilities` carries
+    the slot values of every capability the supervisor verified for this
+    effect; a capability that did not verify contributes nothing.
     """
 
     if not effect_marker or not effect_marker.isascii() or not effect_marker.isalnum():
@@ -382,6 +407,19 @@ def research_effect_environment(
     unknown = set(resolved) - set(aliases)
     if unknown:
         raise ValueError(f"secrets carry unbound aliases: {sorted(unknown)}")
+    slots = dict(capabilities or {})
+    unknown_slots = set(slots) - set(engine_capability_slots())
+    if unknown_slots:
+        raise ValueError(f"capabilities carry unbound slots: {sorted(unknown_slots)}")
+    for capability in {slot.partition(".")[0] for slot in slots}:
+        # Half a capability is an entry with no interpreter to run it, or the
+        # reverse; the engine would fall back to a runner the product denies.
+        expected = {
+            slot for slot in engine_capability_slots()
+            if slot.partition(".")[0] == capability
+        }
+        if not expected <= set(slots):
+            raise ValueError(f"capability {capability} is only partly bound")
 
     paths = roots.path_values()
     literals = dict(_LITERAL_VALUES)
@@ -406,6 +444,10 @@ def research_effect_environment(
             secret = resolved.get(slot)
             if secret is not None:
                 environment[name] = secret.reveal()
+        elif kind == "capability":
+            value = slots.get(slot)
+            if value is not None:
+                environment[name] = value
         else:  # pragma: no cover - Binding validates the source grammar
             raise ValueError(f"{name}: unsupported binding source")
 

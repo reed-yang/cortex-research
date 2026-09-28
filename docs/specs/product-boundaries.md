@@ -32,9 +32,14 @@ Paths abbreviated `product/` are relative to `cortex_platform/`.
   views of the same stored bytes; UI rendering does not rewrite provenance.
 - Catalog states and human pauses are preserved. No autonomous idea/exploration
   advancement or hidden model escalation is part of the current command scope.
+- The engine runs out-of-tree code only through a capability slot served by an
+  operator-accepted skill whose package digest still matches; uv never runs
+  inside an effect. A paper that needs an unavailable capability is refused as
+  `capability_unavailable` before any corpus write.
 
 Executable authorities: `product/research/`, `product/sources/`,
-`product/artifacts/`, `apps/web/app/control/` and their corresponding tests.
+`product/artifacts/`, `product/skills.py`, `product/engine/bindings.py`,
+`apps/web/app/control/` and their corresponding tests.
 
 ## Runtime, transport and exposure
 

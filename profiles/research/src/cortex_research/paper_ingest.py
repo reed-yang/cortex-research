@@ -341,6 +341,11 @@ _SKILL_INGEST = Path(os.environ.get(
     "CORTEX_PAPER_INGEST_SKILL",
     str(Path.home() / ".claude/skills/paper-ingestion/scripts/ingest_paper.py")))
 _UV_BIN = os.environ.get("CORTEX_UV_BIN", "/opt/homebrew/bin/uv")
+# The product binds an accepted skill's own prepared interpreter and never uv:
+# inside an effect `uv run` could download a CPython and create a `.venv` in the
+# operator's skill. Unset (every non-product caller), the skill runs via uv.
+_SKILL_PYTHON = (Path(os.environ["CORTEX_PAPER_INGEST_PYTHON"])
+                 if os.environ.get("CORTEX_PAPER_INGEST_PYTHON") else None)
 # The skill's URL mode (PDF <=20MB) sends the whole multi-page PDF in ONE request
 # that GLM processes server-side; a ~40-page paper can take ~600s PER attempt and
 # the skill retries up to 3x (a live EGOSTREAM run succeeded at 605s — JUST over a
@@ -417,6 +422,32 @@ def _ocr_engine_creds_ok(engine: str) -> bool:
     return True  # mineru/docling need no cloud creds
 
 
+class OcrUnavailableError(IngestError):
+    """No LaTeXML HTML and nothing that could OCR it: a fact about this
+    installation (no skill or runner bound, no engine credentials), not about
+    the paper. Strict callers refuse with it so the two stay distinguishable
+    from an OCR run that happened and produced nothing usable."""
+
+
+def _ocr_runner() -> list[str] | None:
+    """The argv prefix that starts the skill, or None when it cannot start."""
+    if not _SKILL_INGEST.exists():
+        return None
+    if _SKILL_PYTHON is not None:
+        # -B: the run must not write bytecode into the operator's skill either.
+        return [str(_SKILL_PYTHON), "-B"] if _SKILL_PYTHON.exists() else None
+    return [_UV_BIN, "run"] if Path(_UV_BIN).exists() else None
+
+
+def _ocr_unavailable_reason() -> str | None:
+    """Why OCR cannot run at all here, or None when an attempt is possible."""
+    if _ocr_runner() is None:
+        return "no OCR skill and runner are available"
+    if not any(_ocr_engine_creds_ok(engine) for engine in _OCR_ENGINE_CHAIN):
+        return "no OCR engine has credentials"
+    return None
+
+
 def _run_ocr_engine(source: str, out_dir: Path, engine: str, label: str,
                     timeout: float | None = None):
     """Shell out to the paper-ingestion skill with ONE engine. Returns (body,
@@ -424,7 +455,12 @@ def _run_ocr_engine(source: str, out_dir: Path, engine: str, label: str,
     JSON, timeout). image_pairs = [(local_abs_path, 'assets/<name>')]. `timeout`
     is this engine's slice of the chain's wall-clock budget (default: full)."""
     timeout = _OCR_TIMEOUT_SECONDS if timeout is None else timeout
-    argv = [_UV_BIN, "run", str(_SKILL_INGEST), source,
+    runner = _ocr_runner()
+    if runner is None:
+        _log.warning("[ingest] %s: %s OCR skill or its runner vanished — no OCR body",
+                     label, engine)
+        return None
+    argv = [*runner, str(_SKILL_INGEST), source,
             "--engine", engine, "--output-dir", str(out_dir),
             "--image-format", "png"]
     # CRITICAL: run with cwd = the skill ROOT so `uv run` resolves the skill's
@@ -440,6 +476,8 @@ def _run_ocr_engine(source: str, out_dir: Path, engine: str, label: str,
     env = {**os.environ}
     env.setdefault("GLM_OCR_MAX_WORKERS", "3")
     env.setdefault("DEEPSEEK_OCR_MAX_WORKERS", "4")
+    # The skill gets the OCR engines' credentials, not the embedding provider's.
+    env.pop("OPENROUTER_API_KEY", None)
     # Run in a new session so a timeout can SIGKILL the WHOLE tree (uv child +
     # the grandchild OCR interpreter mid HTTP call), not just `uv`.
     try:
@@ -525,10 +563,11 @@ def _ocr_pdf(source: str, out_tmp: Path, *, label: str | None = None):
     output, bad JSON, timeout) so the caller can gracefully fall back (PyMuPDF text
     dump for arxiv; an IngestError for the url path, which has no text fallback)."""
     label = label or source
-    if not _SKILL_INGEST.exists() or not Path(_UV_BIN).exists():
+    if _ocr_runner() is None:
         _log.warning(
-            "[ingest] %s: OCR unavailable — paper-ingestion skill (%s) or uv (%s) "
-            "missing; no usable full text", label, _SKILL_INGEST, _UV_BIN)
+            "[ingest] %s: OCR unavailable — paper-ingestion skill (%s) or its runner "
+            "(%s) missing; no usable full text", label, _SKILL_INGEST,
+            _SKILL_PYTHON or _UV_BIN)
         return None
     # Aggregate wall-clock budget for the WHOLE chain (not per-engine), so a slow
     # primary can't let the total balloon to N x _OCR_TIMEOUT_SECONDS — important
@@ -574,10 +613,11 @@ def _ocr_pdf_via_skill(arxiv_id: str, out_tmp: Path):
     plain-text dump). A PERMANENT failure (genuine 404 / no PDF) keeps the legacy
     fall-through to the remote-URL skill mode. Returns _ocr_pdf's result, or None
     on any OCR failure so the caller can fall back to the PyMuPDF text dump."""
-    if not _SKILL_INGEST.exists() or not Path(_UV_BIN).exists():
+    if _ocr_runner() is None:
         _log.warning(
-            "[ingest] %s: OCR unavailable — glm-ocr skill (%s) or uv (%s) missing; "
-            "will degrade to plain PyMuPDF text", arxiv_id, _SKILL_INGEST, _UV_BIN)
+            "[ingest] %s: OCR unavailable — paper-ingestion skill (%s) or its runner "
+            "(%s) missing; will degrade to plain PyMuPDF text", arxiv_id,
+            _SKILL_INGEST, _SKILL_PYTHON or _UV_BIN)
         return None
     # Prefer a LOCAL pdf path over the arxiv URL: the skill sends a remote URL as
     # ONE whole-PDF request that routinely exceeds GLM's 300s/attempt timeout for
@@ -712,8 +752,13 @@ def fetch_full_text(arxiv_id: str, *, ocr_tmp: Path | None = None,
         # Refuse before anything is written. Refusing after the write is worse
         # than not refusing at all: the paper dir and the papers row already
         # exist, so the id looks ingested forever.
+        if ocr_tmp is not None and (reason := _ocr_unavailable_reason()):
+            raise OcrUnavailableError(
+                f"no LaTeXML HTML for {arxiv_id} and OCR is unavailable ({reason}); "
+                "refusing the degraded plain-text fallback")
+        attempt = "produced no usable body" if ocr_tmp is not None else "was not requested"
         raise IngestError(
-            f"no LaTeXML HTML and OCR unavailable for {arxiv_id}; "
+            f"no LaTeXML HTML for {arxiv_id} and OCR {attempt}; "
             "refusing the degraded plain-text fallback")
     # 3) PDF via PyMuPDF (text only — no figures, no LaTeX; last-resort fallback).
     r = _get_with_retry(_PDF_URL.format(id=arxiv_id), timeout=_TIMEOUT)

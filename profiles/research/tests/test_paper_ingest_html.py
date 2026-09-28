@@ -261,3 +261,54 @@ def test_download_images_skips_non_image(tmp_path, monkeypatch):
     pdir = tmp_path / "p"
     pdir.mkdir()
     assert paper_ingest._download_images([("http://x/x.png", "assets/fig1.png")], pdir) == 0
+
+
+def test_strict_refusal_without_a_runner_is_an_installation_fact(tmp_path, monkeypatch):
+    """No HTML and nothing that can OCR: OcrUnavailableError, not a paper failure."""
+    monkeypatch.setattr(paper_ingest.httpx, "get", _html_404)
+    monkeypatch.setattr(paper_ingest, "_SKILL_INGEST", tmp_path / "absent.py")
+    monkeypatch.setattr(paper_ingest, "_SKILL_PYTHON", None)
+    try:
+        paper_ingest.fetch_full_text("2603.04379", ocr_tmp=tmp_path, strict=True)
+    except paper_ingest.OcrUnavailableError as error:
+        assert "OCR is unavailable" in str(error)
+    else:
+        raise AssertionError("strict ingest did not refuse")
+
+
+def test_strict_refusal_without_engine_credentials_is_an_installation_fact(tmp_path, monkeypatch):
+    skill = tmp_path / "scripts" / "ingest_paper.py"
+    skill.parent.mkdir(parents=True); skill.write_text("# stub")
+    python = tmp_path / "python"; python.write_text("#stub"); python.chmod(0o755)
+    monkeypatch.setattr(paper_ingest.httpx, "get", _html_404)
+    monkeypatch.setattr(paper_ingest, "_SKILL_INGEST", skill)
+    monkeypatch.setattr(paper_ingest, "_SKILL_PYTHON", python)
+    monkeypatch.setattr(paper_ingest, "_ocr_pdf_via_skill", lambda aid, td: None)
+    for name in ("GLM_API_ID", "GLM_API_KEY", "NOVITA_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    try:
+        paper_ingest.fetch_full_text("2603.04379", ocr_tmp=tmp_path, strict=True)
+    except paper_ingest.OcrUnavailableError as error:
+        assert "no OCR engine has credentials" in str(error)
+    else:
+        raise AssertionError("strict ingest did not refuse")
+
+
+def test_strict_refusal_after_a_failed_ocr_run_is_a_paper_failure(tmp_path, monkeypatch):
+    """OCR could run and produced nothing usable: a plain IngestError."""
+    skill = tmp_path / "scripts" / "ingest_paper.py"
+    skill.parent.mkdir(parents=True); skill.write_text("# stub")
+    python = tmp_path / "python"; python.write_text("#stub"); python.chmod(0o755)
+    monkeypatch.setattr(paper_ingest.httpx, "get", _html_404)
+    monkeypatch.setattr(paper_ingest, "_SKILL_INGEST", skill)
+    monkeypatch.setattr(paper_ingest, "_SKILL_PYTHON", python)
+    monkeypatch.setattr(paper_ingest, "_ocr_pdf_via_skill", lambda aid, td: None)
+    monkeypatch.setenv("NOVITA_API_KEY", "key")
+    try:
+        paper_ingest.fetch_full_text("2603.04379", ocr_tmp=tmp_path, strict=True)
+    except paper_ingest.OcrUnavailableError:
+        raise AssertionError("an attempted OCR run is not a missing capability")
+    except paper_ingest.IngestError as error:
+        assert "produced no usable body" in str(error)
+    else:
+        raise AssertionError("strict ingest did not refuse")

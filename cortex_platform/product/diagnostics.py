@@ -20,6 +20,7 @@ _ADVISORY_CHECKS = frozenset(
         "web",
         "web_public_door",
         "web_public_door_insecure_issuer",
+        "skills",
     }
 )
 #: The Access team-domain form of `web.access_issuer`. The schema also accepts
@@ -235,6 +236,28 @@ def _runtime_provider_check(
     return checks
 
 
+def _skills_check(
+    config: Mapping[str, object], paths: PathRegistry, *, loaded: bool = True
+) -> list[tuple[str, str]]:
+    """Say whether each operator skill slot would be bound on the next effect.
+
+    Advisory: an installation without OCR is complete, and one whose skill
+    drifted still ingests every paper that has HTML. The line exists so the
+    operator reads the drift here rather than from a failed capture.
+    """
+
+    if not loaded:
+        return [("skills", "unknown (configuration invalid)")]
+    from .skills import configured_root, resolve_all
+
+    if configured_root(config) is None:
+        return [("skills", "none")]
+    return [
+        ("skills", f"{name} {status.state}: {status.reason}")
+        for name, status in resolve_all(config, paths).items()
+    ]
+
+
 @dataclass(frozen=True)
 class DoctorReport:
     checks: tuple[tuple[str, str], ...]
@@ -285,6 +308,7 @@ def doctor(paths: PathRegistry, *, environ: Mapping[str, str]) -> DoctorReport:
     checks.extend(_transport_secret_check(config))
     checks.extend(_runtime_provider_check(config, environ=environ))
     checks.extend(_web_check(config, loaded=loaded))
+    checks.extend(_skills_check(config, paths, loaded=loaded))
 
     missing = sum(not path.is_dir() for path in paths.directories())
     checks.append(("paths", "ok" if missing == 0 else f"missing ({missing} roles)"))

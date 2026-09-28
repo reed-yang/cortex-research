@@ -27,8 +27,9 @@ Only explicitly referenced values leave the resolver, not the entire vault.
 The engine binds `glm-app-id`, `glm`, `novita`, and `openrouter` to their declared
 variables. The model worker and Telegram transport have separate aliases and
 bindings. Adding a key does not enable an unsupported engine or change provider
-routing. In particular, the separately installed paper-ingestion skill is not
-part of the bundled engine's PDF conversion capability.
+routing. `novita` and `glm` reach PDF conversion only through an OCR skill the
+operator has accepted ([operator skills](operator-skills.md)); the bundle has
+no OCR of its own.
 
 For a trusted operator command from the checkout:
 

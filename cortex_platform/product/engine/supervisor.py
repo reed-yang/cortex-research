@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from cortex_platform.product.secrets import SecretResolutionError, SecretValue
+from cortex_platform.product.skills import CapabilityStatus
 from cortex_platform.product.workflows.coordinator import EffectPermanentlyRejected
 
 from . import survivors
@@ -107,9 +108,14 @@ class ResearchEffectSupervisor:
         watch_roots: Mapping[str, Path] | None = None,
         literal_overrides: Mapping[str, str] | None = None,
         read_only_roots: tuple[Path, ...] = (),
+        capability_provider: Callable[[], Mapping[str, CapabilityStatus]] | None = None,
     ) -> None:
         self._store = store
         self._roots = roots
+        # Asked once per effect, never cached: acceptance is the operator's to
+        # change while the daemon runs, and a package that changed underneath
+        # it has to stop being bound on the next effect, not the next start.
+        self._capability_provider = capability_provider
         self._python = Path(python_executable or sys.executable)
         self._secret_provider = secret_provider
         self._skip_embed = skip_embed
@@ -161,7 +167,7 @@ class ResearchEffectSupervisor:
     def require_activation(self) -> None:
         """D6's choke point, re-evaluated per effect.
 
-        A bounded window expires as a stored fact on read (`control/store.py:1959`), so a
+        A bounded window expires as a stored fact on read (`control/store.py:1961`), so a
         batch can straddle its own expiry; the answer has to be asked again for
         every child rather than once for the batch.
         """
@@ -169,14 +175,30 @@ class ResearchEffectSupervisor:
         if not self._store.runtime_dispatch_enabled():
             raise EffectPermanentlyRejected("runtime_activation_disabled")
 
-    def _environment(self, marker: str) -> dict[str, str]:
+    def _capabilities(self) -> Mapping[str, CapabilityStatus]:
+        if self._capability_provider is None:
+            return {}
+        try:
+            return dict(self._capability_provider())
+        except Exception:  # noqa: BLE001 - an unreadable skill binds nothing
+            # A capability the supervisor cannot even assess is not bound; the
+            # effect still runs and refuses only if it needed the capability.
+            return {}
+
+    def _environment(
+        self, marker: str, capabilities: Mapping[str, CapabilityStatus] | None = None
+    ) -> dict[str, str]:
         try:
             resolved = self._secret_provider() if self._secret_provider else {}
         except SecretResolutionError as error:
             # The reference was well formed and nothing stood behind it, or the
             # keychain refused. Never carries the value.
             raise EffectPermanentlyRejected("adapter_unavailable") from error
+        slots: dict[str, str] = {}
+        for status in (capabilities or {}).values():
+            slots.update(status.binding_values())
         return research_effect_environment(
+            capabilities=slots,
             roots=self._roots,
             secrets=resolved,
             effect_marker=marker,
@@ -193,7 +215,8 @@ class ResearchEffectSupervisor:
     ) -> EffectExecution:
         self.require_activation()
         marker = _secrets.token_hex(16)
-        environment = self._environment(marker)
+        capabilities = self._capabilities()
+        environment = self._environment(marker, capabilities)
         try:
             self._roots.prepare()
         except CorpusBindingError as error:
@@ -216,6 +239,10 @@ class ResearchEffectSupervisor:
             watch_roots={
                 name: str(root)
                 for name, root in {**self._watch_roots, **(watch_roots or {})}.items()
+            },
+            capabilities={
+                name: {"state": status.state, "reason": status.reason}
+                for name, status in capabilities.items()
             },
         )
         baseline = survivors.snapshot_processes()

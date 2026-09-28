@@ -14,6 +14,7 @@ instructions. The following files are intentionally tracked and public.
 | [Hermes acceptance](runbooks/hermes-acceptance.md) | Worker qualification and continuity |
 | [Runtime credentials](runbooks/runtime-credentials.md) | Keychain and age references, scoped checkout commands |
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
+| [Operator skills](runbooks/operator-skills.md) | OCR for PDF-only papers through an accepted, digest-pinned skill |
 | [0.1.26](releases/0.1.26.md) | Durable age credential resolution |
 | [0.1.25](releases/0.1.25.md) | Repeated paper capture repair and installed acceptance |
 | [0.1.23](releases/0.1.23.md) | Readings publication release and validation boundaries |

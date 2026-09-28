@@ -151,9 +151,23 @@ def _chunk_count(database: Path, paper_dir: str) -> int:
         connection.close()
 
 
-def _ingest_arxiv(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _capability_refusal(
+    engine_message: str, status: Mapping[str, str] | None
+) -> str:
+    """The engine's refusal, plus the supervisor's reason when it has one."""
+
+    if not status or status.get("state") in (None, "ready"):
+        return engine_message
+    return f"{engine_message}; OCR capability {status['state']}: {status.get('reason', '')}"
+
+
+def _ingest_arxiv(
+    payload: Mapping[str, Any],
+    capabilities: Mapping[str, Mapping[str, str]] | None = None,
+) -> dict[str, Any]:
     from cortex_research.paper_ingest import (
         IngestError,
+        OcrUnavailableError,
         TransientIngestError,
         _norm_id,
         ingest_arxiv,
@@ -168,6 +182,13 @@ def _ingest_arxiv(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise _Refusal("invalid_source", str(error)) from error
     try:
         result = ingest_arxiv(arxiv_id, source="product", strict=True)
+    except OcrUnavailableError as error:
+        # A PDF-only paper this installation cannot OCR: the paper is fine and
+        # a retry succeeds once the operator's OCR skill is accepted.
+        raise _Refusal(
+            "capability_unavailable",
+            _capability_refusal(str(error), (capabilities or {}).get("ocr")),
+        ) from error
     except IngestError as error:
         raise _Refusal("materialization_failed", str(error)) from error
     except TransientIngestError as error:
@@ -227,10 +248,10 @@ class _Refusal(Exception):
 
 
 _HANDLERS = {
-    "ingest_arxiv": _ingest_arxiv,
-    "reconcile_arxiv": _reconcile_arxiv,
-    "self_check": _self_check,
-    "checkpoint": lambda payload: {"engine": {}, "paper_dirs": []},
+    "ingest_arxiv": lambda request: _ingest_arxiv(request.payload, request.capabilities),
+    "reconcile_arxiv": lambda request: _reconcile_arxiv(request.payload),
+    "self_check": lambda request: _self_check(request.payload),
+    "checkpoint": lambda request: {"engine": {}, "paper_dirs": []},
 }
 
 
@@ -257,7 +278,7 @@ def run(request: EffectRequest) -> dict[str, Any]:
         "gdrive": None,
     }
     try:
-        outcome = _HANDLERS[request.operation](request.payload)
+        outcome = _HANDLERS[request.operation](request)
         result["engine"] = outcome["engine"]
         result["paper_dirs"] = outcome["paper_dirs"]
         result["ok"] = True

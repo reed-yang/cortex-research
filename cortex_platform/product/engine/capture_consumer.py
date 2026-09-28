@@ -81,13 +81,14 @@ RESEARCH_CAPTURE_WORKFLOW = WorkflowDefinition(
     ),
 )
 
-# The frozen store allowlist (`_CAPTURE_FAILURES`, `control/store.py:147`)
+# The frozen store allowlist (`_CAPTURE_FAILURES`, `control/store.py:148`)
 # plus the one translation
 # ⟦AMD-7⟧ requires: the gate refusal has no capture category of its own, and
 # gen 8 R-1 lets an `adapter_unavailable` capture be re-captured.
 _CATEGORY_MAP: Mapping[str, str] = {
     "runtime_activation_disabled": "adapter_unavailable",
     "adapter_unavailable": "adapter_unavailable",
+    "capability_unavailable": "capability_unavailable",
     "invalid_source": "invalid_source",
     "materialization_failed": "materialization_failed",
 }

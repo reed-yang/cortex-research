@@ -153,6 +153,10 @@ have written data. A failed capture instead needs a new submission. The generic
 `materialization_failed` category does not identify a single cause: an operator
 must inspect the matching engine result. For embedding credential failures, see
 [paper index maintenance](paper-index-maintenance.md#credential-failures).
+`capability_unavailable` means the paper has no HTML version and OCR is not
+ready on this installation; the card says so, `cortex skills status` names the
+reason, and the paper can be captured again once OCR is ready
+([operator skills](operator-skills.md)).
 
 ## Read and manage results
 

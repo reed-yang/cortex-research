@@ -258,7 +258,7 @@ def test_the_readings_corpus_has_no_guessed_default(monkeypatch) -> None:
     """`CORTEX_AGENT_READINGS` or a refusal -- never one machine's directory.
 
     `agent_readings_papers` used to fall back to a home-relative corpus path,
-    which the ingest write path (`paper_ingest.py:711`) would then create. The
+    which the ingest write path (`paper_ingest.py:751`) would then create. The
     engine binds the variable on every child, so the fallback was reachable
     only outside the product -- exactly where writing into an invented
     directory is least recoverable.

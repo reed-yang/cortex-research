@@ -48,6 +48,11 @@ def _parser() -> argparse.ArgumentParser:
     actions.add_parser("status", parents=[common])
     retry = actions.add_parser("retry", parents=[common])
     retry.add_argument("--source-id", required=True)
+    skills = subparsers.add_parser("skills")
+    skill_actions = skills.add_subparsers(dest="skills_action", required=True)
+    skill_actions.add_parser("status", parents=[common])
+    accept = skill_actions.add_parser("accept", parents=[common])
+    accept.add_argument("--capability", default="ocr")
     return parser
 
 
@@ -131,6 +136,34 @@ def main(
             if arguments.readings_action == "retry":
                 service.retry(arguments.source_id)
             print(json.dumps(service.status(), ensure_ascii=False))
+            return 0
+        if arguments.command == "skills":
+            from .config import load_config
+            from . import skills
+
+            config = load_config(paths.config_file)
+            if arguments.skills_action == "accept":
+                # Takes effect on the next engine effect; no restart. Raises
+                # SkillAcceptanceError (a ValueError) with the blocking reason.
+                skills.accept(config, paths, arguments.capability)
+            root = skills.configured_root(config)
+            print(
+                json.dumps(
+                    {
+                        "root": str(root) if root is not None else None,
+                        "capabilities": [
+                            status.to_dict()
+                            for status in skills.resolve_all(config, paths).values()
+                        ],
+                        "ignored": [
+                            {"package": package, "capability": capability}
+                            for package, capability in skills.unknown_capabilities(config)
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
             return 0
     except (ConfigError, LifecycleError, RuntimeUpdateError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

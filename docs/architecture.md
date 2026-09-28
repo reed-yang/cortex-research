@@ -59,9 +59,16 @@ export API is the metadata fallback. Both paths validate the requested paper
 identity; failure before corpus writes remains a known refusal. The existing
 HTTP client implements these direct requests without spawning curl.
 
-The product continues to refuse papers without usable HTML. Direct PDF download
-alone does not provide structured text, formulas, figures or an indexed source;
-PDF parsing/OCR remains a separate capability.
+Direct PDF download alone does not provide structured text, formulas, figures or
+an indexed source, so a paper without usable HTML needs OCR, and the bundle
+ships none. `product/skills.py` lets the operator serve the `ocr` capability
+slot with an installed Agent Skills package: `[skills] root` names where skills
+live, `SKILL.md` metadata declares the slot, entry and interpreter, and
+`cortex skills accept` records a digest of the package. The effect supervisor
+recomputes that digest before every effect and binds the entry and interpreter
+into the child only when it still matches. Otherwise strict ingestion refuses
+the paper as `capability_unavailable`, distinct from `materialization_failed`.
+See [operator skills](runbooks/operator-skills.md).
 
 ## External readings publication
 

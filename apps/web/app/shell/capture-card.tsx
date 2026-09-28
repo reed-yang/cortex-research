@@ -58,7 +58,9 @@ export function CaptureCard({
         <p className="text-sm text-muted-foreground">{copy.capture.blocked}</p>
       ) : null}
       {capture.state === "failed" && !capture.blocked_by ? (
-        <p className="text-sm text-muted-foreground">{copy.capture.failed}</p>
+        <p className="text-sm text-muted-foreground">
+          {capture.failure_category === "capability_unavailable" ? copy.capture.ocrUnavailable : copy.capture.failed}
+        </p>
       ) : null}
       {imported.length ? (
         <p className="text-sm text-muted-foreground">

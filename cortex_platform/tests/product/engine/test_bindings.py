@@ -15,6 +15,7 @@ from cortex_platform.product.engine.bindings import (
     EngineRoots,
     INERT,
     bindings_by_disposition,
+    engine_capability_slots,
     engine_secret_aliases,
     research_effect_environment,
 )
@@ -58,7 +59,6 @@ def test_the_contract_carrying_rows_hold_their_dispositions() -> None:
         "CORTEX_RESEARCH_CHAT_ID",
         "CORTEX_UV_BIN",
         "CORTEX_VENV_PY",
-        "CORTEX_PAPER_INGEST_SKILL",
         # Both OCR slot names now fail closed: the semaphore that read them
         # left with the excluded `ingest_slots` module, and a bound directory
         # nothing reads is an invitation for a later reader to acquire it.
@@ -154,6 +154,48 @@ def test_an_unbound_alias_is_refused(roots: EngineRoots) -> None:
         )
 
 
+def test_the_ocr_skill_is_bound_only_from_a_verified_capability(roots: EngineRoots) -> None:
+    assert ENGINE_BINDINGS["CORTEX_PAPER_INGEST_SKILL"].source == "capability:ocr.entry"
+    assert ENGINE_BINDINGS["CORTEX_PAPER_INGEST_PYTHON"].source == "capability:ocr.interpreter"
+    assert engine_capability_slots() == {
+        "ocr.entry": "CORTEX_PAPER_INGEST_SKILL",
+        "ocr.interpreter": "CORTEX_PAPER_INGEST_PYTHON",
+    }
+    absent = research_effect_environment(roots=roots, effect_marker="marker0")
+    assert "CORTEX_PAPER_INGEST_SKILL" not in absent
+    assert "CORTEX_PAPER_INGEST_PYTHON" not in absent
+    bound = research_effect_environment(
+        roots=roots,
+        effect_marker="marker0",
+        capabilities={
+            "ocr.entry": "/skills/ocr/run.py",
+            "ocr.interpreter": "/skills/ocr/.venv/bin/python",
+        },
+    )
+    assert bound["CORTEX_PAPER_INGEST_SKILL"] == "/skills/ocr/run.py"
+    assert bound["CORTEX_PAPER_INGEST_PYTHON"] == "/skills/ocr/.venv/bin/python"
+    # uv never runs inside an effect, whatever the capability says.
+    assert "CORTEX_UV_BIN" not in bound
+
+
+def test_a_capability_is_bound_whole_or_not_at_all(roots: EngineRoots) -> None:
+    with pytest.raises(ValueError, match="only partly bound"):
+        research_effect_environment(
+            roots=roots, effect_marker="marker0", capabilities={"ocr.entry": "/x.py"}
+        )
+    with pytest.raises(ValueError, match="unbound slots"):
+        research_effect_environment(
+            roots=roots, effect_marker="marker0", capabilities={"lint.entry": "/x.py"}
+        )
+
+
+def test_the_ocr_budget_fits_inside_the_child_hard_timeout(roots: EngineRoots) -> None:
+    from cortex_platform.product.engine.capture_consumer import LeasePlan
+
+    environment = research_effect_environment(roots=roots, effect_marker="marker0")
+    assert int(environment["CORTEX_OCR_TIMEOUT"]) < LeasePlan().child_timeout_seconds
+
+
 def test_skip_embed_is_a_product_decision(roots: EngineRoots) -> None:
     assert (
         research_effect_environment(roots=roots, effect_marker="m0")["CORTEX_SKIP_EMBED"]
@@ -221,7 +263,7 @@ def test_both_corpus_names_answer_one_directory_at_s1s_frozen_shape(
     S1 registers `research-corpus` at `<data_dir>/research/corpus`, so deriving
     the readings root by path arithmetic (`corpus_root.parent`) made
     `CORTEX_AGENT_READINGS/papers` -- the directory `index_papers.py:16` builds
-    and `paper_ingest.py:700` writes -- a sibling of the adopted corpus rather
+    and `paper_ingest.py:740` writes -- a sibling of the adopted corpus rather
     than the corpus itself.
     """
 

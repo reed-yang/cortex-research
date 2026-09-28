@@ -24,10 +24,11 @@ OPERATIONS: frozenset[str] = frozenset(
 )
 
 # The frozen store allowlist an effect failure has to land in
-# (`control/store.py:149`). Nothing else may cross this boundary.
+# (`control/store.py:150`). Nothing else may cross this boundary.
 FAILURE_CATEGORIES: frozenset[str] = frozenset(
     {
         "adapter_unavailable",
+        "capability_unavailable",
         "invalid_source",
         "materialization_failed",
         "outcome_unknown",
@@ -37,7 +38,12 @@ FAILURE_CATEGORIES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class EffectRequest:
-    """One engine operation, and the roots the child is allowed to touch."""
+    """One engine operation, and the roots the child is allowed to touch.
+
+    `capabilities` is what the supervisor found for each operator skill slot
+    (`{"ocr": {"state": ..., "reason": ...}}`), so a refusal can say why a
+    capability was absent rather than only that it was.
+    """
 
     operation: str
     payload: Mapping[str, Any]
@@ -47,6 +53,7 @@ class EffectRequest:
     state_dir: str
     write_roots: Sequence[str]
     watch_roots: Mapping[str, str] = field(default_factory=dict)
+    capabilities: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.operation not in OPERATIONS:
@@ -65,6 +72,9 @@ class EffectRequest:
             "state_dir": self.state_dir,
             "write_roots": list(self.write_roots),
             "watch_roots": dict(self.watch_roots),
+            "capabilities": {
+                name: dict(status) for name, status in self.capabilities.items()
+            },
         }
 
     @classmethod
@@ -80,6 +90,10 @@ class EffectRequest:
             state_dir=raw["state_dir"],
             write_roots=tuple(raw["write_roots"]),
             watch_roots=dict(raw.get("watch_roots") or {}),
+            capabilities={
+                str(name): {str(key): str(value) for key, value in dict(status).items()}
+                for name, status in dict(raw.get("capabilities") or {}).items()
+            },
         )
 
 

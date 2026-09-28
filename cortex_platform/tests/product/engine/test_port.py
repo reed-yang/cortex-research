@@ -129,7 +129,9 @@ def test_a_pdf_only_paper_is_refused_before_anything_is_written(
     before = sorted(path.name for path in roots.corpus_root.iterdir())
     with pytest.raises(EffectPermanentlyRejected) as raised:
         engine.import_source(_request("capture-cap2"))
-    assert raised.value.category == "materialization_failed"
+    # No OCR skill is accepted here, which is a fact about the installation,
+    # not about the paper.
+    assert raised.value.category == "capability_unavailable"
     assert sorted(path.name for path in roots.corpus_root.iterdir()) == before
 
 

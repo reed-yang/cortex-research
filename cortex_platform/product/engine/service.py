@@ -130,7 +130,11 @@ def build_engine_service(
         if readings_root is not None else ()
     )
     provider, dropped = _secret_provider(config or {}, keychain_only=keychain_only)
+    from ..skills import resolve_all
+
+    skills_config = dict(config or {})
     supervisor = ResearchEffectSupervisor(
+        capability_provider=lambda: resolve_all(skills_config, paths),
         store=store,
         roots=roots,
         secret_provider=provider,

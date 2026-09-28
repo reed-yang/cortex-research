@@ -41,8 +41,10 @@ Hermes gen9 runtime is supplied separately. See
   and expose exact source bytes and hashes.
 - **arXiv ingestion.** The engine's supported child operations are
   `ingest_arxiv`, `checkpoint`, `reconcile_arxiv` and `self_check`. Ingestion is
-  strict: a paper with no arXiv HTML is refused with a typed error rather than
-  silently degraded. Metadata is read directly from the HTTPS abs page; a valid
+  strict: a paper with no arXiv HTML is never silently degraded. It is OCRed
+  only by an OCR skill the operator has installed and accepted
+  ([operator skills](docs/runbooks/operator-skills.md)); without one the capture
+  fails as `capability_unavailable`. Metadata is read directly from the HTTPS abs page; a valid
   page avoids the export API entirely. The API is used only if the page request
   or metadata validation fails. Full text is read directly from the HTML URL.
   Exhausting metadata paths reports a known failure before corpus writes.
@@ -138,8 +140,8 @@ The wheel installs six console scripts: `cortex`, `cortexd`, `cortex-hermes`,
 All configuration is one versioned TOML file, parsed by
 `cortex_platform/product/config.py`. `cortex init` writes a starting file;
 `cortex doctor` explains what an installation is still missing. The sections are
-`paths`, `asset_roots`, `secret_refs`, `transports`, `runtime` and `web`; an
-unknown key is refused rather than ignored.
+`paths`, `asset_roots`, `secret_refs`, `transports`, `runtime`, `web`,
+`readings` and `skills`; an unknown key is refused rather than ignored.
 
 Filesystem roles come from `cortex_platform/product/paths.py`'s `PathRegistry`,
 which resolves a config, data, state, cache and log directory. Each can be

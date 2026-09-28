@@ -139,6 +139,7 @@ _RESEARCH_SCHEDULE_OUTCOMES = frozenset({"ran", "skipped", "refused", "failed"})
 _SOURCE_IMPORT_FAILURES = frozenset(
     {
         "adapter_unavailable",
+        "capability_unavailable",
         "invalid_source",
         "materialization_failed",
         "outcome_unknown",
@@ -147,6 +148,7 @@ _SOURCE_IMPORT_FAILURES = frozenset(
 _CAPTURE_FAILURES = frozenset(
     {
         "adapter_unavailable",
+        "capability_unavailable",
         "invalid_source",
         "materialization_failed",
         "outcome_unknown",
@@ -360,9 +362,9 @@ def _receipt_subject_id(response_column: str) -> str:
     receipt is the whole of what they read. Whether the subject also stops
     being the ENGINE'S is a narrower question: `_MACHINE_RUN_PREDICATE` and
     `_MACHINE_THREAD_PREDICATE` each OR that receipt half with a workflow
-    half -- a run owning a workflow instance (control/store.py:521), a
+    half -- a run owning a workflow instance (control/store.py:523), a
     thread any run of which ever carried one
-    (control/store.py:11315-11317). So a gen-13 carrier that owns its
+    (control/store.py:11317-11319). So a gen-13 carrier that owns its
     workflow still answers "the engine's" at both doors, and only its
     creator changes. "Not the engine's at every door" is the answer for a
     subject whose receipt is its ONLY machine signal: a workflow-less
@@ -373,14 +375,14 @@ def _receipt_subject_id(response_column: str) -> str:
     otherwise hide. ⟦batchS N3⟧ The engine reads the None creator too:
     `capture_consumer._thread` adopts a `capture <id>` thread only when
     `thread_creator` returns its own actor
-    (engine/capture_consumer.py:624), so the consumer's own carrier thread
+    (engine/capture_consumer.py:625), so the consumer's own carrier thread
     reads as somebody else's and the capture is set aside as
-    `ForeignCarrierThread` (engine/capture_consumer.py:628).
+    `ForeignCarrierThread` (engine/capture_consumer.py:629).
 
     ⟦batchS ADJ-1⟧ And the write the corruption permits is not only an
     operator's. A capture thread that stops matching
     `_MACHINE_THREAD_PREDICATE` makes a workflow-less carrier run on it
-    match `_CONVERSATION_RUN_PREDICATE` (control/store.py:10929-10935) as soon
+    match `_CONVERSATION_RUN_PREDICATE` (control/store.py:10931-10937) as soon
     as the thread is drivable at all -- an operator message the API stored,
     or a transport binding -- and the turn bridge's start sweep projects
     exactly those runs (transports/bridge.py:2044). So a restarted daemon
@@ -426,10 +428,10 @@ def _receipt_subject_id(response_column: str) -> str:
 
     ⟦batchS ADJ-3⟧ Over SQL, and only there. Three PYTHON readers parse a
     `response_json` column with a bare `json.loads` and carry no guard at
-    all: `_receipt` (control/store.py:12781-12805) over these same
+    all: `_receipt` (control/store.py:12783-12807) over these same
     `idempotency_receipts` rows, `_runtime_event_replay`
-    (control/store.py:11728-11795) over `runtime_event_inbox`, and
-    `_transport_command_row` (control/store.py:14488-14515) over
+    (control/store.py:11730-11797) over `runtime_event_inbox`, and
+    `_transport_command_row` (control/store.py:14490-14517) over
     `transport_command_receipts`. Each raises `json.JSONDecodeError` on a
     corrupt row, and ⟦batchT ADJ-A2⟧ the door that error reaches is not the
     same for all three. `_receipt` sits behind the control API's command
@@ -439,9 +441,9 @@ def _receipt_subject_id(response_column: str) -> str:
     did not write. `_runtime_event_replay` never reaches that door:
     `adapter_event_id` is supplied only by the daemon's runtime delivery
     path (orchestration/service.py:733) through `apply_runtime_transition`
-    (control/store.py:5976-6011); every control-API caller leaves it None,
+    (control/store.py:5978-6013); every control-API caller leaves it None,
     and the reader returns at its `adapter_event_id` guard
-    (control/store.py:11737-11738) before it parses anything -- so its
+    (control/store.py:11739-11740) before it parses anything -- so its
     corrupt row fails a daemon-side runtime event, not an operator's
     request. The third is the Telegram adapter's command replay
     (`transports/ports.py:244-255`). Left as they are: each is a single-row

@@ -26,6 +26,7 @@ _TOP_LEVEL_KEYS = {
     "runtime",
     "web",
     "readings",
+    "skills",
 }
 # ⟦P7⟧ The web section is the Web front door's shape and nothing else: a fixed
 # loopback port so a tunnel ingress has a stable target, and the ONE public
@@ -476,6 +477,17 @@ def validate_config(raw: object) -> dict[str, object]:
         if not root.is_absolute() or root == Path(root.anchor) or "\0" in str(root) or ".." in root.parts:
             raise ConfigError("readings.papers_root must be an absolute non-root path")
         validated["readings"] = readings
+    if "skills" in raw:
+        # Where operator-installed skills live (`skills.py`). Naming the root
+        # is the whole opt-in; which package serves a capability is decided by
+        # the operator's acceptance, not here.
+        skills = _string_mapping(raw["skills"], section="skills")
+        if set(skills) != {"root"}:
+            raise ConfigError("skills requires only root")
+        root = Path(skills["root"])
+        if not root.is_absolute() or root == Path(root.anchor) or "\0" in str(root) or ".." in root.parts:
+            raise ConfigError("skills.root must be an absolute non-root path")
+        validated["skills"] = skills
     return validated
 
 
@@ -504,7 +516,7 @@ def _toml_value(value: object) -> str:
 def _render_config(config: Mapping[str, object]) -> str:
     validated = validate_config(dict(config))
     lines = [f"config_version = {CONFIG_VERSION}"]
-    for section in ("paths", "asset_roots", "secret_refs", "transports", "runtime", "web", "readings"):
+    for section in ("paths", "asset_roots", "secret_refs", "transports", "runtime", "web", "readings", "skills"):
         entries = validated.get(section)
         if not entries:
             continue

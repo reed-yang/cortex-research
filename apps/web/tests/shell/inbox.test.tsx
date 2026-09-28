@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
+import { copy } from "../../app/shell/copy";
 import { Shell } from "../../app/shell/shell";
 import { FakeControl } from "./fake-control";
 
@@ -109,6 +110,20 @@ describe("InboxView", () => {
       path: "captures/capture_pending/approve",
       body: { expected_revision: 0 },
     }));
+  });
+
+  it("says when a capture failed only because OCR is not ready", async () => {
+    const control = seeded();
+    control.capture("capture_pdf", "https://arxiv.org/abs/2609.07398", {
+      state: "failed", failure_category: "capability_unavailable", created_at: "2026-09-06T09:00:00Z",
+    });
+    control.capture("capture_broken", "https://arxiv.org/abs/2609.00001", {
+      state: "failed", failure_category: "materialization_failed", created_at: "2026-09-06T10:00:00Z",
+    });
+    await openInbox(control);
+
+    await screen.findByText(copy.capture.ocrUnavailable);
+    expect(screen.getAllByText(copy.capture.failed)).toHaveLength(1);
   });
 
   it("asks for a second gesture before reopening a capture", async () => {

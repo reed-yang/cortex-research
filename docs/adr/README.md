@@ -25,6 +25,8 @@ reconsideration. They are not progress reports.
   non-run-scoped staging identity gated on explicit approval.
 - [ADR 0010](0010-product-manifest-contract-per-schema.md): The product
   manifest contract is frozen per declared schema version, with byte pins.
+- [ADR 0011](0011-operator-skill-capabilities.md): Serve engine capabilities
+  from digest-accepted operator skills.
 
 ## Status lifecycle
 
