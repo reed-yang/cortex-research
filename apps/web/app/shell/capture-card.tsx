@@ -41,9 +41,11 @@ export function CaptureCard({
       aria-label={copy.capture.label}
       className={`flex flex-col gap-2 rounded-lg border p-3 ${selected ? "border-primary ring-1 ring-primary" : ""}`}
       data-capture-id={capture.id}
+      data-capture-state={capture.state}
       ref={node}
     >
       <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={capture.state === "failed" ? "destructive" : "secondary"}>{copy.captureStates[capture.state]}</Badge>
         <Badge variant="outline">{capture.kind === "url" ? copy.capture.link : copy.capture.note}</Badge>
         {/* An exact-string corpus hit is evidence, never identity, so it reads
             as a hint and refuses nothing. */}

@@ -5,12 +5,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { CAPTURE_STATES, type Capture, type CaptureState, type Decision } from "../control/contracts";
+import type { Capture, Decision } from "../control/contracts";
 import { CaptureCard } from "./capture-card";
 import { copy, decisionKindLabel, label } from "./copy";
 import type { CaptureActionName, ViewProps } from "./types";
-
-const GROUP_LABELS: Record<CaptureState, string> = copy.captureGroups;
 
 // A decision prompt can be several paragraphs. The row is an index into the
 // thread that owns it, so it carries the ask and nothing more.
@@ -114,9 +112,6 @@ export function InboxView({ state, actions, client }: ViewProps) {
     void actions.decideCapture(capture, action);
   }
 
-  const groups = CAPTURE_STATES
-    .map((group) => ({ group, items: state.captures.filter((capture) => capture.state === group) }))
-    .filter((entry) => entry.items.length > 0);
   // A reread while rows are on screen keeps them on screen: unmounting the
   // list would drop the focus of whoever just decided one of them.
   const firstLoad = state.capturesLoading && state.captures.length === 0;
@@ -175,7 +170,8 @@ export function InboxView({ state, actions, client }: ViewProps) {
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-medium" id="inbox-captures-title">{copy.inbox.captures}</h2>
             {/* A capture belongs to no run, so no stream can carry it. The view
-                reads the rows on entry and whenever the operator asks. */}
+                reads the rows on entry, on a timer while it is open, and
+                whenever the operator asks. */}
             <Button disabled={state.capturesLoading} onClick={() => actions.refreshCaptures()} size="sm" type="button" variant="ghost">
               {copy.inbox.refresh}
             </Button>
@@ -191,24 +187,21 @@ export function InboxView({ state, actions, client }: ViewProps) {
               </details>
             </div>
           ) : null}
-          {!firstLoad && !state.capturesError && groups.length === 0 ? (
+          {!firstLoad && !state.capturesError && state.captures.length === 0 ? (
             <p className="text-sm text-muted-foreground">{copy.inbox.noCaptures}</p>
           ) : null}
-          {groups.map(({ group, items }) => (
-            <div className="flex flex-col gap-2" data-capture-group={group} key={group}>
-              <h3 className="text-xs font-medium text-muted-foreground">{GROUP_LABELS[group]} ({items.length})</h3>
-              {items.map((capture) => (
-                <CaptureCard
-                  capture={capture}
-                  confirmingReopen={capture.id === reopenConfirmId}
-                  disabled={disabled}
-                  key={capture.id}
-                  onDecide={decide}
-                  onReopenIntent={setReopenConfirmId}
-                  selected={capture.id === state.selectedCaptureId}
-                />
-              ))}
-            </div>
+          {/* One list, newest first: a capture stays where it was submitted
+              while its state changes, and the state is a badge on the card. */}
+          {state.captures.map((capture) => (
+            <CaptureCard
+              capture={capture}
+              confirmingReopen={capture.id === reopenConfirmId}
+              disabled={disabled}
+              key={capture.id}
+              onDecide={decide}
+              onReopenIntent={setReopenConfirmId}
+              selected={capture.id === state.selectedCaptureId}
+            />
           ))}
         </section>
       </div>

@@ -142,6 +142,11 @@ after a configuration repair or a separate library import; it is not the current
 health of that paper. Compare its Created time and Capture id with the attempt
 you are investigating, and check Library for an already imported source.
 
+The Inbox lists captures newest first by submission time, with each card's
+state as a badge. While it is open, it rereads them every five seconds when a
+capture is approved or being read, and every 30 seconds otherwise; a later
+failure therefore appears on the card without a manual refresh.
+
 After the cause is fixed, submit the paper link again and approve the new
 capture. Terminal failed captures do not block a deliberate new submission.
 Successful arXiv imports reuse an existing indexed paper when its identity is
