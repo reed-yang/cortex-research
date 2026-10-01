@@ -27,9 +27,10 @@ jobs:
       github.ref_name == github.event.repository.default_branch &&
       (github.event_name == 'workflow_dispatch' || vars.AUTO_REVIEW_ENABLED == 'true') &&
       (github.event_name != 'issue_comment' ||
-       (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review') && github.event.comment.user.type != 'Bot'))
+       (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review') && github.event.comment.user.type != 'Bot')) &&
+      (github.event_name != 'pull_request_target' || github.event.pull_request.user.login != 'dependabot[bot]')
     # Reviewed standalone release; project policy and Secrets stay in Cortex.
-    uses: reed-yang/independent-pr-review/.github/workflows/review.yml@bb6ca56f2ba3f55a966cffe6197ff0019d21dc0d
+    uses: reed-yang/independent-pr-review/.github/workflows/review.yml@46a98dff3d0c0925627bcbeef31d102a519d4188 # v0.3.0
     with:
       pr_number: ${{ inputs.pr_number && format('{0}', inputs.pr_number) || '' }}
       mode: ${{ inputs.mode || 'review' }}

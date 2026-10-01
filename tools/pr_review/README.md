@@ -22,10 +22,11 @@ production state, or a new background service on the mini.
 ## Deployed behavior
 
 The pipeline keeps Grok `grok-4.6` on the explicitly selected gateway and Gemini
-`gemini-3.8-flash-medium` on official agy 1.2.2 with personal Google OAuth. It obtains
-independent opinions and performs an extra cross-family verification pass when
-candidates or unresolved issues need examination. It fetches bounded related source
-through GitHub; it never executes PR code or follows PR-supplied instructions.
+`gemini-3.8-flash-medium` on the official agy release pinned by the engine (1.2.14
+in v0.3.0) with personal Google OAuth. It obtains independent opinions and performs
+an extra cross-family verification pass when candidates or unresolved issues need
+examination. It fetches bounded related source through GitHub; it never executes PR
+code or follows PR-supplied instructions.
 
 One English summary shows actual coverage, reviewed SHA, status and budget. Verified
 P1/P2 findings with exact diff anchors can receive inline comments. Uncertain or
@@ -50,22 +51,36 @@ to 1M cannot enlarge that provider limit. Variables `GROK_EFFORT`,
 `GROK_CONTEXT_WINDOW`, `GEMINI_EFFORT`, and `GEMINI_CONTEXT_WINDOW` control these
 settings; the selected native model slug must agree with its effort variant.
 
-Ordinary collection allows 160k serialized characters, 50k source characters,
-20 related files and 300 API reads. Current changed-file text precedes base
-versions, and missing head/base text is reported. These retrieval budgets were
-tuned after a large PR timed out with excessive context; they do not reduce the
-configured model windows. Each model receives its own projection, so
+Ordinary collection allows 400k serialized characters, 300k source characters,
+20 related files and 300 API reads. Changed-file text is admitted largest change
+first, then sources of open findings and configured includes, then base versions,
+then related source. Every requested file that does not fit is recorded as
+omitted. Each model receives its own projection of the collected packet, so
 Grok's smaller window does not restrict Gemini's input. Whole diffs and requested
-verification evidence are preserved; omissions are recorded. Token estimates use
-UTF-8 bytes/3 with a ten-percent window reserve, not an exact provider tokenizer.
-These settings are capacities and budgets, not a full-window accuracy benchmark.
+verification evidence are preserved; lane omissions are recorded. Token estimates
+use UTF-8 bytes/3 with a ten-percent window reserve, not an exact provider
+tokenizer. These settings are capacities and budgets, not a full-window accuracy
+benchmark.
 
-PR #13 exposed an operational limit: a roughly 504k-character packet timed out
-at the Grok gateway, and native agy returned an opinion explicitly reporting
-truncated input. Consequently, the configured 1M Gemini model window is not a
-qualified end-to-end CLI input capacity. The smaller ordinary retrieval budget
-keeps complete diffs ahead of optional source text. Larger changes can still
-report omissions and must not be represented as complete reviews.
+Native agy has its own input limit. From 1.2.2 through at least 1.2.14, it keeps
+only a prefix of any single user message above 64,000 estimated tokens (UTF-8
+bytes/3) and still finishes successfully. That is how the Gemini opinion on
+PR #13 came to report truncated input. Since engine v0.3.0, the agy lane is
+limited to 60,000 estimated tokens and drops optional text with recorded lane
+omissions; the 1M figure remains the model window. Every model prompt ends with
+a per-call nonce that the reply must repeat. A lane that does not repeat it is
+partial and never becomes a successful baseline.
+
+The other PR #13 failure was the Grok lane's former 600-second non-streaming
+deadline. The engine now streams Grok responses with a 3,600-second total
+deadline. Larger changes can still report omissions and must not be represented
+as complete reviews.
+
+agy versions follow engine releases. The engine's daily watch opens a pin PR for
+each new official agy release after checksum and step-cap checks. Here, Dependabot
+proposes new engine release tags and Action updates weekly. Automatic review
+skips Dependabot PRs because runs triggered by Dependabot do not receive Actions
+Secrets.
 
 The per-PR token accounting ceiling is 8M to allow a large-context review and its
 verification. The hard run cap remains eight. Small PRs use only relevant context;
