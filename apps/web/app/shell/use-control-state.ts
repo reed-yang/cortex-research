@@ -175,6 +175,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   const [researchItemError, setResearchItemError] = useState<string | null>(null);
 
   const captureGeneration = useRef(0);
+  const captureReadInFlight = useRef(false);
   // The catalog listing and the open dossier are guarded exactly like Sources:
   // a generation counter plus the requested identity. Both also carry an abort
   // controller, so a superseded read is cancelled rather than left to land --
@@ -418,8 +419,11 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     if (options.background) {
       // A background reread claims no generation of its own: it lands only if
       // no other read started meanwhile, so it can never strand the loading
-      // flag of a read the operator is waiting on. It shows no progress, and a
+      // flag of a read the operator is waiting on. It also skips while such a
+      // read is in flight, which would otherwise share its generation and could
+      // land after it with an older snapshot. It shows no progress, and a
       // failure keeps the rows on screen for the next reread to replace.
+      if (captureReadInFlight.current) return;
       const generation = captureGeneration.current;
       try {
         const envelope = await clientRef.current.listCaptures();
@@ -433,6 +437,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     }
     const generation = captureGeneration.current + 1;
     captureGeneration.current = generation;
+    captureReadInFlight.current = true;
     setCapturesLoading(true);
     setCapturesError(null);
     try {
@@ -444,7 +449,10 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
       setCaptures([]);
       setCapturesError(error instanceof Error ? error.message : copy.errors.unreadable);
     } finally {
-      if (captureGeneration.current === generation) setCapturesLoading(false);
+      if (captureGeneration.current === generation) {
+        captureReadInFlight.current = false;
+        setCapturesLoading(false);
+      }
     }
   }, []);
 

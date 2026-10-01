@@ -282,6 +282,41 @@ describe("InboxView", () => {
       await waitFor(() => expect(captureReads(control)).toBe(reads + 1));
     });
 
+    it("waits for an operator refresh that is still in flight", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const control = seeded();
+      const live = control.capture("capture_live", "https://example.com/live", { state: "approved" });
+      const { container } = await openInbox(control);
+      await screen.findByText("https://example.com/live");
+      const reads = captureReads(control);
+
+      // Hold the operator's read so a timer tick lands while it is in flight.
+      let release: (() => void) | null = null;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let armed = true;
+      control.beforeResponse = async (path, method) => {
+        if (!armed || method !== "GET" || path !== "captures") return;
+        armed = false;
+        await held;
+      };
+      await act(async () => { screen.getByRole("button", { name: copy.inbox.refresh }).click(); });
+      await screen.findByText(copy.inbox.refreshingCaptures);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      // A held read is logged only when it answers, so no read means the tick yielded.
+      expect(captureReads(control)).toBe(reads);
+
+      Object.assign(live, { state: "failed", failure_category: "adapter_unavailable", revision: 3 });
+      release!();
+      await waitFor(() => expect(screen.queryByText(copy.inbox.refreshingCaptures)).toBeNull());
+      expect(container.querySelector<HTMLElement>('[data-capture-id="capture_live"]')?.dataset.captureState).toBe("failed");
+      expect(captureReads(control)).toBe(reads + 1);
+
+      // Nothing is in flight any more, so rereads resume at the idle cadence.
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await waitFor(() => expect(captureReads(control)).toBe(reads + 2));
+    });
+
     it("pauses while the page is hidden and rereads when it is shown again", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       const control = seeded();
