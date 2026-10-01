@@ -55,6 +55,12 @@ function newestFirst(captures: Capture[]): Capture[] {
     right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id));
 }
 
+// How often an open Inbox rereads its captures. A capture the consumer still
+// has to import or is reading can change within seconds; otherwise the reread
+// only picks up captures made elsewhere.
+const CAPTURE_REREAD_BUSY_MS = 5_000;
+const CAPTURE_REREAD_IDLE_MS = 30_000;
+
 // The sentence says what happened; the Details disclosure carries the protocol
 // category a refusal is filed under, so an operator can quote it without the
 // sentence having to name it. A failure that is not a refusal shows its own
@@ -169,6 +175,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   const [researchItemError, setResearchItemError] = useState<string | null>(null);
 
   const captureGeneration = useRef(0);
+  const captureReadInFlight = useRef(false);
   // The catalog listing and the open dossier are guarded exactly like Sources:
   // a generation counter plus the requested identity. Both also carry an abort
   // controller, so a superseded read is cancelled rather than left to land --
@@ -405,11 +412,32 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     void loadResearchItem(id);
   }, [loadResearchItem]);
 
-  // Captures have no event lane, so the inbox reads row state on entry and on
-  // demand, guarded by its own generation counter like the Sources listing.
-  const loadCaptures = useCallback(async () => {
+  // Captures have no event lane, so the inbox reads row state on entry, on
+  // demand and on a timer while it is open, guarded by its own generation
+  // counter like the Sources listing.
+  const loadCaptures = useCallback(async (options: { background?: boolean } = {}) => {
+    if (options.background) {
+      // A background reread claims no generation of its own: it lands only if
+      // no other read started meanwhile, so it can never strand the loading
+      // flag of a read the operator is waiting on. It also skips while such a
+      // read is in flight, which would otherwise share its generation and could
+      // land after it with an older snapshot. It shows no progress, and a
+      // failure keeps the rows on screen for the next reread to replace.
+      if (captureReadInFlight.current) return;
+      const generation = captureGeneration.current;
+      try {
+        const envelope = await clientRef.current.listCaptures();
+        if (captureGeneration.current !== generation) return;
+        setCaptures(newestFirst(envelope.items));
+        setCapturesError(null);
+      } catch {
+        // The next reread tries again; the Refresh button reports errors.
+      }
+      return;
+    }
     const generation = captureGeneration.current + 1;
     captureGeneration.current = generation;
+    captureReadInFlight.current = true;
     setCapturesLoading(true);
     setCapturesError(null);
     try {
@@ -421,7 +449,10 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
       setCaptures([]);
       setCapturesError(error instanceof Error ? error.message : copy.errors.unreadable);
     } finally {
-      if (captureGeneration.current === generation) setCapturesLoading(false);
+      if (captureGeneration.current === generation) {
+        captureReadInFlight.current = false;
+        setCapturesLoading(false);
+      }
     }
   }, []);
 
@@ -571,6 +602,47 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     }, 0);
     return () => window.clearTimeout(timer);
   }, [loadCaptures, loadPendingDecisions, loadResearchItems, loadSources, researchKind, researchStatus, view]);
+
+  // While the Inbox is open its captures are reread in the background, so a
+  // capture that is imported or fails after approval changes on screen without
+  // a manual refresh. Rereads pause while the page is hidden or offline, and
+  // run at once when it becomes visible or reconnects.
+  const capturesInFlight = captures.some((capture) => capture.state === "approved" || capture.state === "claimed");
+  useEffect(() => {
+    if (view !== "inbox") return;
+    let active = true;
+    let reading = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => void reread(), capturesInFlight ? CAPTURE_REREAD_BUSY_MS : CAPTURE_REREAD_IDLE_MS);
+    };
+    const reread = async () => {
+      if (!active) return;
+      if (!reading && navigator.onLine && document.visibilityState !== "hidden") {
+        reading = true;
+        try {
+          await loadCaptures({ background: true });
+        } finally {
+          reading = false;
+        }
+      }
+      if (active) schedule();
+    };
+    const wake = () => {
+      if (document.visibilityState === "hidden") return;
+      void reread();
+    };
+    schedule();
+    window.addEventListener("online", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      window.removeEventListener("online", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, [capturesInFlight, loadCaptures, view]);
 
   // A link that named a research item opens its dossier once, whichever view
   // the query asked for: the item stays selected while the operator reads a

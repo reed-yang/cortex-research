@@ -129,9 +129,9 @@ export const copy = Object.freeze({
     cancelReopen: "Cancel reopen",
     details: "Details",
   },
-  // What each capture state is called for the operator, in the store's own
-  // order.
-  captureGroups: {
+  // What each capture state is called for the operator, shown as the badge
+  // on its card.
+  captureStates: {
     pending: "Waiting for you",
     approved: "Approved",
     claimed: "Being read",

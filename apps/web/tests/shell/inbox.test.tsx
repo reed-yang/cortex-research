@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { copy } from "../../app/shell/copy";
 import { Shell } from "../../app/shell/shell";
 import { FakeControl } from "./fake-control";
@@ -91,7 +91,7 @@ describe("InboxView", () => {
     expect(control.gets).toContain("runs/run_2");
   });
 
-  it("groups the captures in state order and decides one of them", async () => {
+  it("lists the captures newest first with their state and decides one of them", async () => {
     const control = seeded();
     control.capture("capture_failed", "https://example.com/failed", { state: "failed", created_at: "2026-09-06T09:00:00Z" });
     control.capture("capture_pending", "https://example.com/pending", { created_at: "2026-09-06T10:00:00Z" });
@@ -101,9 +101,15 @@ describe("InboxView", () => {
     const { container } = await openInbox(control);
 
     await screen.findByText("https://example.com/pending");
+    // Submission time orders the list whatever the state: a failure never
+    // sinks below older imports.
     await waitFor(() => expect(
-      [...container.querySelectorAll<HTMLElement>("[data-capture-group]")].map((node) => node.dataset.captureGroup),
-    ).toEqual(["pending", "approved", "consumed", "failed"]));
+      [...container.querySelectorAll<HTMLElement>("[data-capture-id]")].map((node) => node.dataset.captureId),
+    ).toEqual(["capture_approved", "capture_consumed", "capture_pending", "capture_failed"]));
+    const card = (id: string) => container.querySelector<HTMLElement>(`[data-capture-id="${id}"]`)!;
+    expect(within(card("capture_failed")).getByText(copy.captureStates.failed)).toBeTruthy();
+    expect(within(card("capture_consumed")).getByText(copy.captureStates.consumed)).toBeTruthy();
+    expect(within(card("capture_approved")).getByText(copy.captureStates.approved)).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(control.posts.at(-1)).toMatchObject({
@@ -226,6 +232,112 @@ describe("InboxView", () => {
 
     release!();
     await waitFor(() => expect(screen.queryByText("Refreshing…")).toBeNull());
+  });
+
+  describe("background rereads", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    function captureReads(control: FakeControl) {
+      return control.gets.filter((path) => path === "captures").length;
+    }
+
+    it("shows a failure that lands after approval without a manual refresh", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const control = seeded();
+      const live = control.capture("capture_live", "https://arxiv.org/pdf/2609.20744", { state: "approved" });
+      const { container } = await openInbox(control);
+      await screen.findByText("https://arxiv.org/pdf/2609.20744");
+      const reads = captureReads(control);
+
+      Object.assign(live, { state: "failed", failure_category: "adapter_unavailable", revision: 3 });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+
+      await waitFor(() => expect(
+        container.querySelector<HTMLElement>('[data-capture-id="capture_live"]')?.dataset.captureState,
+      ).toBe("failed"));
+      expect(captureReads(control)).toBe(reads + 1);
+      expect(screen.getByText(copy.capture.failed)).toBeTruthy();
+      // A background reread is not an operator refresh: no progress line.
+      expect(screen.queryByText(copy.inbox.refreshingCaptures)).toBeNull();
+    });
+
+    it("keeps the rows on screen when a background reread fails", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const control = seeded();
+      control.capture("capture_idle", "https://example.com/idle");
+      await openInbox(control);
+      await screen.findByText("https://example.com/idle");
+      const reads = captureReads(control);
+
+      control.failNext = { path: /^captures$/, status: 503, category: "store_unavailable" };
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+      // The refused read answers before it is logged; the consumed failure is
+      // what shows the reread happened.
+      await waitFor(() => expect(control.failNext).toBeNull());
+      expect(screen.getByText("https://example.com/idle")).toBeTruthy();
+      expect(screen.queryByText(copy.inbox.capturesUnreadable)).toBeNull();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await waitFor(() => expect(captureReads(control)).toBe(reads + 1));
+    });
+
+    it("waits for an operator refresh that is still in flight", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const control = seeded();
+      const live = control.capture("capture_live", "https://example.com/live", { state: "approved" });
+      const { container } = await openInbox(control);
+      await screen.findByText("https://example.com/live");
+      const reads = captureReads(control);
+
+      // Hold the operator's read so a timer tick lands while it is in flight.
+      let release: (() => void) | null = null;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let armed = true;
+      control.beforeResponse = async (path, method) => {
+        if (!armed || method !== "GET" || path !== "captures") return;
+        armed = false;
+        await held;
+      };
+      await act(async () => { screen.getByRole("button", { name: copy.inbox.refresh }).click(); });
+      await screen.findByText(copy.inbox.refreshingCaptures);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      // A held read is logged only when it answers, so no read means the tick yielded.
+      expect(captureReads(control)).toBe(reads);
+
+      Object.assign(live, { state: "failed", failure_category: "adapter_unavailable", revision: 3 });
+      release!();
+      await waitFor(() => expect(screen.queryByText(copy.inbox.refreshingCaptures)).toBeNull());
+      expect(container.querySelector<HTMLElement>('[data-capture-id="capture_live"]')?.dataset.captureState).toBe("failed");
+      expect(captureReads(control)).toBe(reads + 1);
+
+      // Nothing is in flight any more, so rereads resume at the idle cadence.
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await waitFor(() => expect(captureReads(control)).toBe(reads + 2));
+    });
+
+    it("pauses while the page is hidden and rereads when it is shown again", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const control = seeded();
+      control.capture("capture_busy", "https://example.com/busy", { state: "claimed" });
+      await openInbox(control);
+      await screen.findByText("https://example.com/busy");
+      const reads = captureReads(control);
+
+      let visibility: DocumentVisibilityState = "hidden";
+      const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+      try {
+        await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+        expect(captureReads(control)).toBe(reads);
+
+        visibility = "visible";
+        await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+        await waitFor(() => expect(captureReads(control)).toBe(reads + 1));
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   it("explains a capture another run still holds instead of offering a decision", async () => {
