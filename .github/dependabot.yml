@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Proposes reviewed engine releases (tags) and external Action updates as PRs.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
