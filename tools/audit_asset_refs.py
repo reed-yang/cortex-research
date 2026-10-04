@@ -214,6 +214,13 @@ def _dedent(line: str, columns: int) -> str:
     return ""
 
 
+def _closes(fence: tuple[str, int, int], rest: str) -> bool:
+    """Whether ``rest`` is a closing line for ``fence``."""
+    close = _FENCE.fullmatch(rest)
+    return bool(close and close.group(1)[0] == fence[0] and len(close.group(1)) >= fence[1]
+                and not close.group(2).strip(" \t"))
+
+
 @dataclass
 class _Blocks:
     """Block-level structure that bounds inline parsing."""
@@ -296,11 +303,20 @@ def _blocks(text: str) -> _Blocks:
         holder = fence or comment or html
         if holder is not None and not blank and indent < holder[-1]:
             # A less indented line ends the list item and the block it holds.
+            # Strict CommonMark then reads a closing fence line at the outer
+            # level, where it opens a new fence that hides every later
+            # reference. Consuming it as the intended closer can only
+            # over-report; any other fence line opens at the outer level.
             if comment is not None:
                 blocks.excluded.append((comment[0], start))
+            del lists[bisect_right(lists, indent):]
+            closed = fence is not None and _closes(fence, _dedent(line, lists[-1] if lists else 0))
             fence = comment = html = None
             after_block = True
-            del lists[bisect_right(lists, indent):]
+            if closed:
+                blocks.excluded.append((start, end))
+                may_start_code = True
+                continue
         if comment is not None:
             close = line.find("-->")
             if close >= 0:
@@ -314,9 +330,7 @@ def _blocks(text: str) -> _Blocks:
             continue
         if fence is not None:
             blocks.excluded.append((start, end))
-            close = _FENCE.fullmatch(_dedent(line, fence[2]))
-            if (close and close.group(1)[0] == fence[0] and len(close.group(1)) >= fence[1]
-                    and not close.group(2).strip(" \t")):
+            if _closes(fence, _dedent(line, fence[2])):
                 fence, may_start_code, after_block = None, True, True
             continue
         if not paragraph or after_block:

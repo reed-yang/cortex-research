@@ -201,6 +201,15 @@ def test_unsupported_asset_forms_are_reported_not_dropped():
     # and a less indented line ends the item and its fence.
     ("- item\n  ```\n  code\n    ```\n\n![](assets/a.png)\n", ["assets/a.png"]),
     ("- item\n  ```\ncode\n\n![](assets/a.png)\n", ["assets/a.png"]),
+    # A less indented line that could close the item's fence closes it
+    # instead of reopening one; a fence line that cannot close it ends the
+    # item and opens a fence at the outer level.
+    ("- item\n  ```\n  ![](assets/code.png)\n```\n![](assets/a.png)\n", ["assets/a.png"]),
+    ("- a\n  - b\n    ```\n    code\n  ```\n  ![](assets/a.png)\n", ["assets/a.png"]),
+    ("- item\n  ```\n  code\n~~~\n![](assets/code.png)\n~~~\n![](assets/a.png)\n",
+     ["assets/a.png"]),
+    ("- item\n  ```\n  code\n```text\n![](assets/code.png)\n```\n![](assets/a.png)\n",
+     ["assets/a.png"]),
     # A failed inline tail falls back to a shortcut reference, and so does a
     # label followed by an unmatched bracket; an undefined second label stays
     # text, so the inline link after it is still read.
