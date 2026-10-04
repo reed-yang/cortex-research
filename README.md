@@ -32,7 +32,9 @@ Hermes gen9 runtime is supplied separately. See
   immutable versioned documents, readable through Preview/Source with their
   provenance and evidence labels.
 - **Library and Inbox.** Search adopted sources, read their notes, full text and
-  grounding, and triage captures and pending decisions.
+  grounding, and triage captures and pending decisions. Save an idea as written
+  from the Inbox or with Telegram `/idea`; saving starts no model turn, run or
+  import ([user guide](docs/runbooks/cortex-web-user-guide.md#save-an-idea)).
 - **Research turns.** `/research <question>` builds one bounded, hashed evidence
   packet from the adopted library and the selected item's documents, sends it to
   the configured model through the managed worker, and saves the answer as an

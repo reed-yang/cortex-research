@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ContractDecodeError, decodeCapture, decodeRun, decodeThread, decodeWorkspace, type Capture } from "../app/control/contracts";
+import { ContractDecodeError, decodeCapture, decodeFragment, decodeRun, decodeThread, decodeWorkspace, type Capture } from "../app/control/contracts";
 import { alreadyCapturedCurrent, ControlProblemError, CortexControlClient } from "../app/control/client";
 import {
   decodeArtifactVersionContent,
@@ -1084,5 +1084,73 @@ describe("research catalog contract", () => {
     const foreign = servedBy({ ...thread, workspace_id: "ws_2" });
     await expect(foreign.client.prepareOpenResearchThread({ id: researchItemId }, workspace).execute())
       .rejects.toThrowError(/does not match the request/);
+  });
+});
+
+describe("idea fragments", () => {
+  const fragment = {
+    id: "fragment_1",
+    text: "  an idea\n第二行 🎬 ",
+    note: "",
+    origin: "web",
+    thread_id: null,
+    context_item_id: null,
+    created_at: now,
+  };
+
+  it("decodes the exact fragment key set", () => {
+    expect(decodeFragment(fragment)).toEqual(fragment);
+    expect(decodeFragment({ ...fragment, origin: "telegram", thread_id: "thread_1", context_item_id: "ri_1" }))
+      .toMatchObject({ origin: "telegram", thread_id: "thread_1" });
+  });
+
+  it.each([
+    ["an unenumerated field", { admitted_item_id: "ri_1" }],
+    ["the adapter reference", { origin_ref: "tg-update" }],
+    ["the actor", { actor_id: "telegram-actor" }],
+    ["an unknown origin", { origin: "email" }],
+    ["a non-string text", { text: 7 }],
+    ["a non-string thread", { thread_id: 7 }],
+  ])("refuses a fragment carrying %s", (_label, extra) => {
+    expect(() => decodeFragment({ ...fragment, ...extra })).toThrowError(ContractDecodeError);
+  });
+
+  it("refuses a fragment missing a key", () => {
+    const value: Record<string, unknown> = { ...fragment };
+    delete value.context_item_id;
+    expect(() => decodeFragment(value)).toThrowError(ContractDecodeError);
+  });
+
+  it("lists fragments and saves one with its text unchanged under one key", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, init });
+      const payload = init?.method === "POST" ? fragment : { items: [fragment], next_cursor: null };
+      return new Response(JSON.stringify(payload), {
+        status: init?.method === "POST" ? 201 : 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const client = new CortexControlClient({
+      fetcher: fetcher as typeof fetch,
+      idempotencyKeyFactory: () => "web-idea-command-0001",
+    });
+
+    const listed = await client.listFragments();
+    const prepared = client.prepareCreateFragment({ text: fragment.text, note: "" });
+    const saved = await prepared.execute();
+    await prepared.execute();
+
+    expect(listed.items).toEqual([fragment]);
+    expect(saved.value).toEqual(fragment);
+    expect(requests.map((request) => request.url)).toEqual([
+      "/api/cortex/fragments",
+      "/api/cortex/fragments",
+      "/api/cortex/fragments",
+    ]);
+    expect(JSON.parse(String(requests[1].init?.body))).toEqual({ text: fragment.text, note: "" });
+    expect(requests.slice(1).map((request) => new Headers(request.init?.headers).get("Idempotency-Key")))
+      .toEqual(["web-idea-command-0001", "web-idea-command-0001"]);
   });
 });

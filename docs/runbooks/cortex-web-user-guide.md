@@ -33,7 +33,7 @@ a live synchronization with their original files.
 | Research → Explorations | Inspect broader research directions and recorded exploration history. Exploration does not mean a runnable experiment. |
 | Research → Projects | Inspect legacy research project records and their dossiers. |
 | Library | Browse adopted paper and source records and their available content. |
-| Inbox | Review captures and pending decisions. It is not an automatic resume queue. |
+| Inbox | Save ideas as written, add arXiv sources, and review captures and pending decisions. It is not an automatic resume queue. |
 | Status | Inspect availability and technical service state. |
 | Runs | Inspect execution history for a conversation. |
 | Outputs | Read saved research artifacts for the selected run. |
@@ -157,6 +157,21 @@ If no usable evidence is found, try exact paper or title keywords, or verify
 Documents on the selected item. Missing retrieval is not proof that no relevant
 work exists. Non-English title matching is limited.
 
+## Save an idea
+
+Inbox → Save an idea keeps the text exactly as typed, including leading spaces
+and blank lines, with an optional note. Saving appends no message, starts no run
+and creates no capture or source; nothing reads the idea afterwards. Add a source
+(arXiv) is the separate composer for arXiv links and ids.
+
+Ideas lists saved ideas newest first, marked Saved here or From Telegram, with
+their ids under Details. The Inbox shows the newest 500. Ideas are reread on
+Inbox entry, after a save and with Refresh ideas, not on a timer; an idea saved
+from Telegram appears after Refresh ideas. Each save is a new idea, even with the
+same words. When a save could not be confirmed, the text stays in the composer:
+saving the same text and note again retries that save and does not add a second
+idea. Saved ideas cannot be edited, deleted or turned into research items yet.
+
 ## Retry a failed paper capture
 
 Inbox records describe individual import attempts. A failed capture stays failed
@@ -236,6 +251,16 @@ in the item's detail and use Copy command. Send the displayed
 selects the same item for the bot's bound conversation; it does not move the bot
 into an arbitrary Web thread. Follow up normally and use `/open` to return to
 that conversation on the Web.
+
+`/idea <text>` in a bound chat or topic saves the text as an idea and replies
+that nothing was started; it appends no message to the bound thread and asks for
+no turn. After `/idea` (or `/idea@<bot>`), exactly one space, tab or line break
+separates the command from the idea, and everything after it is kept as sent.
+Any other separator, an empty idea, an unbound chat and a photo, file, video or
+animation captioned `/idea` are refused, and nothing is saved. Telegram's own
+limits still apply: the whole message, command included, is at most 16384 bytes,
+and a carriage return is refused. A redelivered update saves nothing twice.
+`/capture` and plain messages still add the text to the bound thread.
 
 Successful Web research does not prove Telegram delivery, and the absence of a
 typing indicator does not prove that a run was not received. Keep receive, run

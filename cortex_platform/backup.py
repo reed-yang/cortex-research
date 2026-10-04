@@ -207,6 +207,7 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
 
     from .product.control.schema import (
         CAPTURES_MIGRATION,
+        IDEA_FRAGMENTS_MIGRATION,
         RESEARCH_SCHEDULES_MIGRATION,
         RESEARCH_ITEMS_MIGRATION,
         RUNTIME_RELEASE_APPROVAL_SCHEMA_VERSION,
@@ -241,6 +242,7 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
                 "research_items",
                 "research_document_versions",
                 "research_thread_items",
+                "idea_fragments",
             ),
             # Each table is required only from the version that creates it: an
             # older snapshot legitimately has none of them, and demanding one
@@ -259,6 +261,7 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
                 ("research_items", RESEARCH_ITEMS_MIGRATION),
                 ("research_document_versions", RESEARCH_ITEMS_MIGRATION),
                 ("research_thread_items", RESEARCH_ITEMS_MIGRATION),
+                ("idea_fragments", IDEA_FRAGMENTS_MIGRATION),
             ),
         ),
         DatabaseSpec(

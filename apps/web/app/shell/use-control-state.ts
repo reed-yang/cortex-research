@@ -13,6 +13,7 @@ import {
   ContractDecodeError,
   type Capture,
   type Decision,
+  type Fragment,
   type Message,
   type Run,
   type RunEvent,
@@ -157,6 +158,9 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [capturesLoading, setCapturesLoading] = useState(false);
   const [capturesError, setCapturesError] = useState<string | null>(null);
+  const [fragments, setFragments] = useState<Fragment[]>([]);
+  const [fragmentsLoading, setFragmentsLoading] = useState(false);
+  const [fragmentsError, setFragmentsError] = useState<string | null>(null);
   const [dispatchGate, setDispatchGate] = useState<boolean | null>(null);
   const [apiVersion, setApiVersion] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<Record<string, boolean> | null>(null);
@@ -175,6 +179,11 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   const [researchItemError, setResearchItemError] = useState<string | null>(null);
 
   const captureGeneration = useRef(0);
+  const fragmentGeneration = useRef(0);
+  // An unconfirmed idea save, with the exact text and note it carries: saving
+  // the same words again retries this command under its key instead of
+  // creating a second idea. A confirmed save or a refusal forgets it.
+  const retainedIdea = useRef<{ prepared: PreparedMutation<Fragment>; text: string; note: string } | null>(null);
   const captureReadInFlight = useRef(false);
   // The catalog listing and the open dossier are guarded exactly like Sources:
   // a generation counter plus the requested identity. Both also carry an abort
@@ -464,6 +473,26 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     }
   }, []);
 
+  // Ideas have no event lane and nothing changes them once saved, so they are
+  // read on Inbox entry, after a save and on demand, never on a timer. A failed
+  // read keeps the rows already shown and says the list could not be read.
+  const loadFragments = useCallback(async () => {
+    const generation = fragmentGeneration.current + 1;
+    fragmentGeneration.current = generation;
+    setFragmentsLoading(true);
+    setFragmentsError(null);
+    try {
+      const envelope = await clientRef.current.listFragments();
+      if (fragmentGeneration.current !== generation) return;
+      setFragments(envelope.items);
+    } catch (error) {
+      if (fragmentGeneration.current !== generation) return;
+      setFragmentsError(error instanceof Error ? error.message : copy.errors.unreadable);
+    } finally {
+      if (fragmentGeneration.current === generation) setFragmentsLoading(false);
+    }
+  }, []);
+
   // Inbox counts every thread's pending decision, so it is read whole here and
   // narrowed to the open thread's run in `decisions`.
   const loadPendingDecisions = useCallback(async () => {
@@ -607,11 +636,12 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
       if (view === "research") void loadResearchItems(researchKind, researchStatus, researchOffsetRef.current);
       if (view === "inbox") {
         void loadCaptures();
+        void loadFragments();
         void loadPendingDecisions();
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [loadCaptures, loadPendingDecisions, loadResearchItems, loadSources, researchKind, researchStatus, view]);
+  }, [loadCaptures, loadFragments, loadPendingDecisions, loadResearchItems, loadSources, researchKind, researchStatus, view]);
 
   // While the Inbox is open its captures are reread in the background, so a
   // capture that is imported or fails after approval changes on screen without
@@ -1078,6 +1108,45 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     void loadPendingDecisions();
   }, [loadCaptures, loadPendingDecisions]);
 
+  const saveIdea = useCallback(async (text: string, note: string): Promise<boolean> => {
+    const retained = retainedIdea.current;
+    const command = retained && retained.text === text && retained.note === note
+      ? retained.prepared
+      : clientRef.current.prepareCreateFragment({ text, note });
+    retainedIdea.current = { prepared: command, text, note };
+    const forget = () => {
+      if (retainedIdea.current?.prepared === command) retainedIdea.current = null;
+    };
+    const saved = await runPrepared(
+      copy.notice.ideaSaved,
+      command,
+      async (fragment) => {
+        // Confirmed: the command is spent before anything else can fail, and
+        // the card is shown from the answer even if the reread below fails.
+        forget();
+        setFragments((rows) => [fragment, ...rows.filter((row) => row.id !== fragment.id)]);
+        await loadFragments();
+      },
+      // A refusal is a definite answer and spends the command. A retryable
+      // problem is not: the gateway answers its own 503 when the upstream
+      // fetch throws, which can follow a commit whose answer was lost, so the
+      // command is kept and the same words retry it under the same key.
+      {
+        onProblem: (error) => {
+          if (error.problem.retryable) {
+            setNotice({ tone: "warning", text: copy.errors.unconfirmed, details: noticeDetails(error, copy.errors.unconfirmed) });
+            return true;
+          }
+          forget();
+          return false;
+        },
+      },
+    );
+    return saved !== null;
+  }, [loadFragments, runPrepared]);
+
+  const refreshFragments = useCallback(() => { void loadFragments(); }, [loadFragments]);
+
   const refreshSources = useCallback(() => { void loadSources(); }, [loadSources]);
 
   // Another kind is another list, so the dossier that belonged to the old one
@@ -1189,6 +1258,9 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     selectedCaptureId,
     capturesLoading,
     capturesError,
+    fragments,
+    fragmentsLoading,
+    fragmentsError,
     sources,
     sourcesLoading,
     sourcesError,
@@ -1209,7 +1281,8 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     researchItemError,
   }), [
     apiVersion, archivedThreads, capabilities, captures, capturesError, capturesLoading, commandPending,
-    decisions, dispatchGate, events, fatalError, lastTurnOutcome, loadedThreadId, loading, messages,
+    decisions, dispatchGate, events, fatalError, fragments, fragmentsError, fragmentsLoading, lastTurnOutcome,
+    loadedThreadId, loading, messages,
     nextRunCursor, notice, offline, pendingDecisions, replayState, research, researchItem, researchItemError,
     researchItemLoading, researchItems, researchKind, researchLimit, researchListError, researchListLoading,
     researchOffset, researchStatus, researchTotal, run, runs, selectedCaptureId, selectedResearchItemId,
@@ -1243,6 +1316,8 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     capture,
     decideCapture,
     refreshCaptures,
+    saveIdea,
+    refreshFragments,
     selectSource,
     openSource,
     refreshSources,
@@ -1256,9 +1331,9 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     retry,
   }), [
     archiveThread, browseResearchItems, capture, createRun, createThread, createWorkspace, decideCapture,
-    loadOlderRuns, messageCommitted, openResearchThread, openSource, openThread, refreshCaptures, refreshResearchItems,
-    refreshSources, refreshThread, renameThread, renameWorkspace, resolveDecision, retainTurn, retry,
-    runAction, runCreated, selectResearchItem, selectResearchKind, selectResearchStatus, selectRun,
+    loadOlderRuns, messageCommitted, openResearchThread, openSource, openThread, refreshCaptures, refreshFragments,
+    refreshResearchItems, refreshSources, refreshThread, renameThread, renameWorkspace, resolveDecision, retainTurn, retry,
+    runAction, runCreated, saveIdea, selectResearchItem, selectResearchKind, selectResearchStatus, selectRun,
     selectSource, selectThread, selectView, selectWorkspace, takeRetainedTurn, unarchiveThread,
   ]);
 

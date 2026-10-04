@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { Capture, Decision } from "../control/contracts";
 import { CaptureCard } from "./capture-card";
+import { FragmentCard } from "./fragment-card";
 import { copy, decisionKindLabel, label } from "./copy";
 import type { CaptureActionName, ViewProps } from "./types";
 
@@ -75,6 +76,55 @@ function CaptureComposer({ disabled, onCapture }: {
   );
 }
 
+// Saving an idea keeps the text as typed and starts nothing, so this composer
+// has no approval and never posts a capture.
+function IdeaComposer({ disabled, onSave }: {
+  disabled: boolean;
+  onSave: (text: string, note: string) => Promise<boolean>;
+}) {
+  const [text, setText] = useState("");
+  const [note, setNote] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!text.trim()) return;
+    // Sent verbatim: leading spaces and blank lines are part of the idea.
+    const saved = await onSave(text, note);
+    // A refused or unconfirmed save keeps what the operator wrote.
+    if (!saved) return;
+    setText("");
+    setNote("");
+  }
+
+  return (
+    <form
+      aria-labelledby="inbox-idea-title"
+      className="flex flex-col gap-2 rounded-lg border p-3"
+      onSubmit={(event) => void submit(event)}
+    >
+      <Textarea
+        aria-label={copy.inbox.ideaLabel}
+        disabled={disabled}
+        onChange={(event) => setText(event.target.value)}
+        placeholder={copy.inbox.ideaPlaceholder}
+        rows={3}
+        value={text}
+      />
+      <Input
+        aria-label={copy.inbox.ideaNoteLabel}
+        disabled={disabled}
+        onChange={(event) => setNote(event.target.value)}
+        placeholder={copy.inbox.ideaNotePlaceholder}
+        type="text"
+        value={note}
+      />
+      <div className="flex justify-end">
+        <Button disabled={disabled || !text.trim()} size="sm" type="submit">{copy.inbox.saveIdea}</Button>
+      </div>
+    </form>
+  );
+}
+
 export function InboxView({ state, actions, client }: ViewProps) {
   const [reopenConfirmId, setReopenConfirmId] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -125,7 +175,15 @@ export function InboxView({ state, actions, client }: ViewProps) {
           <p className="text-sm text-muted-foreground">{copy.inbox.subtitle}</p>
         </header>
 
-        <CaptureComposer disabled={disabled} onCapture={actions.capture} />
+        <section className="flex flex-col gap-2">
+          <h2 className="text-sm font-medium" id="inbox-idea-title">{copy.inbox.ideaTitle}</h2>
+          <IdeaComposer disabled={disabled} onSave={actions.saveIdea} />
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <h2 className="text-sm font-medium" id="inbox-source-title">{copy.inbox.sourceTitle}</h2>
+          <CaptureComposer disabled={disabled} onCapture={actions.capture} />
+        </section>
 
         <section aria-labelledby="inbox-decisions-title" className="flex flex-col gap-2">
           <h2 className="text-sm font-medium" id="inbox-decisions-title">{copy.inbox.decisions}</h2>
@@ -164,6 +222,31 @@ export function InboxView({ state, actions, client }: ViewProps) {
               </article>
             );
           })}
+        </section>
+
+        <section aria-busy={state.fragmentsLoading} aria-labelledby="inbox-ideas-title" className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-medium" id="inbox-ideas-title">{copy.inbox.ideas}</h2>
+            <Button disabled={state.fragmentsLoading} onClick={() => actions.refreshFragments()} size="sm" type="button" variant="ghost">
+              {copy.inbox.refreshIdeas}
+            </Button>
+          </div>
+          {state.fragmentsLoading && state.fragments.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{copy.inbox.loadingIdeas}</p>
+          ) : null}
+          {!state.fragmentsLoading && state.fragmentsError ? (
+            <div className="flex flex-col gap-1" role="alert">
+              <p className="text-sm text-destructive">{copy.inbox.ideasUnreadable}</p>
+              <details className="text-xs text-muted-foreground" data-details>
+                <summary>{copy.inbox.details}</summary>
+                <p>{state.fragmentsError}</p>
+              </details>
+            </div>
+          ) : null}
+          {!state.fragmentsLoading && !state.fragmentsError && state.fragments.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{copy.inbox.noIdeas}</p>
+          ) : null}
+          {state.fragments.map((fragment) => <FragmentCard fragment={fragment} key={fragment.id} />)}
         </section>
 
         <section aria-busy={state.capturesLoading} aria-labelledby="inbox-captures-title" className="flex flex-col gap-3">

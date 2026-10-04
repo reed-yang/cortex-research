@@ -30,7 +30,38 @@ RESEARCH_CONTEXTS_MIGRATION = 17
 #: never deleted. A column, not a table, so backup.py's table roster is unchanged.
 THREAD_ARCHIVE_MIGRATION = 18
 RESEARCH_ITEMS_MIGRATION = 19
-SCHEMA_VERSION = RESEARCH_ITEMS_MIGRATION
+#: Save-only idea fragments: verbatim operator text that starts no turn or run.
+IDEA_FRAGMENTS_MIGRATION = 20
+SCHEMA_VERSION = IDEA_FRAGMENTS_MIGRATION
+
+#: Append-only operator text. A fragment is stored verbatim and never changes,
+#: so any later fragment state (admission, archive) needs its own table rather
+#: than an UPDATE here. The origin CHECK names both allowed shapes explicitly:
+#: a Telegram save carries its adapter update key and bound thread, a Web save
+#: carries neither.
+_MIGRATION_IDEA_FRAGMENTS = """
+CREATE TABLE idea_fragments (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL CHECK(length(text) BETWEEN 1 AND 16384),
+    note TEXT NOT NULL CHECK(length(note) <= 2000),
+    origin TEXT NOT NULL CHECK(origin IN ('web', 'telegram')),
+    origin_ref TEXT CHECK(origin_ref IS NULL OR length(origin_ref) BETWEEN 1 AND 200),
+    thread_id TEXT REFERENCES threads(id),
+    context_item_id TEXT REFERENCES research_items(id),
+    actor_id TEXT NOT NULL CHECK(length(actor_id) BETWEEN 1 AND 200),
+    created_at TEXT NOT NULL,
+    CHECK(
+        (origin = 'telegram' AND origin_ref IS NOT NULL AND thread_id IS NOT NULL)
+        OR (origin = 'web' AND origin_ref IS NULL AND thread_id IS NULL)
+    ),
+    CHECK(context_item_id IS NULL OR thread_id IS NOT NULL)
+);
+CREATE INDEX idea_fragments_created_idx ON idea_fragments(created_at, id);
+CREATE TRIGGER idea_fragments_no_update BEFORE UPDATE ON idea_fragments
+BEGIN SELECT RAISE(ABORT, 'idea fragments are immutable'); END;
+CREATE TRIGGER idea_fragments_no_delete BEFORE DELETE ON idea_fragments
+BEGIN SELECT RAISE(ABORT, 'idea fragments are immutable'); END;
+"""
 
 _MIGRATION_RESEARCH_ITEMS = """
 CREATE TABLE research_items (
@@ -2704,6 +2735,7 @@ def migration_scripts() -> tuple[tuple[int, str], ...]:
         (RESEARCH_CONTEXTS_MIGRATION, _MIGRATION_RESEARCH_CONTEXTS),
         (THREAD_ARCHIVE_MIGRATION, _MIGRATION_THREAD_ARCHIVE),
         (RESEARCH_ITEMS_MIGRATION, _MIGRATION_RESEARCH_ITEMS),
+        (IDEA_FRAGMENTS_MIGRATION, _MIGRATION_IDEA_FRAGMENTS),
     )
 
 

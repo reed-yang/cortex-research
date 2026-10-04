@@ -3,6 +3,7 @@ import {
   ContractDecodeError,
   decodeCapture,
   decodeDecision,
+  decodeFragment,
   decodeMessage,
   decodeProblem,
   decodeRun,
@@ -14,6 +15,7 @@ import {
   type CaptureState,
   type Decoder,
   type Decision,
+  type Fragment,
   type ListEnvelope,
   type Message,
   type Problem,
@@ -320,6 +322,11 @@ export class CortexControlClient {
     return this.read(`/captures${query}`, listDecoder(decodeCapture));
   }
 
+  // The first page only: the proxy forwards no limit or cursor.
+  listFragments(): Promise<ListEnvelope<Fragment>> {
+    return this.read("/fragments", listDecoder(decodeFragment));
+  }
+
   getCapture(id: string): Promise<Capture> {
     return this.read(
       `/captures/${encodeURIComponent(id)}`,
@@ -451,6 +458,11 @@ export class CortexControlClient {
   // before the operator has approved anything.
   prepareCreateCapture(input: { payload: string; note: string }): PreparedMutation<Capture> {
     return this.prepare("/captures", { payload: input.payload, note: input.note }, decodeCapture);
+  }
+
+  // The idea crosses exactly as typed; Control stores it verbatim.
+  prepareCreateFragment(input: { text: string; note: string }): PreparedMutation<Fragment> {
+    return this.prepare("/fragments", { text: input.text, note: input.note }, decodeFragment);
   }
 
   prepareApproveCapture(capture: Capture): PreparedMutation<Capture> {

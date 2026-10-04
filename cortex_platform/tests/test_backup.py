@@ -346,6 +346,7 @@ def test_every_gated_table_arrives_at_exactly_the_version_its_gate_names(
         "research_items": control_schema.RESEARCH_ITEMS_MIGRATION,
         "research_document_versions": control_schema.RESEARCH_ITEMS_MIGRATION,
         "research_thread_items": control_schema.RESEARCH_ITEMS_MIGRATION,
+        "idea_fragments": control_schema.IDEA_FRAGMENTS_MIGRATION,
     }
     for table, version in spec.table_since_schema_version:
         before = tmp_path / f"before-{table}/control.db"

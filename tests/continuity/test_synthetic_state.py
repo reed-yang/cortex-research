@@ -61,7 +61,7 @@ def test_generated_state_covers_the_operations_the_gate_replays(
     snapshot = _snapshot(data_dir, tmp_path / "a.json")
     tables = snapshot["tables"]
 
-    assert snapshot["control_schema_version"] == SCHEMA_VERSION == 19
+    assert snapshot["control_schema_version"] == SCHEMA_VERSION
     assert len(tables["workspaces"]) == 1
     assert len(tables["threads"]) == 2
     assert len(tables["messages"]) >= 4
@@ -95,7 +95,7 @@ def test_generated_database_opens_as_a_schema_19_control_store(
     store.initialize()
     identity = store.current_control_store_identity()
 
-    assert identity.schema_version == 19
+    assert identity.schema_version == SCHEMA_VERSION
     workspaces = [
         store.get_workspace(row["workspace_id"])
         for row in [store.get_thread(thread) for thread in _thread_ids(store)]

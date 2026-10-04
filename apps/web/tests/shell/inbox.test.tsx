@@ -398,3 +398,150 @@ describe("InboxView", () => {
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 });
+
+describe("Inbox ideas", () => {
+  const idea = "  第一行的想法 🎬\n\n  indented second line  ";
+
+  function ideaCards() {
+    return within(screen.getByRole("region", { name: copy.inbox.ideas })).queryAllByRole("article");
+  }
+
+  async function saveIdea(user: ReturnType<typeof userEvent.setup>, text: string, note = "") {
+    const box = screen.getByLabelText(copy.inbox.ideaLabel) as HTMLTextAreaElement;
+    if (!box.value) {
+      await user.click(box);
+      await user.paste(text);
+    }
+    if (note) await user.type(screen.getByLabelText(copy.inbox.ideaNoteLabel), note);
+    await user.click(screen.getByRole("button", { name: copy.inbox.saveIdea }));
+  }
+
+  it("saves an idea verbatim through its own composer and starts nothing", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    await waitFor(() => expect(control.gets).toContain("fragments"));
+
+    const form = screen.getByRole("form", { name: copy.inbox.ideaTitle });
+    expect(within(form).queryByRole("checkbox")).toBeNull();
+    await saveIdea(user, idea, "later");
+
+    await waitFor(() => expect(control.posts).toEqual([
+      { path: "fragments", body: { text: idea, note: "later" }, key: "web-test-1" },
+    ]));
+    await waitFor(() => expect((screen.getByLabelText(copy.inbox.ideaLabel) as HTMLTextAreaElement).value).toBe(""));
+    const [card] = ideaCards();
+    expect(card!.querySelector("[data-verbatim]")!.textContent).toBe(idea);
+    expect(within(card!).getByText(copy.fragment.savedHere)).toBeTruthy();
+    expect(control.captures).toEqual([]);
+    expect(control.messages).toEqual([]);
+  });
+
+  it("keeps the typed idea when the save is refused", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    control.failNext = { path: /^fragments$/, status: 400, category: "invalid_request" };
+
+    await saveIdea(user, idea);
+
+    await screen.findByRole("alert", { name: copy.notice.region });
+    expect((screen.getByLabelText(copy.inbox.ideaLabel) as HTMLTextAreaElement).value).toBe(idea);
+    expect(control.fragments).toEqual([]);
+  });
+
+  it("retries an unconfirmed save under the same key and lists one card", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    control.loseNextResponse = /^fragments$/;
+
+    await saveIdea(user, idea);
+    await screen.findByText(copy.errors.unconfirmed);
+    expect((screen.getByLabelText(copy.inbox.ideaLabel) as HTMLTextAreaElement).value).toBe(idea);
+    await saveIdea(user, idea);
+
+    await waitFor(() => expect(control.posts.map((post) => post.key)).toEqual(["web-test-1", "web-test-1"]));
+    await waitFor(() => expect(ideaCards()).toHaveLength(1));
+    expect(control.fragments).toHaveLength(1);
+
+    // A confirmed save forgets its command: the same words again are a new idea.
+    await saveIdea(user, idea);
+    await waitFor(() => expect(ideaCards()).toHaveLength(2));
+    expect(control.posts.at(-1)!.key).not.toBe("web-test-1");
+  });
+
+  it("keeps the command when the gateway's retryable 503 follows a commit", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    control.gatewayDropsNextResponse = /^fragments$/;
+
+    await saveIdea(user, idea);
+    await screen.findByText(copy.errors.unconfirmed);
+    expect((screen.getByLabelText(copy.inbox.ideaLabel) as HTMLTextAreaElement).value).toBe(idea);
+    await saveIdea(user, idea);
+
+    await waitFor(() => expect(control.posts.map((post) => post.key)).toEqual(["web-test-1", "web-test-1"]));
+    await waitFor(() => expect(ideaCards()).toHaveLength(1));
+    expect(control.fragments).toHaveLength(1);
+  });
+
+  it("keeps a saved card on screen when the reread after it fails", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    await waitFor(() => expect(control.gets).toContain("fragments"));
+    control.beforeResponse = (path, method) => {
+      if (path === "fragments" && method === "GET") {
+        control.beforeResponse = null;
+        control.failNext = { path: /^fragments$/, status: 503, category: "control_store_unavailable" };
+      }
+    };
+
+    await saveIdea(user, "kept after a failed reread");
+
+    await screen.findByText(copy.inbox.ideasUnreadable);
+    expect(ideaCards()).toHaveLength(1);
+    expect((screen.getByLabelText(copy.inbox.ideaLabel) as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("shows a Telegram idea as such and keeps every id under Details", async () => {
+    const control = seeded();
+    control.fragment("fragment_1a2b", "from the bot", {
+      origin: "telegram", thread_id: "thread_1", context_item_id: "ri_" + "a".repeat(32),
+    });
+    await openInbox(control);
+
+    await waitFor(() => expect(ideaCards()).toHaveLength(1));
+    const [card] = ideaCards();
+    expect(within(card!).getByText(copy.fragment.fromTelegram)).toBeTruthy();
+    const details = card!.querySelector("[data-details]")!;
+    expect(details.textContent).toContain("fragment_1a2b");
+    expect(details.textContent).toContain("thread_1");
+    const outside = card!.cloneNode(true) as HTMLElement;
+    outside.querySelectorAll("[data-details]").forEach((node) => node.remove());
+    expect(outside.textContent).not.toMatch(/fragment_1a2b|thread_1|ri_a/);
+  });
+
+  it("picks up an idea saved elsewhere when its list is refreshed", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    await screen.findByText(copy.inbox.noIdeas);
+
+    control.fragment("fragment_late", "saved from Telegram", { origin: "telegram", thread_id: "thread_1" });
+    await user.click(screen.getByRole("button", { name: copy.inbox.refreshIdeas }));
+
+    await waitFor(() => expect(ideaCards()).toHaveLength(1));
+  });
+
+  it("separates the idea composer from the arXiv source composer", async () => {
+    const control = seeded();
+    await openInbox(control);
+
+    expect(screen.getByRole("heading", { name: copy.inbox.ideaTitle })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: copy.inbox.sourceTitle })).toBeTruthy();
+    expect((screen.getByLabelText("Capture payload") as HTMLTextAreaElement).placeholder).toMatch(/arXiv/);
+  });
+});
