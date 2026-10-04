@@ -198,3 +198,153 @@ def test_short_model_suffixes_and_versions_remain_searchable(knowledge):
         result = reader.search(query)
         assert any(":chunk:1:" in hit["evidence_id"] for hit in result["results"])
     assert reader.search("3.0")["results"] == []
+
+
+ENGLISH, CHINESE = "20260906-English", "20260906-中文论文"
+
+
+def _chunks(database, paper_dir, texts, section="Method"):
+    for index, text in enumerate(texts, 1):
+        _write(database, "INSERT INTO chunks (paper_dir, section, chunk_idx, text) VALUES (?, ?, ?, ?)",
+               (paper_dir, section, index, text))
+
+
+def _ids(store):
+    by_canonical = {source["canonical_id"]: source["id"] for source in store.list_sources()}
+    return {ENGLISH: by_canonical["arxiv:2609.00001"], CHINESE: by_canonical["arxiv:2609.00002"]}
+
+
+def _chunk_id(hit):
+    return int(hit["evidence_id"].split(":chunk:")[1].split(":")[0])
+
+
+def test_per_source_returns_distinct_papers_with_contiguous_chunks(knowledge):
+    store, _, database, reader = knowledge
+    ids = _ids(store)
+    _chunks(database, ENGLISH, [f"decoding decoding decoding variant {name}"
+                                for name in ("one", "two", "three", "four", "five")])
+    chunk_level = reader.search("decoding", limit=2)
+    assert [hit["source_id"] for hit in chunk_level["results"]] == [ids[ENGLISH]] * 2
+    paper_level = reader.search("decoding", limit=2, per_source=2)
+    assert paper_level.keys() == chunk_level.keys()
+    assert paper_level["retrieval_mode"] == "fts5_or"
+    assert [hit["source_id"] for hit in paper_level["results"]] == [ids[ENGLISH]] * 2 + [ids[CHINESE]]
+    assert paper_level["results"][:2] == chunk_level["results"]
+    assert all(hit.keys() == chunk_level["results"][0].keys() for hit in paper_level["results"])
+
+
+def test_per_source_caps_chunks_and_skips_duplicate_content(knowledge):
+    store, _, database, reader = knowledge
+    ids = _ids(store)
+    _chunks(database, ENGLISH, ["decoding decoding decoding", "decoding decoding decoding",
+                                "decoding decoding cache"])
+    single = reader.search("decoding", limit=2, per_source=1)["results"]
+    assert [hit["source_id"] for hit in single] == [ids[ENGLISH], ids[CHINESE]]
+    english = [hit for hit in reader.search("decoding", limit=2, per_source=2)["results"]
+               if hit["source_id"] == ids[ENGLISH]]
+    # The second identical text does not take the second slot.
+    assert [_chunk_id(hit) for hit in english] == [4, 6]
+    assert len({hit["content_sha256"] for hit in english}) == 2
+
+
+def test_per_source_selection_stays_inside_bounded_candidates(knowledge, monkeypatch):
+    from cortex_platform.product.sources import search
+
+    store, _, database, reader = knowledge
+    ids = _ids(store)
+    _chunks(database, ENGLISH, ["decoding decoding decoding a1", "decoding decoding decoding b2",
+                                "decoding decoding decoding c3"])
+    monkeypatch.setattr(search, "MAX_CANDIDATES", 3)
+    results = reader.search("decoding", limit=6, per_source=2)["results"]
+    assert [hit["source_id"] for hit in results] == [ids[ENGLISH]] * 2
+
+
+@pytest.mark.parametrize("per_source", [0, 5, True, "2", 1.5, -1])
+def test_per_source_validation(knowledge, per_source):
+    with pytest.raises(SourceQueryInvalid):
+        knowledge[3].search("decoding", per_source=per_source)
+
+
+def test_per_source_none_is_the_default_chunk_level_call(knowledge):
+    reader = knowledge[3]
+    for query in ("decoding", "推测解码", "推测解码 decoding"):
+        assert reader.search(query, limit=1, per_source=None) == reader.search(query, limit=1)
+
+
+def test_mixed_query_selects_title_sources_first_and_keeps_their_low_ranked_chunks(knowledge):
+    store, _, database, reader = knowledge
+    ids = _ids(store)
+    # English chunks outrank the only Chinese-paper chunk, which still lies
+    # inside the bounded candidates.
+    _chunks(database, ENGLISH, ["decoding decoding decoding x1", "decoding decoding decoding y2",
+                                "decoding decoding decoding z3"])
+    one = reader.search("推测解码 decoding", limit=1, per_source=2)
+    assert one["retrieval_mode"] == "fts5_or+unicode_title_fallback"
+    assert [(hit["source_id"], hit["section"]) for hit in one["results"]] == [
+        (ids[CHINESE], "__title__"), (ids[CHINESE], "Method")]
+    assert _chunk_id(one["results"][1]) == 2
+    two = reader.search("推测解码 decoding", limit=2, per_source=2)["results"]
+    assert two[:2] == one["results"]
+    assert [hit["source_id"] for hit in two[2:]] == [ids[ENGLISH]] * 2
+    assert [_chunk_id(hit) for hit in two[2:]] == [4, 5]
+
+
+def test_per_source_keeps_adoption_directory_and_byte_limit_guards(knowledge, tmp_path):
+    store, root, database, reader = knowledge
+    ids = _ids(store)
+    both = {ids[ENGLISH], ids[CHINESE]}
+    assert {hit["source_id"] for hit in reader.search("speculative", limit=6, per_source=2)["results"]} == both
+    store.register_asset_root(root_id="other-corpus", private_path=tmp_path / "other",
+                              max_bytes=1 << 30, enabled=True, actor_id="operator",
+                              idempotency_key="other-root-00002")
+    store.commit_adoption_manifest(manifest=build_manifest([AdoptionEntry(
+        paper_dir="unadopted", authority="arxiv", authority_id="2609.99999",
+        official_title="机器人 Unadopted", content_digest="a" * 64,
+    )]), corpus_root_id="other-corpus", actor_id="operator", idempotency_key="other-adopt-00002")
+    assert {hit["source_id"] for hit in reader.search("speculative", limit=6, per_source=2)["results"]} == both
+    # A long chunk with one weak match ranks last; it is refused only when attached.
+    _chunks(database, ENGLISH, ["decoding decoding decoding strong", "speculative " * 10000 + "decoding"])
+    assert [hit["source_id"] for hit in reader.search("decoding", limit=2, per_source=1)["results"]] == [
+        ids[ENGLISH], ids[CHINESE]]
+    with pytest.raises(SourceContentUnavailable, match="byte limit"):
+        reader.search("decoding", limit=2, per_source=3)
+    (root / ENGLISH).rename(root / "removed")
+    assert [hit["source_id"] for hit in reader.search("decoding", limit=2, per_source=3)["results"]] == [
+        ids[CHINESE]]
+
+
+@pytest.mark.parametrize("query", ["decoding", "推测解码 decoding"])
+def test_per_source_issues_the_same_single_fts_statement(knowledge, monkeypatch, query):
+    original = sqlite3.connect
+    statements = []
+    class Traced(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            assert "embedding" not in sql.lower()
+            statements.append((sql, tuple(parameters)))
+            return super().execute(sql, parameters)
+    def connect(path, **kwargs):
+        return original(path, factory=Traced, **kwargs)
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    knowledge[3].search(query, limit=2)
+    chunk_level = [statement for statement in statements if "FROM chunks_fts" in statement[0]]
+    statements.clear()
+    knowledge[3].search(query, limit=2, per_source=2)
+    paper_level = [statement for statement in statements if "FROM chunks_fts" in statement[0]]
+    assert len(chunk_level) == 1
+    assert paper_level == chunk_level
+
+
+@pytest.mark.parametrize("query", [
+    "LingBot VA 2.0", "the and OR", "", "x\0y", "推测解码 decoding", "a b c",
+    " ".join(f"term{i}" for i in range(40)),
+])
+def test_query_terms_never_raises_and_matches_terms(query):
+    from cortex_platform.product.sources.search import MAX_QUERY_TERMS, _terms, query_terms
+
+    english, unicode = query_terms(query)
+    try:
+        expected = _terms(query)
+    except SourceQueryInvalid:
+        assert not (english or unicode) or len(english) + len(unicode) > MAX_QUERY_TERMS
+    else:
+        assert (english, unicode) == expected

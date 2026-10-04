@@ -353,10 +353,10 @@ class SourceKnowledgeReader:
         except Exception:
             raise SourceContentUnavailable("source content is unavailable") from None
 
-    def search(self, query, limit=10) -> dict:
+    def search(self, query, limit=10, *, per_source=None) -> dict:
         from .search import search_knowledge
 
-        return search_knowledge(self, query, limit=limit)
+        return search_knowledge(self, query, limit=limit, per_source=per_source)
 
 
 def _cursor(offset: int, binding: bytes) -> str:

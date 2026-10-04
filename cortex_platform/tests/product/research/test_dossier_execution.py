@@ -8,12 +8,14 @@ import pytest
 from cortex_platform.product.control import ControlStore, InvalidTransition
 from cortex_platform.product.control.research_store import research_item_id
 from cortex_platform.product.research.context import (
-    MAX_EXCERPT_BYTES, canonical, cited_labels, digest, validate_snapshot,
+    MAX_DOCUMENTS, MAX_EXCERPT_BYTES, MAX_EXCERPTS, MAX_PACKET_SOURCES, MAX_SNAPSHOT_BYTES,
+    canonical, cited_labels, digest, validate_snapshot,
 )
 from cortex_platform.product.research.documents import ROOT_ID, ResearchDocumentAdopter
 from cortex_platform.product.research.service import DRAFT, ResearchService, document_excerpts
 from cortex_platform.tests.product.research.test_execution import (
-    AnswerBackend, append, assert_citation_outcome, context_request, execute, next_run,
+    CHINESE, ENGLISH, AnswerBackend, add_chunks, adopt_papers, append, assert_citation_outcome,
+    context_request, execute, next_run,
 )
 from cortex_platform.tests.product.sources.test_adoption_reader import corpus, database
 from cortex_platform.tests.product.sources.test_knowledge_reader import knowledge
@@ -53,7 +55,7 @@ def dossier(knowledge, tmp_path):
     (originals / "idea" / "notes.md").write_text("# Idea notes\n\nParked in 2026.\n")
     (originals / "project" / "plan.md").write_text("# Robotics plan\n\nMonitored project.\n")
     catalog = Catalog({
-        IDEA: ({"id": IDEA, "kind": "idea", "origin_id": "idea-decoding", "title": "Decoding idea"},
+        IDEA: ({"id": IDEA, "kind": "idea", "origin_id": "idea-decoding", "title": "Parked idea"},
                [originals / "idea" / "dossier.md", originals / "idea" / "notes.md"]),
         PROJECT: ({"id": PROJECT, "kind": "project", "origin_id": "project-robotics",
                    "title": "Robotics project"}, [originals / "project" / "plan.md"]),
@@ -104,7 +106,7 @@ def test_dossier_only_research_completes_without_a_paper_match(dossier):
     assert snapshot["schema_version"] == 2 and snapshot["sources"] == []
     assert [document["label"] for document in snapshot["documents"]] == ["D1", "D2"]
     assert snapshot["item"] == {"id": IDEA, "kind": "idea", "origin_id": "idea-decoding",
-                                "title": "Decoding idea", "selection_revision": 1}
+                                "title": "Parked idea", "selection_revision": 1}
     assert "[D1]" in backend.requests[0].system_message
     assert not store.list_messages(run["thread_id"])[-1]["content"].startswith(DRAFT)
     completed = next(e for e in store.list_run_events(run["id"]) if e["type"] == "run.completed")
@@ -473,3 +475,106 @@ def test_excerpts_are_bounded_windows_with_line_and_offset_locators():
     offset = int(match["locator"].rsplit(":", 1)[1])
     assert DOSSIER.encode("utf-8")[offset:].decode("utf-8").startswith(match["text"])
     assert document_excerpts("", "anything") == []
+
+
+def test_selected_item_title_feeds_paper_retrieval(dossier, knowledge):
+    store, *_ = dossier
+    add_chunks(knowledge[2], ENGLISH, ["robotics project milestones"])
+    question = "请总结核心假设，控制在500字内并附[D1]"
+    run = started(store, item_id=PROJECT, question="/research " + question)
+    snapshot = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))["snapshot"]
+    assert snapshot["query"] == question
+    assert snapshot["retrieval_query"].startswith("Robotics project ")
+    assert "500" not in snapshot["retrieval_query"] and "D1" not in snapshot["retrieval_query"]
+    assert snapshot["retrieval_mode"] == "fts5_or+unicode_title_fallback"
+    assert [source["canonical_id"] for source in snapshot["sources"]] == ["arxiv:2609.00001"]
+    assert snapshot["documents"]
+
+
+def test_dossier_windows_match_the_verbatim_question(dossier, monkeypatch):
+    from cortex_platform.product.research import service as module
+
+    store, *_ = dossier
+    seen = []
+    original = module.document_excerpts
+    def spy(text, query):
+        seen.append(query)
+        return original(text, query)
+    monkeypatch.setattr(module, "document_excerpts", spy)
+    run = started(store, question="/research budget\noutcome [D1]")
+    snapshot = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))["snapshot"]
+    assert snapshot["retrieval_query"] == "Parked idea budget outcome"
+    assert seen and set(seen) == {"budget\noutcome [D1]"}
+
+
+def test_historical_v2_followup_keeps_its_recorded_retrieval_query(dossier, monkeypatch):
+    from cortex_platform.product.research import service as module
+
+    store, *_ = dossier
+    question = "decoding in 500 words [D1]"
+    # Contexts stored before the derived search text recorded the question itself.
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "retrieval_query", lambda text, context=(): text)
+        run = started(store, question="/research " + question)
+        result, backend, releases, _ = execute(store, run, AnswerBackend("Scoped [D1]."))
+    assert result["state"] == "completed"
+    first = store.get_research_context(run["id"])["snapshot"]
+    assert first["schema_version"] == 2 and first["retrieval_query"] == question
+    followup = next_run(store, run["thread_id"], "Expand\nthe plan")
+    result, backend, _, _ = execute(store, followup, backend, releases=releases)
+    assert result["state"] == "completed"
+    snapshot = store.get_research_context(followup["id"])["snapshot"]
+    for key in ("retrieval_query", "retrieval_mode", "sources", "documents", "item"):
+        assert snapshot[key] == first[key]
+    message = backend.requests[-1].system_message
+    assert "may differ from query" in message and "removed" not in message
+
+
+def test_six_sources_and_a_full_dossier_are_trimmed_within_packet_bounds(dossier, knowledge, tmp_path):
+    store, _, _, destination = dossier
+    _, corpus, database, _ = knowledge
+    earlier = started(store, question="/research decoding")
+    assert execute(store, earlier, AnswerBackend("Scoped [S1] [D1]."))[0]["state"] == "completed"
+    stored = store.get_research_context(earlier["id"])
+    # Quotes double under canonical JSON, so every excerpt and evidence item is heavy.
+    heavy = '"' * 5_990
+    wide = research_item_id("exploration", "exploration-wide")
+    originals = tmp_path / "wide"
+    originals.mkdir()
+    paths, texts = [], []
+    for number in range(MAX_DOCUMENTS):
+        lines = ['"' * MAX_EXCERPT_BYTES] + [f"decoding note {number}x{index} {heavy}" for index in range(12)]
+        texts.append("\n".join(lines) + "\n")
+        paths.append(originals / f"note-{number}.md")
+        paths[-1].write_text(texts[-1])
+    assert all(len(document_excerpts(text, "decoding")) == MAX_EXCERPTS for text in texts)
+    adopter = ResearchDocumentAdopter(store, Catalog({wide: (
+        {"id": wide, "kind": "exploration", "origin_id": "exploration-wide", "title": "Wide exploration"},
+        paths)}))
+    adopter.apply(adopter.preview({"exploration": originals}), destination=destination)
+    extra = [f"20260907-Synthetic-{index}" for index in range(4)]
+    adopt_papers(store, corpus, database, extra)
+    for number, paper_dir in enumerate([ENGLISH, CHINESE, *extra]):
+        add_chunks(database, paper_dir, [f"decoding passage p{number}x{index} {heavy[:1_990]}"
+                                         for index in range(2)])
+        for name in ("grounding.md", "notes.md", "full_text.md"):
+            (corpus / paper_dir / name).write_text(f"{name} {heavy}", encoding="utf-8")
+    select(store, earlier["thread_id"], wide, key="select-research-item-2")
+    fresh = next_run(store, earlier["thread_id"], "/research decoding")
+    context = ResearchService(store).prepare(fresh, store.list_messages(fresh["thread_id"]))
+    snapshot = context["snapshot"]
+    assert snapshot["schema_version"] == 2 and snapshot["item"]["id"] == wide
+    assert snapshot["retrieval_query"] == "Wide exploration decoding"
+    # Dossier excerpts are trimmed first, down to each document's prefix ...
+    assert len(snapshot["documents"]) == MAX_DOCUMENTS
+    assert all([e["kind"] for e in d["excerpts"]] == ["document_prefix"] for d in snapshot["documents"])
+    # ... and then trailing paper evidence, keeping at least one item per source.
+    assert len(snapshot["sources"]) == MAX_PACKET_SOURCES
+    kinds = [[e["kind"] for e in source["evidence"]] for source in snapshot["sources"]]
+    assert all(1 <= len(found) <= 4 and found.count("indexed_passage") <= 2 for found in kinds)
+    assert sum(map(len, kinds)) < 4 * MAX_PACKET_SOURCES
+    assert context["sha256"] == digest(canonical(snapshot))
+    assert validate_snapshot(snapshot, context["sha256"])
+    assert len(canonical(snapshot).encode("utf-8")) <= MAX_SNAPSHOT_BYTES
+    assert store.get_research_context(fresh["id"])["snapshot"] == snapshot
+    assert store.get_research_context(earlier["id"]) == stored

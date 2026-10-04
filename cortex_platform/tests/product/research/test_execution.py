@@ -9,14 +9,40 @@ import pytest
 from cortex_platform.product.control import ControlStore, InvalidTransition, RevisionConflict
 from cortex_platform.product.control import schema
 from cortex_platform.product.orchestration import RunOrchestrator
-from cortex_platform.product.research.context import ACTOR, canonical, digest, ResearchFailure
+from cortex_platform.product.research.context import (
+    ACTOR, MAX_SNAPSHOT_BYTES, canonical, digest, ResearchFailure, validate_snapshot,
+)
 from cortex_platform.product.research.service import DRAFT, ResearchService
 from cortex_platform.product.artifacts.materializer import FilesystemMaterializer
+from cortex_platform.product.sources.reader import SourceKnowledgeReader
 from cortex_platform.runtime.hermes import HermesRunResult
 from cortex_platform.tests.product.orchestration.test_service import HermesAdapter, Releases, _queued_run
 from cortex_platform.runtime.tests.fakes import FakeHermesBackend
-from cortex_platform.tests.product.sources.test_adoption_reader import corpus, database
+from cortex_platform.tests.product.sources.test_adoption_reader import _add_paper, _write, corpus, database
 from cortex_platform.tests.product.sources.test_knowledge_reader import knowledge
+
+ENGLISH, CHINESE = "20260906-English", "20260906-中文论文"
+
+
+def add_chunks(database, paper_dir, texts):
+    for index, text in enumerate(texts, 1):
+        _write(database, "INSERT INTO chunks (paper_dir, section, chunk_idx, text) VALUES (?, ?, ?, ?)",
+               (paper_dir, "Method", index, text))
+
+
+def adopt_papers(store, corpus, database, paper_dirs):
+    from cortex_platform.product.sources.adoption import read_corpus_subset
+
+    for index, paper_dir in enumerate(paper_dirs, 3):
+        _add_paper(database, corpus, paper_dir=paper_dir, title=f"Synthetic paper {index}",
+                   arxiv_id=f"2609.{index:05d}")
+    manifest = read_corpus_subset(database=database, corpus_root=corpus, paper_dirs=paper_dirs).manifest
+    store.commit_adoption_manifest(manifest=manifest, corpus_root_id="research-corpus",
+                                    actor_id="operator", idempotency_key="adopt-extra-papers-01")
+
+
+def failure(store, run):
+    return next(e for e in store.list_run_events(run["id"]) if e["type"] == "run.failed")["payload"]["category"]
 
 
 def append(store, thread_id, text):
@@ -304,7 +330,9 @@ def test_mode_continuation_exit_and_reentry_preserve_history(knowledge):
     followup = next_run(store, run["thread_id"], "请展开说明")
     result, backend, _, _ = execute(store, followup, backend, releases=releases)
     assert result["state"] == "completed"
-    assert store.get_research_context(followup["id"])["snapshot"]["sources"] == first["snapshot"]["sources"]
+    continued = store.get_research_context(followup["id"])["snapshot"]
+    for key in ("sources", "retrieval_query", "retrieval_mode"):
+        assert continued[key] == first["snapshot"][key]
     assert len(backend.requests[-1].conversation_history) == 3
     for question in ("/chat hello", "another ordinary message"):
         chat = next_run(store, run["thread_id"], question)
@@ -568,3 +596,153 @@ def test_artifact_root_symlink_never_creates_outside_directory(knowledge, tmp_pa
     assert result["state"] == "failed"
     assert not list(external.iterdir())
     assert releases.pins == releases.finished
+
+
+def test_multiline_question_searches_one_line_and_keeps_the_verbatim_query(knowledge):
+    store, *_ = knowledge
+    run = queued(store, "/research speculative\ndecoding")
+    result, backend, releases, _ = execute(store, run)
+    assert result["state"] == "completed", store.list_run_events(run["id"])
+    snapshot = store.get_research_context(run["id"])["snapshot"]
+    assert snapshot["query"] == "speculative\ndecoding"
+    assert snapshot["retrieval_query"] == "speculative decoding"
+    assert snapshot["sources"]
+    message = backend.requests[0].system_message
+    assert "retrieval_query records the search text used to select this packet" in message
+    assert "more than one indexed passage" in message
+    assert releases.pins == releases.finished
+
+
+def test_labels_length_requirements_and_format_words_do_not_reach_search(knowledge):
+    store, *_ = knowledge
+    run = queued(store, "/research decoding in 500 words [S1]")
+    context = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))
+    assert context["query"] == context["snapshot"]["query"] == "decoding in 500 words [S1]"
+    assert context["snapshot"]["retrieval_query"] == "decoding"
+    assert context["snapshot"]["retrieval_mode"] == "fts5_or"
+
+
+def test_a_paper_carries_two_passages_before_file_prefixes(knowledge):
+    store, root, database, _ = knowledge
+    add_chunks(database, ENGLISH, [f"decoding decoding decoding passage {name}"
+                                   for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")])
+    (root / ENGLISH / "grounding.md").write_text("grounding evidence", encoding="utf-8")
+    run = queued(store)
+    context = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))
+    sources = context["snapshot"]["sources"]
+    assert [source["label"] for source in sources] == ["S1", "S2"]
+    english, chinese = sources
+    assert [e["kind"] for e in english["evidence"]] == ["indexed_passage", "indexed_passage", "grounding", "notes"]
+    assert [e["text"] for e in english["evidence"][:2]] == [
+        "decoding decoding decoding passage alpha", "decoding decoding decoding passage beta"]
+    assert [e["kind"] for e in chinese["evidence"]] == ["indexed_passage", "notes", "full_text"]
+    assert validate_snapshot(context["snapshot"], context["sha256"])
+
+
+def test_title_matched_paper_without_readable_files_keeps_its_indexed_passage(knowledge):
+    store, root, *_ = knowledge
+    for name in ("notes.md", "grounding.md", "full_text.md"):
+        (root / CHINESE / name).unlink(missing_ok=True)
+    run = queued(store, "/research 推测解码 decoding")
+    context = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))
+    snapshot = context["snapshot"]
+    assert snapshot["retrieval_mode"] == "fts5_or+unicode_title_fallback"
+    chinese, english = snapshot["sources"]
+    assert chinese["canonical_id"] == "arxiv:2609.00002"
+    assert [e["kind"] for e in chinese["evidence"]] == ["indexed_passage"]
+    assert english["canonical_id"] == "arxiv:2609.00001"
+
+
+def test_continuing_multiline_followup_reuses_the_frozen_selection(knowledge, monkeypatch):
+    store, *_ = knowledge
+    run = queued(store)
+    result, backend, releases, _ = execute(store, run)
+    assert result["state"] == "completed"
+    first = store.get_research_context(run["id"])["snapshot"]
+    calls = []
+    original = SourceKnowledgeReader.search
+    def spy(self, *args, **kwargs):
+        calls.append(args)
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(SourceKnowledgeReader, "search", spy)
+    followup = next_run(store, run["thread_id"], "Expand the comparison\nwith more detail")
+    result, backend, _, _ = execute(store, followup, backend, releases=releases)
+    assert result["state"] == "completed", store.list_run_events(followup["id"])
+    snapshot = store.get_research_context(followup["id"])["snapshot"]
+    assert calls == []
+    assert snapshot["query"] == "Expand the comparison\nwith more detail"
+    for key in ("sources", "retrieval_query", "retrieval_mode", "authority"):
+        assert snapshot[key] == first[key]
+
+
+def test_historical_retrieval_query_is_reused_without_cleanup_claims(knowledge, monkeypatch):
+    from cortex_platform.product.research import service as module
+
+    store, *_ = knowledge
+    question = "decoding in 500 words [S1]"
+    # Contexts stored before the derived search text recorded the question itself.
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "retrieval_query", lambda text, context=(): text)
+        run = queued(store, "/research " + question)
+        result, backend, releases, _ = execute(store, run)
+    assert result["state"] == "completed"
+    first = store.get_research_context(run["id"])["snapshot"]
+    assert first["retrieval_query"] == first["query"] == question
+    followup = next_run(store, run["thread_id"], "Continue\nthe comparison")
+    result, backend, _, _ = execute(store, followup, backend, releases=releases)
+    assert result["state"] == "completed"
+    snapshot = store.get_research_context(followup["id"])["snapshot"]
+    assert snapshot["retrieval_query"] == question
+    assert snapshot["retrieval_mode"] == first["retrieval_mode"]
+    assert snapshot["sources"] == first["sources"]
+    message = backend.requests[-1].system_message
+    assert "may differ from query" in message
+    assert "removed" not in message and "title added" not in message
+
+
+def test_question_byte_limit_is_checked_before_query_derivation(knowledge, monkeypatch):
+    from cortex_platform.product.research import service as module
+
+    store, *_ = knowledge
+    calls = []
+    original = module.retrieval_query
+    def spy(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(module, "retrieval_query", spy)
+    run = queued(store)
+    result, backend, releases, _ = execute(store, run)
+    assert result["state"] == "completed" and len(calls) == 1
+    for text in ("decoding " * 120, "/research " + "decoding " * 120):
+        later = next_run(store, run["thread_id"], text)
+        result, backend, _, _ = execute(store, later, backend, releases=releases)
+        assert result["state"] == "failed"
+        assert failure(store, later) == "research_query_invalid"
+    assert len(calls) == 1 and backend.run_calls == 1
+    assert releases.pins == releases.finished
+
+
+def test_six_large_sources_are_trimmed_within_packet_bounds(knowledge):
+    store, root, database, _ = knowledge
+    earlier = queued(store)
+    assert execute(store, earlier)[0]["state"] == "completed"
+    stored = store.get_research_context(earlier["id"])
+    extra = [f"20260907-Synthetic-{index}" for index in range(4)]
+    adopt_papers(store, root, database, extra)
+    # Quotes double under canonical JSON, so six full sources exceed the packet bound.
+    heavy = '"' * 1_990
+    for number, paper_dir in enumerate([ENGLISH, CHINESE, *extra]):
+        add_chunks(database, paper_dir, [f"decoding passage p{number}x{index} {heavy}" for index in range(2)])
+        for name in ("grounding.md", "notes.md", "full_text.md"):
+            (root / paper_dir / name).write_text(f"{name} {heavy * 3}", encoding="utf-8")
+    fresh = next_run(store, earlier["thread_id"], "/research decoding")
+    context = ResearchService(store).prepare(fresh, store.list_messages(fresh["thread_id"]))
+    snapshot = context["snapshot"]
+    assert len(snapshot["sources"]) == 6
+    assert validate_snapshot(snapshot, context["sha256"])
+    assert len(canonical(snapshot).encode("utf-8")) <= MAX_SNAPSHOT_BYTES
+    kinds = [[e["kind"] for e in source["evidence"]] for source in snapshot["sources"]]
+    assert all(1 <= len(found) <= 4 and found.count("indexed_passage") <= 2 for found in kinds)
+    assert kinds[0] == ["indexed_passage", "indexed_passage", "grounding", "notes"]
+    assert sum(map(len, kinds)) < 24
+    assert store.get_research_context(earlier["id"]) == stored
