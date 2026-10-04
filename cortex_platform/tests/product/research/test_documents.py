@@ -173,4 +173,4 @@ def test_schema18_upgrade_retains_rows_and_refuses_partial19(tmp_path, monkeypat
         schema.apply_migrations(conn, now="new")
         schema.apply_migrations(conn, now="again")
         assert conn.execute("SELECT title,revision FROM workspaces WHERE id='old'").fetchone() == ("retained", 7)
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 19
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == schema.SCHEMA_VERSION

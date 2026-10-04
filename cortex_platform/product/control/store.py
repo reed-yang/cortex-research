@@ -58,6 +58,7 @@ from ..workflows.models import (
     SuccessorCreationRequest,
     WorkflowDefinition,
 )
+from .fragment_store import IdeaFragmentsStore
 from .research_store import ResearchItemsStore
 from .errors import (
     CaptureConflict,
@@ -628,7 +629,7 @@ def _capture_shape(payload: str) -> tuple[str, str]:
     return "url", key
 
 
-class ControlStore(TransportDeliveryStore, ResearchItemsStore):
+class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStore):
     """Own durable product metadata without calling runtime or domain stores."""
 
     def __init__(
@@ -884,7 +885,6 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore):
                 201,
             )
             return record
-
 
     def create_capture(
         self,
