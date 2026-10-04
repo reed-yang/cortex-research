@@ -282,13 +282,13 @@ def test_metric_denominators_on_real_six_slot_duplication(checkpointed_suite):
     assert six["must_find_missing"] == [C]
     assert twenty["identities"] == [A, B, C] and twenty["recall_at_k"] == 0.75
     assert twenty["must_find_missing"] == []
-    # Prepare drops duplicate sources: two packet sources from six slots.
+    # Prepare selects distinct papers: a third source beyond the two in six chunk slots.
     packet = birds["packet"]
     assert packet["status"] == "built"
-    assert packet["canonical_ids"] == [A, B] and packet["recall"] == 0.5
+    assert packet["canonical_ids"] == [A, B, C] and packet["recall"] == 0.75
     assert packet["query"] == packet["retrieval_query"] == "kestrel"
     assert packet["schema_version"] == 1 and len(packet["sha256"]) == 64 and packet["bytes"] > 0
-    assert packet["sources_not_in_search_at_6"] == []
+    assert packet["sources_not_in_search_at_6"] == [C]
     assert [e["kind"] for e in packet["sources"][0]["evidence"]] == ["indexed_passage", "notes", "full_text"]
     assert all("text" not in e for s in packet["sources"] for e in s["evidence"])
     assert "arxiv:2610.09999" not in json.dumps(report)
@@ -637,8 +637,9 @@ def test_independent_limit_failures_stay_visible(checkpointed_suite):
     row = by_id(report)["en-birds"]
     assert row["retrieval"]["at_6"]["status"] == "measured"
     assert row["retrieval"]["at_20"] == {"status": "failed", "failure": "source_content_unavailable"}
-    assert row["packet"]["status"] == "built"
-    assert row["failures"] == ["search_at_20:source_content_unavailable"]
+    # Paper-level packet selection also reaches the oversized chunk's paper.
+    assert row["packet"]["status"] == "failed" and row["packet"]["failure"] == "research_corpus_unavailable"
+    assert row["failures"] == ["search_at_20:source_content_unavailable", "packet:research_corpus_unavailable"]
     assert code == 1 and report["status"] == "incomplete" and "query_failures" in report["blockers"]
     assert report["failures"]["by_category"]["search_at_20:source_content_unavailable"] >= 1
     overall = report["summary"]["overall"]
@@ -663,9 +664,9 @@ def test_input_mutation_during_evaluation_refuses_a_completed_baseline(checkpoin
     original = CheckpointedEvaluationReader.search
     target = checkpointed_suite.corpus / "20261001-Delta" / "notes.md"
 
-    def mutating(self, query, limit=10):
+    def mutating(self, query, limit=10, *, per_source=None):
         target.write_text("changed during evaluation", encoding="utf-8")
-        return original(self, query, limit=limit)
+        return original(self, query, limit=limit, per_source=per_source)
 
     monkeypatch.setattr(CheckpointedEvaluationReader, "search", mutating)
     report, code = run(checkpointed_suite)
@@ -795,7 +796,7 @@ def test_prefix_packet_counts_only_retained_section_bodies(covered):
     report, code = run(covered)
     assert code == 0
     packet = by_id(report)["en-birds"]["packet"]
-    alpha, beta = packet["sources"]
+    alpha, beta, gamma = packet["sources"]
     assert [item["kind"] for item in alpha["evidence"]] == ["indexed_passage", "grounding", "notes", "full_text"]
     assert alpha["coverage"] == {
         "notes_key_results": False, "notes_limitations": False,
@@ -811,8 +812,10 @@ def test_prefix_packet_counts_only_retained_section_bodies(covered):
         "indexed_results_section": False, "indexed_limitations_section": False,
         "has_key_results_text": True, "has_limitations_text": True,
     }
+    assert gamma["canonical_id"] == C and not any(gamma["coverage"].values())
     assert packet["coverage"]["has_key_results_text"] == {
-        "confirmed": 1, "sources": 2, "unknown": 0, "share": 0.5, "confirmed_lower_bound": 0.5}
+        "confirmed": 1, "sources": 3, "unknown": 0, "share": round(1 / 3, 6),
+        "confirmed_lower_bound": round(1 / 3, 6)}
     empty = by_id(report)["en-empty"]["packet"]
     assert empty["coverage"] is None
     pooled = report["summary"]["overall"]["coverage"]["has_limitations_text"]

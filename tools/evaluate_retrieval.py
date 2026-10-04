@@ -289,8 +289,8 @@ class CheckpointedEvaluationReader(SourceKnowledgeReader):
             with _directory(self._corpus):
                 yield root, self._corpus, sources
 
-    def search(self, query, limit=10) -> dict:
-        found = super().search(query, limit=limit)
+    def search(self, query, limit=10, *, per_source=None) -> dict:
+        found = super().search(query, limit=limit, per_source=per_source)
         self.searches.append(found)
         return found
 
