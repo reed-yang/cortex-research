@@ -1,0 +1,197 @@
+"""Section-aware paper evidence: bounded windows of retained files, in a fixed slot order.
+
+Each file entry is one byte window of one retained file version. Its locator gives
+the window's line range and byte offset in that version, and its content hash is
+the whole file's sha256. A window is either the file's prefix or starts at a
+section heading; it is never a complete deep read, and a scan that did not reach
+a heading is not evidence that the paper lacks that section.
+"""
+
+import hashlib
+import re
+
+from ..sources.reader import MAX_PAGE_BYTES, SourceContentUnavailable
+from .context import MAX_EXCERPT_BYTES, MAX_SOURCE_EVIDENCE, digest
+
+#: Reader pages scanned per file (8 x 20,000 bytes) before falling back to the prefix.
+SCAN_PAGES = 8
+_FENCE = re.compile(rb" {0,3}(`{3,}|~{3,})(.*)")
+_ATX = re.compile(rb" {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*")
+#: Exact heading titles whose span forms the notes and grounding windows.
+_TITLES = {"notes": ("key results", "limitations"), "grounding": ("key_results", "open_threads")}
+
+
+def _read_file(reader, source_id, kind):
+    """Exact bytes of one file version: (raw, content_sha256, complete) or None.
+
+    Pages come from cursors bound to one file digest. A changed version, revoked
+    authorization or missing file omits this kind; invalid queries propagate.
+    """
+    raw, sha, cursor = b"", None, None
+    try:
+        for _ in range(SCAN_PAGES):
+            page = reader.read(source_id, kind=kind, cursor=cursor, limit=MAX_PAGE_BYTES)
+            sha = page["content_sha256"] if sha is None else sha
+            if page["content_sha256"] != sha or (
+                    page["text"] and page["start_line"] != raw.count(b"\n") + 1):
+                return None
+            raw += page["text"].encode("utf-8")
+            cursor = page["next_cursor"]
+            if cursor is None:
+                # Only unprojected page text reproduces the reader's file digest.
+                return (raw, sha, True) if hashlib.sha256(raw).hexdigest() == sha else None
+    except SourceContentUnavailable:
+        return None
+    return raw, sha, False
+
+
+def _headings(raw):
+    """ATX headings as (level, casefolded title, line byte offset).
+
+    Lines inside leading YAML front matter or a fenced block are not headings.
+    A fence closes only on its own character with at least its opening length;
+    front matter without a closing line yields no headings.
+    """
+    heads, position, fence, front = [], 0, None, False
+    while position < len(raw):
+        offset, stop = position, raw.find(b"\n", position)
+        position = len(raw) if stop < 0 else stop + 1
+        line = raw[offset:position].rstrip(b"\r\n")
+        if offset == 0 and line.rstrip() == b"---":
+            front = True
+            continue
+        if front:
+            front = line.rstrip() not in (b"---", b"...")
+            continue
+        marker = _FENCE.fullmatch(line)
+        if fence is not None:
+            if (marker and marker[1][:1] == fence[:1] and len(marker[1]) >= len(fence)
+                    and not marker[2].strip()):
+                fence = None
+            continue
+        if marker and not (marker[1][:1] == b"`" and b"`" in marker[2]):
+            fence = marker[1]
+            continue
+        heading = _ATX.fullmatch(line)
+        if heading:
+            title = (heading[2] or b"").decode("utf-8").strip().casefold()
+            heads.append((len(heading[1]), title, offset))
+    return heads
+
+
+def _bounded_end(raw, start, end):
+    """Cap a window at MAX_EXCERPT_BYTES on a line boundary, else a UTF-8 boundary."""
+    if end - start <= MAX_EXCERPT_BYTES:
+        return end
+    cut = raw.rfind(b"\n", start, start + MAX_EXCERPT_BYTES)
+    if cut >= 0:
+        return cut + 1
+    end = start + MAX_EXCERPT_BYTES
+    while (raw[end] & 0xC0) == 0x80:
+        end -= 1
+    return end
+
+
+def _section_window(raw, heads, i, j, extend):
+    """From heading i through heading j's section, deeper subsections included.
+
+    With extend, whole preceding sections at heading i's level (with their
+    subsections) are added while the window stays within the byte cap.
+    """
+    level = heads[j][0]
+    end = next((offset for depth, _, offset in heads[j + 1:] if depth <= level), len(raw))
+    start, index = heads[i][2], i
+    while extend:
+        index = next((k for k in range(index - 1, -1, -1) if heads[k][0] <= heads[i][0]), None)
+        if index is None or heads[index][0] != heads[i][0] or end - heads[index][2] > MAX_EXCERPT_BYTES:
+            break
+        start = heads[index][2]
+    return start, _bounded_end(raw, start, end)
+
+
+def _prefix_window(raw):
+    return 0, _bounded_end(raw, 0, len(raw))
+
+
+def _entry(kind, raw, sha, start, end):
+    text = raw[start:end].decode("utf-8")
+    if not text.strip():
+        return None
+    first = raw[:start].count(b"\n") + 1
+    last = first + text.count("\n") - int(text.endswith("\n"))
+    return {"kind": kind, "text": text, "retained_sha256": digest(text), "content_sha256": sha,
+            "locator": f"{kind}:lines:{first}-{last}:offset:{start}"}
+
+
+def _named(raw, heads, complete, titles):
+    """The span from the first of two named headings through the later one."""
+    found = sorted(next((n for n, head in enumerate(heads) if head[1] == title), -1) for title in titles)
+    found = [n for n in found if n >= 0]
+    if not found or (len(found) < 2 and not complete):
+        return None
+    return _section_window(raw, heads, found[0], found[-1], extend=True)
+
+
+def _author_section(raw, heads, complete):
+    """The paper's first Limitations section before References, else its Conclusion."""
+    stop = next((n for n, (_, title, _) in enumerate(heads)
+                 if "references" in title or "bibliography" in title), len(heads))
+    for word in ("limitation", "conclusion"):
+        for n in range(stop):
+            if word in heads[n][1]:
+                start, end = _section_window(raw, heads, n, n, extend=False)
+                if raw[start:end].partition(b"\n")[2].strip():
+                    return start, end
+        if stop == len(heads) and not complete:
+            # An unscanned tail may still hold a Limitations heading.
+            return None
+    return None
+
+
+def _window(kind, raw, complete):
+    """The kind's section window, or the prefix when selection depends on unscanned bytes."""
+    known = raw if complete else raw[:raw.rfind(b"\n") + 1]
+    heads = _headings(known)
+    span = (_author_section(known, heads, complete) if kind == "full_text"
+            else _named(known, heads, complete, _TITLES[kind]))
+    if span is None or (not complete and span[1] == len(known)):
+        return _prefix_window(raw)
+    return span
+
+
+def _file_entry(reader, source_id, kind):
+    scan = _read_file(reader, source_id, kind)
+    if scan is None:
+        return None
+    raw, sha, complete = scan
+    return _entry(kind, raw, sha, *_window(kind, raw, complete))
+
+
+def _passage(hit):
+    return {"kind": "indexed_passage", "text": hit["excerpt"], "retained_sha256": digest(hit["excerpt"]),
+            "content_sha256": hit["content_sha256"], "locator": hit["evidence_id"]}
+
+
+def paper_evidence(reader, source, passages):
+    """At most MAX_SOURCE_EVIDENCE entries for one source, highest priority first.
+
+    Slots: first passage, notes, full_text, second passage, grounding, further
+    passages. Files are read only while a slot remains. A candidate whose text is
+    already retained verbatim adds nothing and yields its slot.
+    """
+    valid, seen = [], set()
+    for hit in passages:
+        if hit["section"] != "__title__" and hit["excerpt"].strip() and hit["evidence_id"] not in seen:
+            seen.add(hit["evidence_id"])
+            valid.append(hit)
+    slots = ([("indexed_passage", hit) for hit in valid[:1]] + [("notes", None), ("full_text", None)]
+             + [("indexed_passage", hit) for hit in valid[1:2]] + [("grounding", None)]
+             + [("indexed_passage", hit) for hit in valid[2:]])
+    evidence = []
+    for kind, hit in slots:
+        if len(evidence) >= MAX_SOURCE_EVIDENCE:
+            break
+        entry = _passage(hit) if hit is not None else _file_entry(reader, source["id"], kind)
+        if entry is not None and not any(entry["text"] in kept["text"] for kept in evidence):
+            evidence.append(entry)
+    return evidence
