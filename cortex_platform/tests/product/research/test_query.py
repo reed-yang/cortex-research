@@ -29,7 +29,7 @@ def test_controls_and_whitespace_become_single_spaces(question, expected):
 
 @pytest.mark.parametrize("label", [
     "[S1]", "[D1]", "[S1, S2]", "[S1 S2]", "[S1，S2]", "[S1、S2]", "[S1][D2]", "[D1][S2]",
-    "[S1-S3]", "[S2; S9]", "[S 2]", "[ s3 ]",
+    "[S1-S3]", "[S2; S9]", "[S 2]", "[ s3 ]", "[S9a]", "[S99a]", "[S1a, S2b]",
 ])
 def test_citation_label_groups_are_removed(label):
     assert retrieval_query(f"cache {label} replacement") == "cache replacement"
@@ -41,6 +41,14 @@ def test_citation_label_groups_are_removed(label):
     ("[Self Forcing](https://example.org/a_b?x=1) stream", "Self Forcing stream"),
     ("see [S1](https://example.org/s1) cache", "see S1 cache"),
     ('[Data](https://example.org/(nested)/x "Title") memory', "Data memory"),
+    ("[cache](https://example.org/paper 'Retained document') memory", "cache memory"),
+    ("[cache](https://example.org/library(papers(cache))) memory", "cache memory"),
+    ("[cache](https://example.org/paper (Retained document)) memory", "cache memory"),
+    ("[cache](<https://example.org/retained paper>) memory", "cache memory"),
+    ("[cache]() memory", "cache memory"),
+    # Not inline links: the parenthesized prose stays searchable.
+    ("[Self Forcing](a streaming method) memory", "Self Forcing streaming method memory"),
+    ("[cache](https://example.org/open( memory", "cache https example org open memory"),
 ])
 def test_ordinary_brackets_stay_and_links_keep_only_their_text(question, expected):
     assert retrieval_query(question) == expected
@@ -58,6 +66,7 @@ def test_numbers_versions_and_years_stay_while_length_requirements_go():
     "in 200 words", "under 3 paragraphs", "within 50 sentences", "no more than 5 bullets",
     "at most 100 tokens", "in 300 characters", "20 chars", "8 points", "不超过300字",
     "少于 5 条", "控制在800字左右", "控制在500字以内", "3个段", "IN 200 WORDS",
+    "3个段落", "3句话", "控制在500字内，",
 ])
 def test_length_requirements_are_removed(requirement):
     assert retrieval_query(f"cache memory {requirement} replacement") == "cache memory replacement"
@@ -65,6 +74,20 @@ def test_length_requirements_are_removed(requirement):
 
 def test_length_words_do_not_cut_into_neighbouring_terms():
     assert retrieval_query("plugin 200 words Net2.1 characters") == "plugin Net2.1"
+
+
+@pytest.mark.parametrize("term", [
+    "1024字节缓存", "2段式检测", "3词汇表", "5句式变换", "4条件生成", "8字符串", "64字节对齐",
+    "500字内存", "第2段",
+])
+def test_counts_inside_cjk_compound_terms_are_not_length_requirements(term):
+    assert retrieval_query(f"cache {term} memory") == f"cache {term} memory"
+    assert retrieval_query("1024字节缓存 2段式检测") == "1024字节缓存 2段式检测"
+
+
+def test_a_prefixed_cjk_requirement_may_run_into_the_next_clause():
+    assert retrieval_query("请总结，控制在500字内并附说明") == "请总结 并附说明"
+    assert retrieval_query("缓存不超过1024字节的方案") == "缓存不超过1024字节的方案"
 
 
 def test_format_terms_are_removed_case_insensitively():
