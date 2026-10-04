@@ -48,10 +48,12 @@ Hermes gen9 runtime is supplied separately. See
   page avoids the export API entirely. The API is used only if the page request
   or metadata validation fails. Full text is read directly from the HTML URL.
   Exhausting metadata paths reports a known failure before corpus writes.
-  A paper capture names one arXiv paper as one whitespace-separated token (a
-  modern ID, `arXiv:<id>`, or an http, https or scheme-less arxiv.org abs, pdf
-  or html link); only its canonical ID reaches ingestion, and the surrounding
-  text is shown as a separate derived note. Two different papers (including
+  A paper capture names one arXiv paper as one token (a modern ID,
+  `arXiv:<id>`, or an http, https or scheme-less arxiv.org abs, pdf or html
+  link). A token ends at whitespace, at `()[]<>"'` and at any non-ASCII
+  character such as Chinese text or full-width punctuation; `.,;:!?` at its
+  ends is not part of it. Only its canonical ID reaches ingestion, and the
+  surrounding text is shown as a separate derived note. Two different papers (including
   another paper's ID-shaped number in that text), or a link on another host,
   are refused as `invalid_source`
   ([user guide](docs/runbooks/cortex-web-user-guide.md#retry-a-failed-paper-capture)).

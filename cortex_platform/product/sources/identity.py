@@ -26,14 +26,18 @@ _CAPTURE_PATH_RE = re.compile(
     r"(?:v(?P<version>[1-9][0-9]*))?(?P<pdf>\.pdf)?\Z",
 )
 _CAPTURE_HOSTS = frozenset({"arxiv.org", "www.arxiv.org"})
-_CAPTURE_TOKEN_RE = re.compile(r"\S+")
+# A candidate token is a maximal run of ASCII characters other than whitespace
+# and these brackets and quotes; any non-ASCII character also ends one.
+_CAPTURE_RUN_RE = re.compile(r"""[^\s()\[\]<>"'\x80-\U0010ffff]+""")
+# Sentence punctuation trimmed from both ends of a run; it stays in the note.
+_CAPTURE_TRIM = ".,;:!?"
 # urlsplit silently deletes leading C0 controls, so a token holding one is
 # never an exact locator.
 _CAPTURE_CONTROLS = frozenset(chr(code) for code in range(0x20))
 # The number the ingest child takes as the paper from raw text
 # (`cortex_research.arxiv_client._strip_version`). A Capture dispatched before
-# this parser handed the child its raw payload, so any such number in the note
-# must name the token's paper for a reread of that dispatch to agree with it.
+# this parser handed the child its raw payload, so any such number outside the
+# locators must name their paper for a reread of that dispatch to agree.
 _CAPTURE_ID_SHAPE_RE = re.compile(r"\d{4}\.\d{4,5}")
 
 
@@ -113,39 +117,69 @@ def canonicalize_locator(value: str) -> CanonicalLocator:
 def parse_arxiv_capture_payload(payload: str) -> ArxivCapturePayload:
     """Find the one arXiv paper a Capture payload names.
 
-    A locator is one whitespace-delimited token: a modern ID, `arXiv:<id>`,
-    or an http, https or scheme-less arxiv.org/www.arxiv.org abs, pdf or
-    html path with an optional version. A URL query or fragment never names
-    the paper and is ignored. Nothing is fetched. The same paper may appear
-    more than once; two different papers are refused, including an ID-shaped
-    number for another paper anywhere in the note. Every other character of
-    the payload is the note, trimmed only at its two ends.
+    A candidate token is a maximal run of ASCII characters other than
+    whitespace and `()[]<>"'`, so CJK text and full-width punctuation also
+    end one; `.,;:!?` is trimmed from its two ends. A locator is a token that
+    is a modern ID, `arXiv:<id>`, or an http, https or scheme-less
+    arxiv.org/www.arxiv.org abs, pdf or html path with an optional version.
+    A token joined to earlier text that holds a `/` outside a locator, with
+    no whitespace or non-ASCII character between them, continues that link
+    and is not a locator.
+    A URL query or fragment never names the paper and is ignored. Nothing is
+    fetched. The same paper may appear more than once; two different papers
+    are refused, including an ID-shaped number for another paper anywhere
+    outside the locators. Every other character of the payload is the note,
+    trimmed only at its two ends.
     """
 
     if not isinstance(payload, str):
         raise ValueError("capture payload is invalid")
     works: set[str] = set()
     spans: list[tuple[int, int]] = []
-    for match in _CAPTURE_TOKEN_RE.finditer(payload):
-        work = _capture_token_work(match.group())
-        if work is not None:
-            works.add(work)
-            spans.append(match.span())
+    # Whether the text since the last whitespace or non-ASCII character holds
+    # a `/` outside a locator, so that a run here is still part of a link.
+    joined_to_link = False
+    cursor = 0
+    for run in _CAPTURE_RUN_RE.finditer(payload):
+        if any(
+            char.isspace() or not char.isascii()
+            for char in payload[cursor : run.start()]
+        ):
+            joined_to_link = False
+        cursor = run.end()
+        text = run.group()
+        token = text.strip(_CAPTURE_TRIM)
+        work = None if joined_to_link or not token else _capture_token_work(token)
+        if work is None:
+            joined_to_link = joined_to_link or "/" in text
+            continue
+        start = run.start() + len(text) - len(text.lstrip(_CAPTURE_TRIM))
+        works.add(work)
+        spans.append((start, start + len(token)))
     if not works:
         raise ValueError("capture payload names no arXiv paper")
     if len(works) > 1:
         raise ValueError("capture payload names more than one arXiv paper")
     work = works.pop()
+    # Scan the raw payload, not the note: a full-width digit ends a token yet
+    # is a digit to the child, so a number may run across a locator's edge.
+    index = 0
+    for shape in _CAPTURE_ID_SHAPE_RE.finditer(payload):
+        while index < len(spans) and spans[index][1] <= shape.start():
+            index += 1
+        inside = (
+            index < len(spans)
+            and spans[index][0] <= shape.start()
+            and shape.end() <= spans[index][1]
+        )
+        if not inside and shape.group() != work:
+            raise ValueError("capture payload names more than one arXiv paper")
     pieces: list[str] = []
     cursor = 0
     for start, end in spans:
         pieces.append(payload[cursor:start])
         cursor = end
     pieces.append(payload[cursor:])
-    for piece in pieces:
-        for shape in _CAPTURE_ID_SHAPE_RE.finditer(piece):
-            if shape.group() != work:
-                raise ValueError("capture payload names more than one arXiv paper")
     return ArxivCapturePayload(work_id=work, note="".join(pieces).strip())
 
 

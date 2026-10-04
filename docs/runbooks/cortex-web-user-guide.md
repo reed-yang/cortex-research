@@ -164,18 +164,26 @@ after a configuration repair or a separate library import; it is not the current
 health of that paper. Compare its Created time and Capture id with the attempt
 you are investigating, and check Library for an already imported source.
 
-A paper capture names exactly one arXiv paper as one whitespace-separated token:
-a modern ID such as `2601.00042` or `2601.00042v2`, `arXiv:2601.00042`, or an
-`arxiv.org` or `www.arxiv.org` abs, pdf or html link, with or without `https://`
-or `http://`. A query or fragment on the link is ignored. Text before and after
-that token is shown on the card as "Note from submitted text", separately from
-the note you typed; neither the submission nor your note is rewritten, and the
-derived note has no length limit of its own. Only the canonical paper ID is sent
-to ingestion. A capture is not imported, and fails as `invalid_source`, when it
-names two different papers (an ID-shaped number for another paper anywhere in
-the surrounding text counts, with or without a space, for example
-`对比2602.00001`), when the ID or link touches other text without a space (for
-example `论文2601.00042` or a link followed by `。`), or when the link uses
+A paper capture names exactly one arXiv paper as one token: a modern ID such as
+`2601.00042` or `2601.00042v2`, `arXiv:2601.00042`, or an `arxiv.org` or
+`www.arxiv.org` abs, pdf or html link, with or without `https://` or `http://`.
+A token ends at whitespace, at an ASCII bracket or quote (`()[]<>"'`) and at
+any non-ASCII character, so Chinese text and full-width punctuation may touch
+it: `看看2601.00042的方法`, `论文：https://arxiv.org/abs/2601.00042` and
+`[x](https://arxiv.org/abs/2601.00042)。` each name 2601.00042. `.`, `,`, `;`,
+`:`, `!` and `?` at either end of a token are not part of it. A query or
+fragment on the link is ignored. Text before and after that token is shown on
+the card as "Note from submitted text", separately from the note you typed;
+neither the submission nor your note is rewritten, and the derived note has no
+length limit of its own. Only the canonical paper ID is sent to ingestion. A
+capture is not imported, and fails as `invalid_source`, when it names two
+different papers (an ID-shaped number for another paper anywhere in the
+surrounding text counts, with or without a space, for example `对比2602.00001`
+or `ref2602.00001`), when the ID or link touches other ASCII text with no
+whitespace, bracket or quote between them (for example `paper2601.00042` or
+`see:https://arxiv.org/abs/2601.00042`), when a bracket or quote joins it to
+earlier text that contains `/`, such as a link on another host (for example
+`https://example.com/wiki/(arxiv.org/abs/2601.00042)`), or when the link uses
 another host, a port, user information or an encoded path.
 
 When the same paper is later adopted into the Library, for example by a new

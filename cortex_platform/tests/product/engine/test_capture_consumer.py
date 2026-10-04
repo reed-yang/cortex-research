@@ -328,6 +328,10 @@ def _child_identifiers(
         f"https://arxiv.org/abs/{HTML_PAPER} 请总结方法部分",
         f"{HTML_PAPER} 请重点看实验\n以及局限",
         f"这篇值得读 https://arxiv.org/abs/{HTML_PAPER}v1?context=cs.LG",
+        # Punctuation and CJK text touching the link, as the consumer
+        # accepted before the parser.
+        f"看看 https://arxiv.org/abs/{HTML_PAPER}，然后再说",
+        f"[x](https://arxiv.org/abs/{HTML_PAPER}v2).",
     ],
 )
 def test_text_around_one_arxiv_token_imports_only_that_paper(
