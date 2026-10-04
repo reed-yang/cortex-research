@@ -2066,3 +2066,231 @@ def test_an_unknown_pause_capability_still_commits_from_telegram(
 
     assert paused.ok is True
     assert harness.store.get_run(run["id"])["state"] == "pause_requested"
+
+
+# -- /idea: save-only fragments ------------------------------------------------
+
+
+def _fragments(store: ControlStore) -> list[dict]:
+    return list(store.list_fragments())
+
+
+def _fragment_refs(store: ControlStore) -> list[tuple[str, str]]:
+    with sqlite3.connect(store.path) as conn:
+        return [
+            (str(row[0]), str(row[1]))
+            for row in conn.execute("SELECT origin_ref, actor_id FROM idea_fragments")
+        ]
+
+
+def test_idea_saves_a_fragment_and_appends_no_message_or_turn(
+    harness: Harness,
+) -> None:
+    told: list[str] = []
+    harness.adapter.bind_turn_sink(told.append)
+    before = harness.store.get_thread(harness.thread["id"])
+    text = "视频生成的一个想法\n第二行：先做小实验 🎬"
+
+    result = harness.adapter.handle_update(_message(300, f"/idea {text}"))
+
+    assert result.ok is True and result.action == "save_fragment"
+    assert result.mutated is True and result.replayed is False
+    assert "Nothing was started" in result.response_text
+    assert "Ideas" in result.response_text
+    [fragment] = _fragments(harness.store)
+    assert fragment["text"] == text
+    assert fragment["origin"] == "telegram"
+    assert fragment["thread_id"] == harness.thread["id"]
+    update = TelegramUpdate.parse(_message(300, f"/idea {text}"))
+    key = harness.adapter._idempotency_key(update.identity)  # noqa: SLF001
+    assert _fragment_refs(harness.store) == [
+        (key, harness.adapter._actor_id(7))  # noqa: SLF001
+    ]
+    assert harness.store.list_messages(harness.thread["id"]) == []
+    assert harness.store.get_thread(harness.thread["id"]) == before
+    assert told == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "stored"),
+    [
+        ("/idea  two leading spaces and trailing  ", " two leading spaces and trailing  "),
+        ("/idea\n\nblank first line\n第二行", "\nblank first line\n第二行"),
+        ("/idea\t\ttabbed", "\ttabbed"),
+        ("/idea@research_bot 想法", "想法"),
+        ("/IDEA upper case name", "upper case name"),
+        ("/idea trailing newline\n", "trailing newline\n"),
+    ],
+)
+def test_idea_consumes_exactly_one_delimiter_and_keeps_the_rest(
+    harness: Harness, raw: str, stored: str
+) -> None:
+    result = harness.adapter.handle_update(_message(301, raw))
+
+    assert result.ok is True and result.action == "save_fragment", result
+    assert [item["text"] for item in _fragments(harness.store)] == [stored]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["/idea", "/idea   ", "/idea\n\t\n", "/idea@research_bot", "/idea　ideographic space"],
+)
+def test_idea_without_text_after_a_plain_delimiter_is_refused(
+    harness: Harness, raw: str
+) -> None:
+    result = harness.adapter.handle_update(_message(302, raw))
+
+    assert result.ok is False and result.category == "invalid_command"
+    assert _fragments(harness.store) == []
+
+
+def test_the_parser_limits_still_bound_an_idea(harness: Harness) -> None:
+    """Telegram's own parser refuses CR and counts the command in its byte cap."""
+
+    at_cap = "/idea " + "a" * (16_384 - len("/idea "))
+    assert harness.adapter.handle_update(_message(303, at_cap)).ok is True
+    over_cap = harness.adapter.handle_update(_message(304, at_cap + "a"))
+    carriage = harness.adapter.handle_update(_message(305, "/idea one\r\ntwo"))
+
+    assert over_cap.category == "invalid_request"
+    assert carriage.category == "invalid_request"
+    assert [len(item["text"]) for item in _fragments(harness.store)] == [16_378]
+
+
+def test_a_redelivered_idea_is_one_fragment_even_after_a_restart(
+    harness: Harness,
+) -> None:
+    update = _message(306, "/idea keep this once")
+    first = harness.adapter.handle_update(update)
+    replay = harness.adapter.handle_update(update)
+    rebuilt = _adapter(
+        store=harness.store,
+        client=harness.client,
+        receipts=harness.receipts,
+        tokens=harness.tokens,
+        clock=harness.clock,
+        workspace_id=harness.workspace["id"],
+    )
+    after_restart = rebuilt.handle_update(update)
+
+    assert first.ok is True and first.replayed is False
+    assert replay.replayed is True and after_restart.replayed is True
+    assert len(_fragments(harness.store)) == 1
+
+
+def test_an_idea_redelivered_after_a_lost_transport_receipt_replays_the_store(
+    harness: Harness,
+) -> None:
+    """A crash between the store commit and `record_command` saves nothing twice."""
+
+    update = _message(307, "/idea survive the crash")
+    harness.adapter.handle_update(update)
+    fresh = _adapter(
+        store=harness.store,
+        client=harness.client,
+        receipts=InMemoryTransportReceiptPort(),
+        tokens=harness.tokens,
+        clock=harness.clock,
+        workspace_id=harness.workspace["id"],
+    )
+
+    again = fresh.handle_update(update)
+
+    assert again.ok is True and again.action == "save_fragment"
+    assert again.replayed is True
+    assert len(_fragments(harness.store)) == 1
+
+
+def test_idea_in_an_unbound_chat_or_topic_needs_a_binding(harness: Harness) -> None:
+    root = harness.adapter.handle_update(_message(308, "/idea unbound", topic_id=None))
+    topic = harness.adapter.handle_update(_message(309, "/idea unbound", topic_id=99))
+
+    assert root.ok is False and root.category == "binding_required"
+    assert topic.ok is False and topic.category == "binding_required"
+    assert _fragments(harness.store) == []
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        {"photo": [{"file_id": "private-provider-file-reference", "file_size": 10}]},
+        {
+            "document": {
+                "file_id": "private-provider-file-reference",
+                "file_name": "idea.pdf",
+                "mime_type": "application/pdf",
+            }
+        },
+        {"video": {"file_id": "private-provider-file-reference", "duration": 3}},
+        {"animation": {"file_id": "private-provider-file-reference", "duration": 2}},
+    ],
+)
+def test_a_captioned_idea_with_media_is_refused_without_saving(
+    harness: Harness, media: dict
+) -> None:
+    update = _message(310, None, media={**media, "caption": "/idea look at this"})
+
+    result = harness.adapter.handle_update(update)
+
+    assert result.ok is False and result.category == "fragment_media_unsupported"
+    assert "nothing was saved" in result.response_text
+    assert "private-provider-file-reference" not in result.response_text
+    assert _fragments(harness.store) == []
+    assert harness.store.list_messages(harness.thread["id"]) == []
+
+
+def test_media_without_an_idea_caption_keeps_its_existing_answers(
+    harness: Harness,
+) -> None:
+    photo = harness.adapter.handle_update(
+        _message(311, None, media={"photo": [{"file_id": "f"}], "caption": "a photo"})
+    )
+    video = harness.adapter.handle_update(
+        _message(312, None, media={"video": {"file_id": "f"}, "caption": "plain words"})
+    )
+
+    assert photo.category == "source_staging_unavailable"
+    # The parser change only refuses /idea; a plain video caption is unchanged.
+    assert video.ok is True and video.action == "capture_message"
+    assert [
+        message["content"]
+        for message in harness.store.list_messages(harness.thread["id"])
+    ] == ["plain words"]
+    assert _fragments(harness.store) == []
+
+
+def test_capture_and_plain_messages_still_append_and_never_save_a_fragment(
+    harness: Harness,
+) -> None:
+    harness.adapter.handle_update(_message(313, "/capture an idea for the thread"))
+    harness.adapter.handle_update(_message(314, "a plain idea message"))
+
+    assert [
+        message["content"]
+        for message in harness.store.list_messages(harness.thread["id"])
+    ] == ["an idea for the thread", "a plain idea message"]
+    assert _fragments(harness.store) == []
+
+
+def test_shadow_mode_saves_no_fragment(harness: Harness) -> None:
+    shadow = _adapter(
+        store=harness.store,
+        client=harness.client,
+        receipts=InMemoryTransportReceiptPort(),
+        tokens=harness.tokens,
+        clock=harness.clock,
+        workspace_id=harness.workspace["id"],
+        mode="shadow",
+    )
+
+    result = shadow.handle_update(_message(315, "/idea would be saved"))
+
+    assert result.ok is True and result.category == "shadow"
+    assert result.action == "save_fragment" and result.mutated is False
+    assert _fragments(harness.store) == []
+
+
+def test_help_lists_the_idea_command(harness: Harness) -> None:
+    helped = harness.adapter.handle_update(_message(316, "/help"))
+
+    assert "/idea" in helped.response_text

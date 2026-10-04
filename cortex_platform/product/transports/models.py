@@ -80,6 +80,10 @@ class TelegramMessage:
     topic_id: int | None
     text: str | None
     media: TelegramMedia | None
+    #: A media kind this parser does not stage (video, animation, ...) is only
+    #: remembered as present, never read: its caption still becomes `text`,
+    #: and no file identifier is kept. `/idea` uses it to refuse explicitly.
+    unsupported_media: bool = False
 
 
 @dataclass(frozen=True)
@@ -295,6 +299,7 @@ def _parse_message(value: Any) -> TelegramMessage:
         ),
         text=text if text is not None else caption,
         media=media,
+        unsupported_media=any(name in item for name in _UNSUPPORTED_MEDIA_KINDS),
     )
 
 
@@ -318,6 +323,10 @@ def _parse_callback(value: Any) -> TelegramCallback:
             item.get("data"), "callback_query.data", maximum=MAX_CALLBACK_BYTES
         ),
     )
+
+
+#: Message fields that carry media `_parse_media` does not represent.
+_UNSUPPORTED_MEDIA_KINDS = ("animation", "paid_media", "sticker", "video", "video_note")
 
 
 def _parse_media(item: Mapping[str, Any]) -> TelegramMedia | None:

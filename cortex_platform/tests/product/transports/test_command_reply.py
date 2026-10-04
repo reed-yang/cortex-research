@@ -686,3 +686,103 @@ def test_shadow_adapter_does_not_send_a_previously_frozen_active_reply(harness: 
     assert _sent(rpc) == []
     assert _replies(harness.store)[0][1] == "pending"
     assert _drain(harness, active).drain()[0]["delivered"] is True
+
+
+def test_an_idea_receipt_is_frozen_and_delivered_once(harness: Harness) -> None:
+    rpc = ScriptedHermesRPC([ACCEPTED])
+    adapter = _adapter(harness, rpc)
+    update = _message(90, "/idea a reply the operator should see")
+
+    saved = adapter.handle_update(update)
+
+    assert saved.ok is True and saved.action == "save_fragment"
+    assert _replies(harness.store) == [
+        (f"{COMMAND_REPLY_PREFIX}{adapter._idempotency_key('update:90')}", "pending")
+    ]
+    assert [item["category"] for item in _drain(harness, adapter).drain()] == [
+        "delivered"
+    ]
+    assert len(_sent(rpc)) == 1 and "Nothing was started" in _sent(rpc)[0]
+
+    assert adapter.handle_update(update).replayed is True
+    assert _drain(harness, adapter).drain() == []
+    assert len(_sent(rpc)) == 1
+    assert len(_replies(harness.store)) == 1
+    assert len(list(harness.store.list_fragments())) == 1
+
+
+def test_an_idea_whose_reply_was_not_frozen_is_saved_once_on_redelivery(
+    harness: Harness,
+) -> None:
+    """The fragment commits, the freeze fails, and the retry replays the store."""
+
+    rpc = ScriptedHermesRPC(
+        [ACCEPTED], capability_outcome=RuntimeError("the worker cannot be asked")
+    )
+    adapter = _adapter(harness, rpc)
+    update = _message(91, "/idea saved before the reply")
+
+    refused = adapter.handle_update(update)
+
+    assert refused.category == "reply_not_persisted" and refused.retryable is True
+    assert _replies(harness.store) == []
+    assert len(list(harness.store.list_fragments())) == 1
+
+    rpc._capability_outcome = None  # noqa: SLF001
+    retried = adapter.handle_update(update)
+
+    assert retried.ok is True and retried.replayed is True
+    assert len(list(harness.store.list_fragments())) == 1
+    assert len(_replies(harness.store)) == 1
+    assert [item["category"] for item in _drain(harness, adapter).drain()] == [
+        "delivered"
+    ]
+    assert len(_sent(rpc)) == 1
+
+
+def test_an_idea_frozen_before_a_lost_receipt_refreezes_the_same_reply(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after the freeze but before `record_command` sends one reply."""
+
+    rpc = ScriptedHermesRPC([ACCEPTED])
+    adapter = _adapter(harness, rpc)
+    update = _message(92, "/idea frozen then crashed")
+    record = adapter._receipts.record_command  # noqa: SLF001
+
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("the process died before the receipt")
+
+    monkeypatch.setattr(adapter._receipts, "record_command", crash)  # noqa: SLF001
+    crashed = adapter.handle_update(update)
+    monkeypatch.setattr(adapter._receipts, "record_command", record)  # noqa: SLF001
+
+    assert crashed.ok is False
+    assert len(_replies(harness.store)) == 1
+
+    redelivered = adapter.handle_update(update)
+
+    assert redelivered.ok is True and redelivered.replayed is True
+    assert len(list(harness.store.list_fragments())) == 1
+    assert len(_replies(harness.store)) == 1
+    assert [item["category"] for item in _drain(harness, adapter).drain()] == [
+        "delivered"
+    ]
+    assert len(_sent(rpc)) == 1
+
+
+def test_an_idea_reply_with_an_unknown_send_outcome_is_never_resent(
+    harness: Harness,
+) -> None:
+    rpc = ScriptedHermesRPC([RuntimeError("the worker went away mid-send")])
+    adapter = _adapter(harness, rpc)
+    update = _message(93, "/idea ambiguous send")
+    adapter.handle_update(update)
+
+    stuck = _drain(harness, adapter).drain()
+
+    assert [item["category"] for item in stuck] == ["manual_required"]
+    assert adapter.handle_update(update).replayed is True
+    assert _drain(harness, adapter).drain() == []
+    assert [state for _, state in _replies(harness.store)] == ["manual_required"]
+    assert len(list(harness.store.list_fragments())) == 1

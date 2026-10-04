@@ -87,6 +87,18 @@ _COMMAND_RE = re.compile(
 #: Only exact alternative spellings, never a general `-`/`_` fold: folding would
 #: quietly turn `/re-search` into `/research`.
 _COMMAND_ALIASES = {"research-item": "research_item"}
+#: `/idea` keeps its text verbatim, so it is re-read from the unstripped message:
+#: after the name (and an optional `@bot`), exactly one space, tab or LF is the
+#: delimiter and everything after it is the idea. Any other separator, such as
+#: an ideographic space, is not a delimiter and the command is refused. The
+#: parser has already refused CR and counted the command in the 16384-byte cap.
+_IDEA_RE = re.compile(
+    r"/idea(?:@[A-Za-z0-9_]+)?(?:[ \t\n](.*))?\Z", re.DOTALL | re.IGNORECASE
+)
+_IDEA_SAVED_TEXT = (
+    "Saved this idea in Cortex as written. Nothing was started. "
+    "It is listed in the Web Inbox under Ideas."
+)
 _RESEARCH_ITEM_RE = re.compile(r"ri_[0-9a-f]{32}\Z")
 _ALLOWED_CHAT_TYPES = frozenset({"private", "group", "supergroup"})
 _NOTIFICATION_TYPES = frozenset(
@@ -1511,13 +1523,17 @@ class TelegramAdapter:
         message = update.message
         if message is None:  # pragma: no cover - guarded by dispatch
             raise TransportProblem("invalid_request")
-        if message.media is not None:
-            raise TransportProblem("source_staging_unavailable")
         text = (message.text or "").strip()
         match = _COMMAND_RE.fullmatch(text)
         command = match.group(1).lower() if match else None
         command = _COMMAND_ALIASES.get(command, command)
         argument = (match.group(2) or "").strip() if match else ""
+        if command == "idea" and (message.media is not None or message.unsupported_media):
+            # An idea is text only: a captioned file is refused as a whole,
+            # rather than saving the caption and dropping what it described.
+            raise TransportProblem("fragment_media_unsupported")
+        if message.media is not None:
+            raise TransportProblem("source_staging_unavailable")
         if text.startswith("/") and match is None:
             raise TransportProblem("invalid_command")
         if binding is None:
@@ -1563,6 +1579,13 @@ class TelegramAdapter:
                 mutated=True,
                 replayed=result.replayed,
             )
+        if command == "idea":
+            return self._save_fragment(
+                raw_text=message.text or "",
+                thread_id=thread_id,
+                actor_id=self._actor_id(update.sender_id),
+                idempotency_key=idempotency_key,
+            )
         if command == "research_item":
             return self._select_research_item(
                 thread_id=thread_id,
@@ -1579,7 +1602,8 @@ class TelegramAdapter:
                 action="help",
                 response_text=(
                     "Available: /research, /research-item, /chat, /status, /capture, "
-                    "/resume, /cancel, /retry, and /open. Decision actions use bound buttons."
+                    "/idea, /resume, /cancel, /retry, and /open. Decision actions use "
+                    "bound buttons."
                 ),
             )
         if command == "status":
@@ -1713,6 +1737,50 @@ class TelegramAdapter:
             replayed=result.replayed,
             state=str(result.value["state"]),
             revision=int(result.value["revision"]),
+        )
+
+    def _save_fragment(
+        self,
+        *,
+        raw_text: str,
+        thread_id: str,
+        actor_id: str,
+        idempotency_key: str,
+    ) -> AdapterResult:
+        """Save `/idea` text verbatim: no message, no run, no turn.
+
+        The adapter key is both the store key and `origin_ref`, so an update
+        redelivered after the store committed but before the transport receipt
+        replays the stored fragment instead of saving a second one.
+        """
+
+        match = _IDEA_RE.match(raw_text.lstrip())
+        idea = (match.group(1) or "") if match else ""
+        if not idea.strip():
+            raise TransportProblem("invalid_command")
+        if self.config.mode == "shadow":
+            return AdapterResult(
+                ok=True,
+                category="shadow",
+                action="save_fragment",
+                response_text="Shadow mode: the idea would be saved in Cortex.",
+            )
+        result = self._store.create_fragment(
+            text=idea,
+            note="",
+            origin="telegram",
+            thread_id=thread_id,
+            origin_ref=idempotency_key,
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+        )
+        return AdapterResult(
+            ok=True,
+            category="ok",
+            action="save_fragment",
+            response_text=_IDEA_SAVED_TEXT,
+            mutated=True,
+            replayed=result.replayed,
         )
 
     def _unbound_result(
@@ -2298,6 +2366,10 @@ def _problem_text(category: str) -> str:
     messages = {
         "ambiguous_decision": "Use the bound approve or deny button for this decision.",
         "binding_required": "Bind this Telegram chat or topic to a Cortex thread first.",
+        "fragment_media_unsupported": (
+            "Images and files cannot be saved as ideas yet; nothing was saved. "
+            "Send the idea as text."
+        ),
         "rate_limited": "Too many Telegram commands. Retry after the indicated delay.",
         "pause_unsupported": "This runtime cannot pause a turn. Use /cancel to stop it.",
         "reply_not_persisted": "Cortex could not take ownership of the reply to that command.",
