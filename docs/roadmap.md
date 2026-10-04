@@ -37,6 +37,10 @@ installed round. A model answer alone does not close this milestone.
   useful failure recovery, with live acceptance for affected paths.
 - Public distribution: choose an owned-code license, resolve any upstream notice
   gaps, and add signed/notarized installers only when their own gates exist.
+- Idea intake: save-only idea fragments from the Web Inbox and Telegram `/idea`,
+  stored verbatim in a new Control table and starting nothing. Admitting a
+  fragment as a new research item is the first slice of new item creation below
+  and needs its own decision.
 
 ## Later
 
