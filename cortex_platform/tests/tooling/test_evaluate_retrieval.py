@@ -1,0 +1,623 @@
+"""Checkout-only retrieval evaluation over a real, checkpointed synthetic snapshot.
+
+Fixtures reuse the real research schema, adoption manifests and Control store
+from the source tests. Every writer is closed before evaluation so the
+immutable readers see a checkpointed database, which is the only state the
+tool accepts. All paper titles, identities and queries are synthetic.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from cortex_platform.product.control import ControlStore
+from cortex_platform.product.engine.digests import content_tree, tree_digest
+from cortex_platform.product.research.context import canonical, digest
+from cortex_platform.product.research.service import ResearchService
+from cortex_platform.product.sources.adoption import read_corpus
+from cortex_platform.tests.product.research.test_execution import queued
+from cortex_platform.tests.product.sources.fakes import make_store
+from cortex_platform.tests.product.sources.test_adoption_reader import (
+    _add_paper,
+    _write,
+    corpus,
+    database,
+)
+from tools import evaluate_retrieval as tool
+from tools.evaluate_retrieval import (
+    CheckpointedEvaluationReader,
+    EvaluationContextStore,
+    SuiteInvalid,
+    canonical_identity,
+    evaluate,
+    load_suite,
+    main,
+    prepare_packet,
+    registered_sources,
+    retrieval_metrics,
+)
+
+REPOSITORY = Path(__file__).resolve().parents[3]
+PAPERS = (
+    ("20261001-Alpha", "Kestrel Alpha", "2610.00001", ["kestrel kestrel kestrel alpha"] * 3),
+    ("20261001-Beta", "Kestrel Beta", "2610.00002", ["kestrel kestrel kestrel beta"] * 3),
+    ("20261001-Gamma", "Gamma Study", "2610.00003", ["a long gamma passage " * 20 + "kestrel"]),
+    ("20261001-Delta", "Delta Study", "2610.00004", ["unrelated delta content"]),
+    ("20261001-中文", "机器人推测解码方法", "2610.00005", ["robot decoding method"]),
+)
+A, B, C, D, E = (f"arxiv:{paper[2]}" for paper in PAPERS)
+F = "sha256:" + hashlib.sha256(b"blog body").hexdigest()
+SETS = {"birds": [A, B, C, D], "robots": [E]}
+QUERIES = [
+    {"id": "en-birds", "query": "kestrel", "language": "en", "relevance_set": "birds",
+     "must_find": [C]},
+    {"id": "zh-robots", "query": "机器人", "language": "zh", "relevance_set": "robots"},
+    {"id": "mixed-birds", "query": "kestrel 机器人", "language": "mixed", "relevance_set": "birds"},
+    {"id": "zh-empty", "query": "不存在", "language": "zh", "relevance_set": "robots"},
+    {"id": "en-empty", "query": "zzzunmatched", "language": "en", "relevance_set": "birds"},
+]
+
+
+def write_suite(path: Path, queries=None, sets=None) -> Path:
+    path.write_text(json.dumps({
+        "schema_version": 1, "relevance_sets": SETS if sets is None else sets,
+        "queries": QUERIES if queries is None else queries,
+    }, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def checkpointed_suite(tmp_path, corpus, database):
+    """A registered root, six adopted papers and one high-ranking unadopted paper."""
+    store = make_store(tmp_path)
+    store.register_asset_root(
+        root_id="research-corpus", private_path=corpus, max_bytes=1 << 30,
+        enabled=True, actor_id="operator", idempotency_key="root-evaluation-001",
+    )
+    for paper_dir, title, arxiv_id, chunks in PAPERS:
+        _add_paper(database, corpus, paper_dir=paper_dir, title=title, arxiv_id=arxiv_id)
+        for index, text in enumerate(chunks):
+            _write(database, "INSERT INTO chunks (paper_dir, section, chunk_idx, text) VALUES (?, ?, ?, ?)",
+                   (paper_dir, "Method", index, text))
+    _add_paper(database, corpus, paper_dir="20261001-blog", title="Blog Notes", body="blog body")
+    store.commit_adoption_manifest(
+        manifest=read_corpus(database=database, corpus_root=corpus).manifest,
+        corpus_root_id="research-corpus", actor_id="operator", idempotency_key="adopt-evaluation-001",
+    )
+    _add_paper(database, corpus, paper_dir="unadopted", title="Kestrel 机器人 Unadopted",
+               arxiv_id="2610.09999")
+    _write(database, "INSERT INTO chunks (paper_dir, section, chunk_idx, text) VALUES (?, ?, ?, ?)",
+           ("unadopted", "Method", 0, "kestrel kestrel kestrel kestrel kestrel"))
+    for suffix in ("-wal", "-journal"):
+        assert not (tmp_path / f"control.db{suffix}").exists()
+        assert not (tmp_path / f"research.db{suffix}").exists()
+    return SimpleNamespace(
+        store=store, root=tmp_path, control=tmp_path / "control.db", corpus=corpus,
+        index=database, suite=write_suite(tmp_path / "suite.json"),
+    )
+
+
+def run(snapshot, **paths):
+    values = {"control": snapshot.control, "corpus": snapshot.corpus,
+              "index": snapshot.index, "queries": snapshot.suite} | paths
+    return evaluate(values["control"], values["corpus"], values["index"], values["queries"])
+
+
+def cli(snapshot, capsys, **paths):
+    values = {"control": snapshot.control, "corpus": snapshot.corpus,
+              "index": snapshot.index, "queries": snapshot.suite} | paths
+    code = main([f"--{name}={value}" for name, value in values.items()])
+    out = capsys.readouterr().out
+    return code, (json.loads(out) if out.strip() else None), out
+
+
+def by_id(report):
+    return {row["id"]: row for row in report["queries"]}
+
+
+def files_with_mtimes(root: Path):
+    return tree_digest(content_tree(root)), {
+        str(path.relative_to(root)): path.stat().st_mtime_ns
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+
+
+# -- Pure metric and suite contracts ---------------------------------------
+
+
+def test_metric_denominators_and_duplicate_sources():
+    six = [{"canonical_id": value} for value in (A, A, A, B, B, B)]
+    metrics = retrieval_metrics(six, (A, B, C, D), must_find=(C,))
+    assert metrics["returned_results_at_k"] == 6
+    assert metrics["distinct_papers_at_k"] == 2
+    assert metrics["relevant_papers_at_k"] == 2
+    assert metrics["recall_at_k"] == 0.5
+    assert metrics["identities"] == [A, B]
+    assert metrics["missing_relevant_identities"] == [C, D]
+    assert metrics["must_find_missing"] == [C]
+    twenty = retrieval_metrics(six + [{"canonical_id": C}, {"canonical_id": E}], (A, B, C, D))
+    assert twenty["recall_at_k"] == 0.75
+    assert twenty["distinct_papers_at_k"] == 4
+    assert twenty["relevant_identities"] == [A, B, C]
+    empty = retrieval_metrics([], (A, B, C, D))
+    assert empty["recall_at_k"] == 0.0 and empty["distinct_papers_at_k"] == 0
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("arxiv:2610.00001", "arxiv:2610.00001"),
+    ("arxiv:2610.00001v3", "arxiv:2610.00001"),
+    ("sha256:" + "AB" * 32, "sha256:" + "ab" * 32),
+    ("doi:10.1000/Synthetic.ABC", "doi:10.1000/synthetic.abc"),
+])
+def test_canonical_identity_normalization(value, expected):
+    assert canonical_identity(value) == expected
+
+
+@pytest.mark.parametrize("value", [
+    "2610.00001", "ARXIV:2610.00001", "arxiv:arxiv:2610.00001", "arxiv:abc", "sha256:abc",
+    "doi:11.1000/x", "isbn:12345", "", None, 7, "paper:20261001-Alpha",
+])
+def test_canonical_identity_rejects_malformed_values(value):
+    with pytest.raises(ValueError):
+        canonical_identity(value)
+
+
+def _suite_bytes(**overrides) -> bytes:
+    suite = {"schema_version": 1, "relevance_sets": {"birds": [A, B]},
+             "queries": [{"id": "q1", "query": " kestrel ", "language": "en", "relevance_set": "birds"}]}
+    suite.update(overrides)
+    return json.dumps(suite, ensure_ascii=False).encode()
+
+
+def _query(**overrides):
+    return [{"id": "q1", "query": "kestrel", "language": "en", "relevance_set": "birds"} | overrides]
+
+
+@pytest.mark.parametrize("raw", [
+    b"not json",
+    b'{"schema_version": 1, "schema_version": 1, "relevance_sets": {}, "queries": []}',
+    _suite_bytes(schema_version=2),
+    _suite_bytes(schema_version=True),
+    _suite_bytes(extra=1),
+    _suite_bytes(relevance_sets={"birds": []}),
+    _suite_bytes(relevance_sets={"birds": [A, A]}),
+    _suite_bytes(relevance_sets={"birds": [A, "arxiv:2610.00001v2"]}),
+    _suite_bytes(relevance_sets={"birds": ["title:Kestrel Alpha"]}),
+    _suite_bytes(relevance_sets={"bad name": [A]}),
+    _suite_bytes(queries=[]),
+    _suite_bytes(queries=_query(language="fr")),
+    _suite_bytes(queries=_query(relevance_set="missing")),
+    _suite_bytes(queries=_query(must_find=[C])),
+    _suite_bytes(queries=_query(must_find=[A, A])),
+    _suite_bytes(queries=_query(unknown=True)),
+    _suite_bytes(queries=_query(query="")),
+    _suite_bytes(queries=_query(query="x" * 1025)),
+    _suite_bytes(queries=_query(query=7)),
+    _suite_bytes(queries=_query() + _query()),
+    _suite_bytes(queries=[{"id": "q1", "query": "kestrel", "language": "en"}]),
+    _suite_bytes(queries=[{"id": f"q{i}", "query": "kestrel", "language": "en",
+                           "relevance_set": "birds"} for i in range(101)]),
+    b'{"schema_version": 1, "relevance_sets": {"birds": ["' + A.encode() + b'"]}, '
+    b'"queries": [{"id": "q1", "query": "\\ud800", "language": "en", "relevance_set": "birds"}]}',
+    b'{"schema_version": NaN, "relevance_sets": {}, "queries": []}',
+])
+def test_suite_validation_rejects_malformed_suites(tmp_path, raw):
+    path = tmp_path / "suite.json"
+    path.write_bytes(raw)
+    with pytest.raises(SuiteInvalid):
+        load_suite(path)
+
+
+def test_suite_bounds_and_preserved_query_text(tmp_path, monkeypatch):
+    path = tmp_path / "suite.json"
+    path.write_bytes(_suite_bytes(relevance_sets={"birds": [A, "sha256:" + "CD" * 32]},
+                                  queries=_query(query=" kestrel ", must_find=["sha256:" + "cd" * 32])))
+    suite = load_suite(path)
+    assert suite["relevance_sets"]["birds"] == (A, "sha256:" + "cd" * 32)
+    assert suite["queries"][0]["query"] == " kestrel "
+    assert suite["queries"][0]["must_find"] == ("sha256:" + "cd" * 32,)
+    assert suite["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(tool, "MAX_SUITE_BYTES", 16)
+    with pytest.raises(SuiteInvalid):
+        load_suite(path)
+    monkeypatch.setattr(tool, "MAX_SUITE_BYTES", 1 << 20)
+    monkeypatch.setattr(tool, "MAX_RELEVANCE_IDS", 1)
+    with pytest.raises(SuiteInvalid):
+        load_suite(path)
+    with pytest.raises(SuiteInvalid):
+        load_suite(tmp_path / "missing.json")
+
+
+# -- Real snapshot evaluation -----------------------------------------------
+
+
+def test_metric_denominators_on_real_six_slot_duplication(checkpointed_suite):
+    report, code = run(checkpointed_suite)
+    assert code == 0 and report["status"] == "completed" and report["baseline_complete"] is True
+    birds = by_id(report)["en-birds"]
+    six, twenty = birds["retrieval"]["at_6"], birds["retrieval"]["at_20"]
+    assert six["status"] == "measured" and six["retrieval_mode"] == "fts5_or"
+    assert six["returned_results_at_k"] == 6
+    assert six["identities"] == [A, B]
+    assert (six["distinct_papers_at_k"], six["relevant_papers_at_k"], six["recall_at_k"]) == (2, 2, 0.5)
+    assert birds["retrieval"]["relevant_papers_per_six_slots"] == round(2 / 6, 6)
+    assert six["must_find_missing"] == [C]
+    assert twenty["identities"] == [A, B, C] and twenty["recall_at_k"] == 0.75
+    assert twenty["must_find_missing"] == []
+    # Prepare drops duplicate sources: two packet sources from six slots.
+    packet = birds["packet"]
+    assert packet["status"] == "built"
+    assert packet["canonical_ids"] == [A, B] and packet["recall"] == 0.5
+    assert packet["query"] == packet["retrieval_query"] == "kestrel"
+    assert packet["schema_version"] == 1 and len(packet["sha256"]) == 64 and packet["bytes"] > 0
+    assert packet["sources_not_in_search_at_6"] == []
+    assert [e["kind"] for e in packet["sources"][0]["evidence"]] == ["indexed_passage", "notes", "full_text"]
+    assert all("text" not in e for s in packet["sources"] for e in s["evidence"])
+    assert "arxiv:2610.09999" not in json.dumps(report)
+
+
+def test_language_cohorts_title_fallback_and_empty_results(checkpointed_suite):
+    report, code = run(checkpointed_suite)
+    rows = by_id(report)
+    zh = rows["zh-robots"]["retrieval"]["at_6"]
+    assert zh["retrieval_mode"] == "unicode_title_fallback" and zh["identities"] == [E]
+    assert rows["zh-robots"]["packet"]["canonical_ids"] == [E]
+    mixed = rows["mixed-birds"]["retrieval"]
+    assert mixed["at_6"]["retrieval_mode"] == "fts5_or+unicode_title_fallback"
+    assert mixed["at_6"]["identities"] == [E, A, B] and mixed["at_6"]["recall_at_k"] == 0.5
+    assert mixed["at_20"]["identities"] == [E, A, B, C]
+    for name in ("zh-empty", "en-empty"):
+        row = rows[name]
+        assert row["retrieval"]["at_6"]["returned_results_at_k"] == 0
+        assert row["retrieval"]["at_6"]["recall_at_k"] == 0.0
+        assert row["packet"]["status"] == "research_no_evidence"
+        assert row["packet"]["sha256"] is None and row["packet"]["recall"] == 0.0
+        assert row["failures"] == []
+    languages = report["summary"]["by_language"]
+    assert languages["zh"]["queries"] == 2 and languages["mixed"]["queries"] == 1
+    assert languages["zh"]["distinct_papers_at_6"] == {"mean": 0.5, "n": 2, "total": 1}
+    assert languages["en"]["recall_at_6"] == {"mean": 0.25, "n": 2}
+    assert report["summary"]["overall"]["failed_queries"] == 0
+    assert report["failures"] == {"count": 0, "by_category": {}}
+
+
+@pytest.mark.parametrize("question", ["kestrel", "机器人", "kestrel 机器人"])
+def test_real_prepare_parity(checkpointed_suite, monkeypatch, question):
+    # The writable test store is used only before evaluation takes its snapshot.
+    store = checkpointed_suite.store
+    run_row = queued(store, f"/research {question}")
+    expected = ResearchService(store).prepare(run_row, store.list_messages(run_row["thread_id"]))["snapshot"]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("evaluation must not use a writable Control store")
+
+    monkeypatch.setattr(ControlStore, "initialize", forbidden)
+    monkeypatch.setattr(ControlStore, "_connect", forbidden)
+
+    def normalized(packet):
+        value = json.loads(canonical(packet))
+        value["authority"]["message_id"] = "<message>"
+        return value
+
+    reader = CheckpointedEvaluationReader(checkpointed_suite.control, checkpointed_suite.corpus)
+    packet, sha256 = prepare_packet(reader, registered_sources(reader), question)
+    assert normalized(packet) == normalized(expected)
+    assert sha256 == digest(canonical(packet))
+    assert packet["authority"]["message_id"] == EvaluationContextStore.MESSAGE_ID
+    assert packet["sources"]
+
+
+def test_context_adapter_fails_closed_on_unknown_calls_and_identities(checkpointed_suite):
+    reader = CheckpointedEvaluationReader(checkpointed_suite.control, checkpointed_suite.corpus)
+    store = EvaluationContextStore(registered_sources(reader), "kestrel")
+    with pytest.raises(tool.EvaluationError):
+        store.list_research_documents("item")
+    with pytest.raises(tool.EvaluationError):
+        store.path
+    with pytest.raises(tool.EvaluationError):
+        store.get_run("other-run")
+    with pytest.raises(tool.EvaluationError):
+        store.get_source("unknown-source")
+    with pytest.raises(tool.EvaluationError):
+        store.previous_research_context("other-thread", EvaluationContextStore.MESSAGE_ID)
+    packet, sha256 = prepare_packet(reader, registered_sources(reader), "kestrel")
+    request = dict(run_id=store.run["id"], thread_id=store.run["thread_id"],
+                   attempt_id=store.run["active_attempt_id"], message_id=store.MESSAGE_ID,
+                   query="kestrel", snapshot=packet, sha256=sha256, expected_revision=1,
+                   actor_id="research-execution", idempotency_key=digest(f"context:{store.run['id']}"))
+    for change in ({"expected_revision": 2}, {"sha256": "0" * 64}, {"query": "other"},
+                   {"actor_id": "operator"}, {"message_id": "other"}):
+        with pytest.raises(tool.EvaluationError):
+            store.record_research_context(**(request | change))
+    assert store.record_research_context(**request).value["snapshot"] == packet
+    with pytest.raises(tool.EvaluationError):
+        store.record_research_context(**request)
+
+
+def test_whitespace_query_is_preserved_for_search_and_reported_for_packet(checkpointed_suite):
+    write_suite(checkpointed_suite.suite, queries=[
+        {"id": "padded", "query": "  kestrel  ", "language": "en", "relevance_set": "birds"}])
+    report, code = run(checkpointed_suite)
+    row = report["queries"][0]
+    assert code == 0 and row["query_sha256"] == digest("  kestrel  ")
+    assert row["retrieval"]["at_6"]["identities"] == [A, B]
+    assert row["packet"]["query"] == row["packet"]["retrieval_query"] == "kestrel"
+
+
+def test_read_only_snapshot_inputs(checkpointed_suite, monkeypatch):
+    from cortex_research import db as legacy
+
+    root = checkpointed_suite.root
+    before = files_with_mtimes(root)
+    original = sqlite3.connect
+    observed, statements = [], []
+
+    class Checked(sqlite3.Connection):
+        def close(self):
+            assert self.execute("PRAGMA query_only").fetchone()[0] == 1
+            with pytest.raises(sqlite3.OperationalError):
+                self.execute("CREATE TABLE forbidden_write (id INTEGER)")
+            super().close()
+
+    def connect(path, **kwargs):
+        assert kwargs["uri"] is True and "mode=ro" in path and "immutable=1" in path
+        observed.append(path)
+        connection = original(path, factory=Checked, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("evaluation must not initialize, dispatch, persist or connect")
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(ControlStore, "initialize", forbidden)
+    monkeypatch.setattr(ControlStore, "_connect", forbidden)
+    monkeypatch.setattr(legacy, "connect", forbidden)
+    monkeypatch.setattr(legacy, "apply_schema", forbidden)
+    for name in ("system_message", "annotate", "persist_response"):
+        monkeypatch.setattr(ResearchService, name, forbidden)
+    report, code = run(checkpointed_suite)
+    assert code == 0 and observed
+    assert not any("embedding" in statement.lower() for statement in statements)
+    assert files_with_mtimes(root) == before
+
+
+def test_import_isolation_and_help_without_state(tmp_path):
+    environment = dict(os.environ, HOME=str(tmp_path))
+    help_run = subprocess.run(
+        [sys.executable, "-B", "-m", "tools.evaluate_retrieval", "--help"],
+        cwd=REPOSITORY, env=environment, capture_output=True, text=True, timeout=60)
+    assert help_run.returncode == 0 and "--control" in help_run.stdout
+    probe = subprocess.run(
+        [sys.executable, "-B", "-c",
+         "import sys, tools.evaluate_retrieval; "
+         "print(sorted(m for m in sys.modules if m.startswith(('cortex_research.index_papers', "
+         "'cortex_research.embed', 'tools.maintain_paper_index', 'cortex_platform.runtime'))))"],
+        cwd=REPOSITORY, env=environment, capture_output=True, text=True, timeout=60)
+    assert probe.returncode == 0 and probe.stdout.strip() == "[]"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_repeated_frozen_runs_have_identical_reports(checkpointed_suite):
+    first, _ = run(checkpointed_suite)
+    second, _ = run(checkpointed_suite)
+    assert canonical(first) == canonical(second)
+    assert first["inputs"]["unchanged"] is True
+    fingerprint = first["inputs"]["fingerprint"]
+    assert fingerprint["suite"]["sha256"] == hashlib.sha256(checkpointed_suite.suite.read_bytes()).hexdigest()
+    assert fingerprint["control"]["sha256"] == hashlib.sha256(checkpointed_suite.control.read_bytes()).hexdigest()
+    assert fingerprint["index"]["sha256"] == hashlib.sha256(checkpointed_suite.index.read_bytes()).hexdigest()
+    assert fingerprint["corpus"]["sources"] == 6
+    assert "tools.evaluate_retrieval" in fingerprint["code"]
+
+
+# -- Snapshot refusals and availability ---------------------------------------
+
+
+@pytest.mark.parametrize("sidecar", ["control.db-wal", "control.db-journal",
+                                     "research.db-wal", "research.db-journal"])
+def test_nonempty_log_is_refused_without_touching_it(checkpointed_suite, capsys, sidecar):
+    path = checkpointed_suite.root / sidecar
+    path.write_bytes(b"outstanding frames")
+    before = files_with_mtimes(checkpointed_suite.root)
+    code, report, out = cli(checkpointed_suite, capsys)
+    assert code == 1 and report["status"] == "failed"
+    assert report["error"] == "database_not_checkpointed"
+    assert files_with_mtimes(checkpointed_suite.root) == before
+    assert str(checkpointed_suite.root) not in out
+
+
+@pytest.mark.parametrize("sidecar", ["control.db-shm", "research.db-shm"])
+def test_nonempty_shared_memory_alone_is_accepted(checkpointed_suite, sidecar):
+    (checkpointed_suite.root / sidecar).write_bytes(b"\0" * 32)
+    report, code = run(checkpointed_suite)
+    assert code == 0 and report["status"] == "completed"
+
+
+@pytest.mark.parametrize("arguments", [
+    {"control": Path("control.db")},
+    {"corpus": Path("/tmp/a/../corpus")},
+    {"index": Path("/tmp/elsewhere/research.db")},
+    {"queries": Path("relative.json")},
+])
+def test_invalid_path_arguments_exit_two(checkpointed_suite, capsys, arguments):
+    with pytest.raises(SystemExit) as raised:
+        cli(checkpointed_suite, capsys, **arguments)
+    assert raised.value.code == 2
+
+
+def test_index_must_be_the_corpus_parent_database_and_dotdot_is_refused(checkpointed_suite, capsys):
+    dotted = checkpointed_suite.corpus / ".." / "research.db"
+    with pytest.raises(SystemExit) as raised:
+        cli(checkpointed_suite, capsys, index=dotted)
+    assert raised.value.code == 2
+
+
+def test_malformed_suite_exits_two(checkpointed_suite, capsys):
+    checkpointed_suite.suite.write_text("{}", encoding="utf-8")
+    code, report, _ = cli(checkpointed_suite, capsys)
+    assert code == 2 and report is None
+
+
+@pytest.mark.parametrize("defect", ["missing", "symlink", "hardlink"])
+def test_database_file_defects_are_refused(checkpointed_suite, capsys, tmp_path_factory, defect):
+    control = checkpointed_suite.control
+    outside = tmp_path_factory.mktemp("outside") / "control.db"
+    if defect == "missing":
+        control.unlink()
+    elif defect == "symlink":
+        shutil.copyfile(control, outside)
+        control.unlink()
+        control.symlink_to(outside)
+    else:
+        os.link(control, outside)
+    code, report, _ = cli(checkpointed_suite, capsys)
+    assert code == 1 and report["error"] == "database_unavailable"
+
+
+def test_disabled_root_is_a_named_refusal(checkpointed_suite, capsys):
+    store = checkpointed_suite.store
+    root = store.get_asset_root("research-corpus")
+    store.update_asset_root(root_id=root.root_id, expected_revision=root.revision,
+                            private_path=root.private_path, max_bytes=root.max_bytes,
+                            enabled=False, actor_id="operator", idempotency_key="disable-evaluation-1")
+    code, report, _ = cli(checkpointed_suite, capsys)
+    assert code == 1 and report["error"] == "registration_unavailable"
+
+
+def _relocate(snapshot, destination: Path) -> SimpleNamespace:
+    (destination / "research").mkdir(parents=True)
+    shutil.copyfile(snapshot.control, destination / "control.db")
+    shutil.copyfile(snapshot.index, destination / "research" / "research.db")
+    shutil.copytree(snapshot.corpus, destination / "research" / "corpus")
+    shutil.copyfile(snapshot.suite, destination / "suite.json")
+    return SimpleNamespace(root=destination, control=destination / "control.db",
+                           corpus=destination / "research" / "corpus",
+                           index=destination / "research" / "research.db",
+                           suite=destination / "suite.json")
+
+
+def test_relocated_corpus_never_reads_the_registered_private_path(checkpointed_suite, tmp_path_factory):
+    original, _ = run(checkpointed_suite)
+    relocated = _relocate(checkpointed_suite, tmp_path_factory.mktemp("snapshot"))
+    shutil.rmtree(checkpointed_suite.corpus)
+    report, code = run(relocated)
+    assert code == 0
+    assert report["snapshot"]["kind"] == "offline_relocated_snapshot"
+    assert [row["retrieval"] for row in report["queries"]] == [
+        row["retrieval"] for row in original["queries"]]
+    assert [row["packet"]["canonical_ids"] for row in report["queries"] if row["packet"]["status"] == "built"] \
+        == [row["packet"]["canonical_ids"] for row in original["queries"] if row["packet"]["status"] == "built"]
+
+
+def test_registered_byte_limit_still_applies_to_relocated_reads(checkpointed_suite, tmp_path_factory):
+    store = checkpointed_suite.store
+    root = store.get_asset_root("research-corpus")
+    store.update_asset_root(root_id=root.root_id, expected_revision=root.revision,
+                            private_path=root.private_path, max_bytes=8, enabled=True,
+                            actor_id="operator", idempotency_key="limit-evaluation-01")
+    relocated = _relocate(checkpointed_suite, tmp_path_factory.mktemp("snapshot"))
+    report, code = run(relocated)
+    assert code == 1 and report["status"] == "incomplete"
+    assert report["preflight"]["unavailable_sources"] == 6
+    assert "relevance_identity_unavailable" in report["blockers"]
+
+
+@pytest.mark.parametrize(("defect", "reason"), [
+    ("hardlink", "notes:hardlinked"),
+    ("symlink-file", "notes:symlink"),
+    ("missing-directory", "directory:missing"),
+    ("symlink-directory", "directory:symlink"),
+    ("invalid-utf8", "notes:invalid_utf8"),
+])
+def test_snapshot_defects_are_named_and_block_a_baseline(checkpointed_suite, tmp_path_factory, defect, reason):
+    directory = checkpointed_suite.corpus / "20261001-Gamma"
+    outside = tmp_path_factory.mktemp("outside")
+    if defect == "hardlink":
+        os.link(directory / "notes.md", outside / "notes.md")
+    elif defect == "symlink-file":
+        (outside / "notes.md").write_text("outside")
+        (directory / "notes.md").unlink()
+        (directory / "notes.md").symlink_to(outside / "notes.md")
+    elif defect == "missing-directory":
+        shutil.rmtree(directory)
+    elif defect == "symlink-directory":
+        shutil.move(directory, outside / "paper")
+        directory.symlink_to(outside / "paper", target_is_directory=True)
+    else:
+        (directory / "notes.md").write_bytes(b"\xff")
+    report, code = run(checkpointed_suite)
+    assert code == 1 and report["status"] == "incomplete" and report["baseline_complete"] is False
+    preflight = report["preflight"]
+    assert preflight["unavailable_by_reason"] == {reason: 1}
+    assert preflight["relevance"]["unavailable"] == [C]
+    assert "relevance_identity_unavailable" in report["blockers"]
+    # Metrics are still measured; the defect is not silently converted to recall.
+    assert by_id(report)["en-birds"]["retrieval"]["at_6"]["status"] == "measured"
+
+
+def test_unadopted_relevance_identity_is_reported_without_shrinking_recall(checkpointed_suite):
+    write_suite(checkpointed_suite.suite, sets={"birds": [A, B, C, D, "arxiv:2610.09999"], "robots": [E]})
+    report, code = run(checkpointed_suite)
+    assert code == 0
+    assert report["preflight"]["relevance"]["not_adopted"] == ["arxiv:2610.09999"]
+    six = by_id(report)["en-birds"]["retrieval"]["at_6"]
+    assert six["recall_at_k"] == 0.4 and six["missing_relevant_count"] == 3
+
+
+def test_independent_limit_failures_stay_visible(checkpointed_suite):
+    _write(checkpointed_suite.index,
+           "INSERT INTO chunks (paper_dir, section, chunk_idx, text) VALUES (?, ?, ?, ?)",
+           ("20261001-Delta", "Appendix", 1, "kestrel " + "filler " * 12000))
+    report, code = run(checkpointed_suite)
+    row = by_id(report)["en-birds"]
+    assert row["retrieval"]["at_6"]["status"] == "measured"
+    assert row["retrieval"]["at_20"] == {"status": "failed", "failure": "source_content_unavailable"}
+    assert row["packet"]["status"] == "built"
+    assert row["failures"] == ["search_at_20:source_content_unavailable"]
+    assert code == 1 and report["status"] == "incomplete" and "query_failures" in report["blockers"]
+    assert report["failures"]["by_category"]["search_at_20:source_content_unavailable"] >= 1
+    overall = report["summary"]["overall"]
+    assert overall["recall_at_20"]["n"] < overall["recall_at_6"]["n"]
+
+
+def test_cli_reports_query_failures_without_private_paths(checkpointed_suite, capsys):
+    write_suite(checkpointed_suite.suite, queries=QUERIES + [
+        {"id": "no-terms", "query": "!!!", "language": "en", "relevance_set": "birds"}])
+    code, report, out = cli(checkpointed_suite, capsys)
+    row = by_id(report)["no-terms"]
+    assert row["retrieval"]["at_6"] == {"status": "failed", "failure": "source_query_invalid"}
+    assert row["packet"]["status"] == "failed" and row["packet"]["failure"] == "research_query_invalid"
+    assert code == 1 and report["failures"]["count"] == 1
+    assert report["summary"]["overall"]["failed_queries"] == 1
+    assert report["summary"]["overall"]["recall_at_6"]["n"] == 5
+    assert str(checkpointed_suite.root) not in out
+    assert "notes for" not in out
+
+
+def test_input_mutation_during_evaluation_refuses_a_completed_baseline(checkpointed_suite, monkeypatch):
+    original = CheckpointedEvaluationReader.search
+    target = checkpointed_suite.corpus / "20261001-Delta" / "notes.md"
+
+    def mutating(self, query, limit=10):
+        target.write_text("changed during evaluation", encoding="utf-8")
+        return original(self, query, limit=limit)
+
+    monkeypatch.setattr(CheckpointedEvaluationReader, "search", mutating)
+    report, code = run(checkpointed_suite)
+    assert code == 1 and report["status"] == "incomplete"
+    assert report["inputs"]["unchanged"] is False
+    assert report["inputs"]["changed"] == ["corpus"]
+    assert "input_drift" in report["blockers"]
