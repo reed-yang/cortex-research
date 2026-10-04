@@ -1127,8 +1127,20 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
         setFragments((rows) => [fragment, ...rows.filter((row) => row.id !== fragment.id)]);
         await loadFragments();
       },
-      // A refusal is a definite answer; only an unconfirmed save is kept.
-      { onProblem: () => { forget(); return false; } },
+      // A refusal is a definite answer and spends the command. A retryable
+      // problem is not: the gateway answers its own 503 when the upstream
+      // fetch throws, which can follow a commit whose answer was lost, so the
+      // command is kept and the same words retry it under the same key.
+      {
+        onProblem: (error) => {
+          if (error.problem.retryable) {
+            setNotice({ tone: "warning", text: copy.errors.unconfirmed, details: noticeDetails(error, copy.errors.unconfirmed) });
+            return true;
+          }
+          forget();
+          return false;
+        },
+      },
     );
     return saved !== null;
   }, [loadFragments, runPrepared]);

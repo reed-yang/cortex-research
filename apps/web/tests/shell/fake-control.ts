@@ -34,6 +34,9 @@ export class FakeControl {
   // The next matching POST commits and then loses its response, the way a
   // socket that closes after the write does.
   loseNextResponse: RegExp | null = null;
+  // The next matching POST commits and the Web gateway then answers for it with
+  // its own retryable 503, the way route.ts does when its upstream fetch throws.
+  gatewayDropsNextResponse: RegExp | null = null;
   // A test that has to observe the shell WHILE a read is in flight arms this
   // hook; the fetch awaits it before it answers, so the in-flight window is a
   // fact of the test rather than a race with the microtask queue.
@@ -178,6 +181,11 @@ export class FakeControl {
       if (this.loseNextResponse && this.loseNextResponse.test(path)) {
         this.loseNextResponse = null;
         throw new TypeError("socket closed after write");
+      }
+      if (this.gatewayDropsNextResponse && this.gatewayDropsNextResponse.test(path)) {
+        this.gatewayDropsNextResponse = null;
+        const category = "control_gateway_unavailable";
+        return new Response(JSON.stringify({ category, owner: "cortex-web", retryable: true, status: 503, title: "The local Cortex Control gateway is unavailable", type: `urn:cortex:web-problem:${category}` }), { status: 503, headers: { "Content-Type": "application/problem+json" } });
       }
       return response;
     }

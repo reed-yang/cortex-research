@@ -471,6 +471,22 @@ describe("Inbox ideas", () => {
     expect(control.posts.at(-1)!.key).not.toBe("web-test-1");
   });
 
+  it("keeps the command when the gateway's retryable 503 follows a commit", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    control.gatewayDropsNextResponse = /^fragments$/;
+
+    await saveIdea(user, idea);
+    await screen.findByText(copy.errors.unconfirmed);
+    expect((screen.getByLabelText(copy.inbox.ideaLabel) as HTMLTextAreaElement).value).toBe(idea);
+    await saveIdea(user, idea);
+
+    await waitFor(() => expect(control.posts.map((post) => post.key)).toEqual(["web-test-1", "web-test-1"]));
+    await waitFor(() => expect(ideaCards()).toHaveLength(1));
+    expect(control.fragments).toHaveLength(1);
+  });
+
   it("keeps a saved card on screen when the reread after it fails", async () => {
     const control = seeded();
     const user = userEvent.setup();
