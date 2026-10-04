@@ -32,6 +32,78 @@ For newly copied papers, verify content and authoritative identity, then use
 research database before the immutable adoption reader. Never rewrite failed
 Capture rows to imply that a later maintenance operation succeeded originally.
 
+## Asset-reference audit
+
+Audit Markdown asset references with an explicit real corpus root:
+
+```sh
+.venv/bin/python -B -m tools.audit_asset_refs \
+  --corpus /absolute/path/to/corpus
+```
+
+Repeat `--paper-dir <name>` to select immediate paper directories, spelled
+exactly as the directory entry (a case-insensitive file system would otherwise
+resolve a variant). A corpus path with a symlink component, such as a readings
+`papers` alias, and an unknown, nested, misspelled or symlinked selection are
+refused with exit status 2 and no report. The command reads every top-level
+`*.md` file of each selected paper through the readings no-follow helpers and
+prints one JSON report (`format_version` 1). It writes nothing and opens no
+database or network connection. Exit status 1 means some input could not be
+read (symlink, hardlink, non-regular file, oversized or invalid UTF-8); those
+inputs are listed under `unreadable_inputs` and the rest of the report is still
+printed.
+
+`by_file_type` groups results by exact basename, so `full_text.md`,
+`notes.md` and any other name never share one denominator. Each group counts
+files, unreadable files, files with findings, reference occurrences and unique
+targets per class, and repairable destinations. Every finding carries the
+Markdown path, line, column and the destination's byte span; every scanned file
+carries its SHA-256. Classes:
+
+- `present` / `missing`: image destinations and destinations with an `assets`
+  path segment, resolved inside the paper. A regular non-symlink file counts as
+  present; images are not decoded. A literal file name that keeps an ingest
+  `#...` or `?...` suffix counts as present when that file exists.
+- `prefix_candidate`: `papers/<dir>/assets/...` destinations.
+- `unsafe`: traversal, absolute paths, `file:` URLs, backslashes, NUL, encoded
+  separators, and symlink or non-regular targets. `unknown`: inspection failed.
+- `placeholder`: `page=N,bbox=[...]` destinations; they are not missing files.
+- `external`: URLs with a scheme such as `https:` or `data:`; never fetched.
+  `non_asset`: anchors and other local links, which are not resolved.
+- `unsupported`: `srcset`, CSS `url()`, other HTML asset attributes, HTML
+  tags that never complete, destinations the scanner cannot parse, other
+  `page=`/`bbox=` forms, and a block comment without `-->` that hides
+  asset-looking text up to the end of the file.
+
+The scanner supports inline links and images (angle destinations, titles,
+escaped parentheses and up to 32 levels of balanced parentheses, as in cmark),
+reference definitions that are used, shortcut references after a failed inline
+destination, HTML `img src` and `a href`, and excludes fenced, indented and
+inline code and HTML comments. It follows block structure: code spans, inline
+comments and brackets never cross a heading, fence, list item, block quote,
+HTML block or blank line; an HTML tag keeps backticks and `<!--` in its
+attributes; a definition-shaped line inside a paragraph or a footnote is
+scanned as text; and a leading byte order mark is skipped while byte offsets
+still count it. It does not detect autolinks or bare URLs. These
+approximations over-report rather than hide: Markdown inside raw HTML blocks
+and after a closed block comment is scanned as live text; code, comments and
+HTML blocks inside block quotes are not recognized; and a definition-shaped
+line inside a paragraph still resolves uses that no other definition matches.
+List nesting comes from indentation, so lazy continuation lines across nested
+lists, block quotes and HTML blocks can still be misread. It is not a
+CommonMark parser and does not measure full-text or scientific completeness.
+
+A prefix candidate is `repairable` only in `full_text.md`, when the directory
+name is the current paper, the original target is absent, `assets/<suffix>` is
+a regular non-symlink file in the same paper (both tests accept a literal
+`#...` or `?...` file name, as for other references), and deleting the literal
+`papers/<dir>/` prefix is the only byte change. Other basenames report
+`protected_file_type`. `repairable` is report data only: this command never
+edits files, and staged repair, repair manifests and ingest asset-quality
+receipts are not implemented. Running it against the real corpus, keeping its
+report outside the repository, backups and any later repair each need separate
+operator approval.
+
 ## External readings
 
 Publication has a separate journal. Existing notes are always preserved;
