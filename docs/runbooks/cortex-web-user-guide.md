@@ -132,6 +132,14 @@ scheduling. Without an associated research item the question uses adopted-librar
 evidence only; mentioning an item's title in a generic chat does not select its
 dossier.
 
+Paper search does not use the question text verbatim. It joins lines, drops
+citation labels such as `[S1]` or `[D1]`, explicit length requirements such as
+"in 200 words" or "控制在500字内" and output-format words such as "summarize" or
+"markdown", and puts the selected item's title first. Other numbers, years and
+versions stay. It then selects up to six papers with up to two matching passages
+each. The answer still receives the exact question, and plain follow-ups reuse
+the retained packet without searching again.
+
 Use `/research` again when the question changes enough to need new evidence. For
 a follow-up that should reuse the same evidence, plain text is sufficient.
 Selecting Research while already in that mode does not itself refresh evidence.

@@ -9,12 +9,16 @@ from ..artifacts.service import ArtifactMaterializationService
 from ..control import InvalidTransition, NotFound
 from ..sources.reader import SourceKnowledgeReader, SourceContentUnavailable, SourceQueryInvalid
 from .context import (
-    ACTOR, COMMAND, MAX_DOCUMENTS, MAX_EXCERPT_BYTES, MAX_EXCERPTS, MAX_SNAPSHOT_BYTES,
-    ResearchFailure, canonical, citation_labels, cited_labels, digest, mode_for, selection_identity,
+    ACTOR, COMMAND, MAX_DOCUMENTS, MAX_EXCERPT_BYTES, MAX_EXCERPTS, MAX_PACKET_SOURCES,
+    MAX_SNAPSHOT_BYTES, MAX_SOURCE_EVIDENCE, ResearchFailure, canonical, citation_labels, cited_labels,
+    digest, mode_for, selection_identity,
 )
 from .documents import ResearchDocumentReader, ResearchDocumentUnavailable
+from .query import retrieval_query
 
 ROOT_ID = "research-artifacts"
+#: Indexed passages a fresh selection keeps per paper; file prefixes fill the rest.
+MAX_INDEXED_PASSAGES = 2
 RESULT_LIMIT = 8 * 1024 * 1024
 DRAFT = "Unverified research draft: missing or invalid source citation labels.\n\n"
 #: Lines of context kept around a query match inside an adopted dossier.
@@ -124,18 +128,27 @@ class ResearchService:
             try:
                 if not query or len(query.encode("utf-8")) > 1024:
                     raise ResearchFailure("research_query_invalid")
-                found = ({"retrieval_mode": previous["snapshot"]["retrieval_mode"], "results": []}
-                         if continuing else self.reader.search(query, limit=6))
+                if continuing:
+                    search_text = previous["snapshot"]["retrieval_query"]
+                    found = {"retrieval_mode": previous["snapshot"]["retrieval_mode"], "results": []}
+                else:
+                    search_text = retrieval_query(query, () if selection is None else (selection["title"],))
+                    found = self.reader.search(search_text, limit=MAX_PACKET_SOURCES,
+                                               per_source=MAX_INDEXED_PASSAGES)
                 sources = previous["snapshot"]["sources"] if continuing else []
+                hits = {}
                 for hit in found["results"]:
-                    if any(s["source_id"] == hit["source_id"] for s in sources):
-                        continue
-                    source = self.store.get_source(hit["source_id"])
-                    evidence = []
-                    if hit["section"] != "__title__" and hit["excerpt"].strip():
-                        evidence.append(self._evidence(
-                            "indexed_passage", hit["excerpt"], hit["content_sha256"], hit["evidence_id"]))
+                    hits.setdefault(hit["source_id"], []).append(hit)
+                for source_id, group in hits.items():
+                    source = self.store.get_source(source_id)
+                    evidence = [
+                        self._evidence("indexed_passage", hit["excerpt"], hit["content_sha256"],
+                                       hit["evidence_id"])
+                        for hit in group if hit["section"] != "__title__" and hit["excerpt"].strip()
+                    ][:MAX_INDEXED_PASSAGES]
                     for kind in ("grounding", "notes", "full_text"):
+                        if len(evidence) >= MAX_SOURCE_EVIDENCE:
+                            break
                         try:
                             page = self.reader.read(source["id"], kind=kind, limit=4000)
                         except SourceContentUnavailable:
@@ -153,7 +166,7 @@ class ResearchService:
                 if not sources and not documents:
                     raise ResearchFailure("research_no_evidence")
                 packet = {"schema_version": 1, "query": query, "retrieval_mode": found["retrieval_mode"],
-                          "retrieval_query": previous["snapshot"]["retrieval_query"] if continuing else query,
+                          "retrieval_query": search_text,
                           "authority": {"kind": "user_requested_adopted_library_read_only", "message_id": authority},
                           "sources": sources}
                 if selection is not None:
@@ -238,6 +251,8 @@ class ResearchService:
             "Ground factual claims in retained passages and cite their local labels, e.g. [S1]. "
             "Separate source-supported evidence from hypotheses and unknowns. Do not invent citations. "
             "This is bounded lexical retrieval over an already adopted library, not autonomous search or ingestion. "
+            "retrieval_query records the search text used to select this packet and may differ from query; "
+            "a paper source can carry more than one indexed passage. "
             "unicode_title_fallback only matches titles; its attached document excerpts are not semantic multilingual matches. "
             "Mixed retrieval has the same limitation. Missing matches do not prove absence of relevant work. "
             "Indexed passages may lag current documents; file pages are bounded prefixes, not complete deep reads. "

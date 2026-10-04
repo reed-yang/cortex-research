@@ -13,7 +13,8 @@ from cortex_platform.product.research.context import (
 from cortex_platform.product.research.documents import ROOT_ID, ResearchDocumentAdopter
 from cortex_platform.product.research.service import DRAFT, ResearchService, document_excerpts
 from cortex_platform.tests.product.research.test_execution import (
-    AnswerBackend, append, assert_citation_outcome, context_request, execute, next_run,
+    ENGLISH, AnswerBackend, add_chunks, append, assert_citation_outcome, context_request, execute,
+    next_run,
 )
 from cortex_platform.tests.product.sources.test_adoption_reader import corpus, database
 from cortex_platform.tests.product.sources.test_knowledge_reader import knowledge
@@ -53,7 +54,7 @@ def dossier(knowledge, tmp_path):
     (originals / "idea" / "notes.md").write_text("# Idea notes\n\nParked in 2026.\n")
     (originals / "project" / "plan.md").write_text("# Robotics plan\n\nMonitored project.\n")
     catalog = Catalog({
-        IDEA: ({"id": IDEA, "kind": "idea", "origin_id": "idea-decoding", "title": "Decoding idea"},
+        IDEA: ({"id": IDEA, "kind": "idea", "origin_id": "idea-decoding", "title": "Parked idea"},
                [originals / "idea" / "dossier.md", originals / "idea" / "notes.md"]),
         PROJECT: ({"id": PROJECT, "kind": "project", "origin_id": "project-robotics",
                    "title": "Robotics project"}, [originals / "project" / "plan.md"]),
@@ -104,7 +105,7 @@ def test_dossier_only_research_completes_without_a_paper_match(dossier):
     assert snapshot["schema_version"] == 2 and snapshot["sources"] == []
     assert [document["label"] for document in snapshot["documents"]] == ["D1", "D2"]
     assert snapshot["item"] == {"id": IDEA, "kind": "idea", "origin_id": "idea-decoding",
-                                "title": "Decoding idea", "selection_revision": 1}
+                                "title": "Parked idea", "selection_revision": 1}
     assert "[D1]" in backend.requests[0].system_message
     assert not store.list_messages(run["thread_id"])[-1]["content"].startswith(DRAFT)
     completed = next(e for e in store.list_run_events(run["id"]) if e["type"] == "run.completed")
@@ -473,3 +474,56 @@ def test_excerpts_are_bounded_windows_with_line_and_offset_locators():
     offset = int(match["locator"].rsplit(":", 1)[1])
     assert DOSSIER.encode("utf-8")[offset:].decode("utf-8").startswith(match["text"])
     assert document_excerpts("", "anything") == []
+
+
+def test_selected_item_title_feeds_paper_retrieval(dossier, knowledge):
+    store, *_ = dossier
+    add_chunks(knowledge[2], ENGLISH, ["robotics project milestones"])
+    question = "请总结核心假设，控制在500字内并附[D1]"
+    run = started(store, item_id=PROJECT, question="/research " + question)
+    snapshot = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))["snapshot"]
+    assert snapshot["query"] == question
+    assert snapshot["retrieval_query"].startswith("Robotics project ")
+    assert "500" not in snapshot["retrieval_query"] and "D1" not in snapshot["retrieval_query"]
+    assert snapshot["retrieval_mode"] == "fts5_or+unicode_title_fallback"
+    assert [source["canonical_id"] for source in snapshot["sources"]] == ["arxiv:2609.00001"]
+    assert snapshot["documents"]
+
+
+def test_dossier_windows_match_the_verbatim_question(dossier, monkeypatch):
+    from cortex_platform.product.research import service as module
+
+    store, *_ = dossier
+    seen = []
+    original = module.document_excerpts
+    def spy(text, query):
+        seen.append(query)
+        return original(text, query)
+    monkeypatch.setattr(module, "document_excerpts", spy)
+    run = started(store, question="/research budget\noutcome [D1]")
+    snapshot = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))["snapshot"]
+    assert snapshot["retrieval_query"] == "Parked idea budget outcome"
+    assert seen and set(seen) == {"budget\noutcome [D1]"}
+
+
+def test_historical_v2_followup_keeps_its_recorded_retrieval_query(dossier, monkeypatch):
+    from cortex_platform.product.research import service as module
+
+    store, *_ = dossier
+    question = "decoding in 500 words [D1]"
+    # Contexts stored before the derived search text recorded the question itself.
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "retrieval_query", lambda text, context=(): text)
+        run = started(store, question="/research " + question)
+        result, backend, releases, _ = execute(store, run, AnswerBackend("Scoped [D1]."))
+    assert result["state"] == "completed"
+    first = store.get_research_context(run["id"])["snapshot"]
+    assert first["schema_version"] == 2 and first["retrieval_query"] == question
+    followup = next_run(store, run["thread_id"], "Expand\nthe plan")
+    result, backend, _, _ = execute(store, followup, backend, releases=releases)
+    assert result["state"] == "completed"
+    snapshot = store.get_research_context(followup["id"])["snapshot"]
+    for key in ("retrieval_query", "retrieval_mode", "sources", "documents", "item"):
+        assert snapshot[key] == first[key]
+    message = backend.requests[-1].system_message
+    assert "may differ from query" in message and "removed" not in message

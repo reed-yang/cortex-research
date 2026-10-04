@@ -8,6 +8,9 @@ ACTOR = "research-execution"
 MAX_SNAPSHOT_BYTES = 131072
 MODES = {"fts5_or", "unicode_title_fallback", "fts5_or+unicode_title_fallback"}
 COMMAND = re.compile(r"^/(research|chat)(?:\s+(.*))?$", re.I | re.S)
+#: Paper sources per packet and evidence items per paper source.
+MAX_PACKET_SOURCES = 6
+MAX_SOURCE_EVIDENCE = 4
 #: v2 dossier bounds. Readable evidence with version identity and locators,
 #: never a whole uncontrolled document tree.
 MAX_DOCUMENTS = 6
@@ -119,7 +122,8 @@ def validate_snapshot(packet, sha256):
     sources = packet["sources"]
     # A v2 dossier can carry the whole turn, so a paper match is no longer
     # required; v1 still refuses an empty packet exactly as before.
-    require(isinstance(sources, list) and (1 if version == 1 else 0) <= len(sources) <= 6)
+    require(isinstance(sources, list)
+            and (1 if version == 1 else 0) <= len(sources) <= MAX_PACKET_SOURCES)
     seen = set()
     for index, source in enumerate(sources, 1):
         require(isinstance(source, dict) and set(source) == {
@@ -129,7 +133,8 @@ def validate_snapshot(packet, sha256):
             require(isinstance(source[key], str) and 0 < len(source[key]) <= 500)
         require(source["source_id"] not in seen)
         seen.add(source["source_id"])
-        require(isinstance(source["evidence"], list) and 1 <= len(source["evidence"]) <= 4)
+        require(isinstance(source["evidence"], list)
+                and 1 <= len(source["evidence"]) <= MAX_SOURCE_EVIDENCE)
         for evidence in source["evidence"]:
             require(isinstance(evidence, dict) and set(evidence) == {
                 "kind", "text", "retained_sha256", "content_sha256", "locator"})
