@@ -8,12 +8,12 @@ import pytest
 from cortex_platform.product.control import ControlStore, InvalidTransition
 from cortex_platform.product.control.research_store import research_item_id
 from cortex_platform.product.research.context import (
-    MAX_EXCERPT_BYTES, canonical, digest, validate_snapshot,
+    MAX_EXCERPT_BYTES, canonical, cited_labels, digest, validate_snapshot,
 )
 from cortex_platform.product.research.documents import ROOT_ID, ResearchDocumentAdopter
 from cortex_platform.product.research.service import DRAFT, ResearchService, document_excerpts
 from cortex_platform.tests.product.research.test_execution import (
-    AnswerBackend, append, context_request, execute, next_run,
+    AnswerBackend, append, assert_citation_outcome, context_request, execute, next_run,
 )
 from cortex_platform.tests.product.sources.test_adoption_reader import corpus, database
 from cortex_platform.tests.product.sources.test_knowledge_reader import knowledge
@@ -316,6 +316,9 @@ def test_an_item_without_document_evidence_is_stated_not_borrowed(dossier):
 
 @pytest.mark.parametrize("answer,drafted", [
     ("Grounded in the dossier [D1] and [D2].", False),
+    ("Grounded in the dossier [D1,D2].", False),
+    ("Grounded in the dossier [D1 D2].", False),
+    ("Grounded in the dossier [D1][D2].", False),
     ("Grounded [D1] and invented [D9].", True),
     ("Grounded [D1] and a paper that was not selected [S1].", True),
     ("No labels at all.", True),
@@ -325,10 +328,116 @@ def test_dossier_labels_are_accepted_and_unknown_labels_stay_drafts(dossier, ans
     run = started(store)
     result, _, _, _ = execute(store, run, AnswerBackend(answer))
     assert result["state"] == "completed"
-    assert store.list_messages(run["thread_id"])[-1]["content"].startswith(DRAFT) is drafted
-    event = next(e for e in store.list_run_events(run["id"]) if e["type"] == "run.completed")
-    assert event["payload"]["citation_status"] == (
-        "unverified_draft" if drafted else "labels_valid_claims_unverified")
+    snapshot = store.get_research_context(run["id"])["snapshot"]
+    assert snapshot["sources"] == []
+    assert [document["label"] for document in snapshot["documents"]] == ["D1", "D2"]
+    assert_citation_outcome(store, run, drafted)
+
+
+@pytest.mark.parametrize("answer,drafted", [
+    # Complete groups: comma, whitespace, full-width separators and adjacency.
+    ("Evidence [S1, S2].", False),
+    ("Evidence [S1 S2].", False),
+    ("Evidence [S1, D1].", False),
+    ("Evidence [S1 D1].", False),
+    ("[ S1 , D1 ][D2].", False),
+    ("Evidence [S1，S2] and [S2、D1].", False),
+    ("Evidence [S1] (with a parenthetical aside).", False),
+    # Ordinary brackets and inline links neither invalidate nor cite.
+    ("Evidence [S1] [sic], with [Supplementary] and [Data].", False),
+    ("Evidence [D1] beside [Self Forcing](https://example.test/paper).", False),
+    ("[S99](https://example.test/paper) [S1]", False),
+    ("[S1](https://example.test/paper)", True),
+    # Labels inside a link destination, title or text are part of the link.
+    ("See [Data](https://example.test/[S1]).", True),
+    ('See [Data](https://example.test/paper "[S1]").', True),
+    ("Evidence [S1]; see [Data](https://example.test/[S99]).", False),
+    ("Evidence [S1]; see [notes [S99]](https://example.test/paper).", False),
+    ("Only prose brackets [sic] and 【S1】.", True),
+    # Unknown, lowercase, zero and leading-zero tokens are never authorized.
+    ("Unknown [S99].", True),
+    ("Unknown [D99].", True),
+    ("Grouped [S1,S99].", True),
+    ("Grouped [D1 D99].", True),
+    ("Adjacent [S1][D99].", True),
+    ("Lowercase [S1, s2].", True),
+    ("Zero [S1 S0].", True),
+    ("Leading zero [D1, S01].", True),
+    # Label-led brackets outside the grammar fail closed.
+    ("Valid [S1] and range [S1-S99].", True),
+    ("Valid [S1] and semicolon [S2; S99].", True),
+    ("Valid [S1] and malformed [S 2].", True),
+    ("Valid [S1] and suffix [S99a].", True),
+    ("Valid [S1] and prose [S1, S2, and S99].", True),
+    # A parenthetical that does not complete a link leaves the bracket a citation.
+    ("Valid [S1] and range [S1-S99](see dossier).", True),
+    ("Valid [S1] and unknown [S99](see dossier).", True),
+    # Code spans are not excluded by this grammar.
+    ("Quoted `[S99]` beside [S1].", True),
+    # Valid labels do not verify the claim they accompany.
+    ("A claim the cited source never makes [S1].", False),
+])
+def test_v2_mixed_citation_groups_and_markdown(dossier, answer, drafted):
+    store, *_ = dossier
+    run = started(store, question="/research decoding")
+    result, _, _, _ = execute(store, run, AnswerBackend(answer))
+    assert result["state"] == "completed", store.list_run_events(run["id"])
+    snapshot = store.get_research_context(run["id"])["snapshot"]
+    assert snapshot["schema_version"] == 2
+    assert [source["label"] for source in snapshot["sources"]] == ["S1", "S2"]
+    assert [document["label"] for document in snapshot["documents"]] == ["D1", "D2"]
+    assert_citation_outcome(store, run, drafted)
+
+
+@pytest.mark.parametrize("text,cited", [
+    ("[S1]", {"S1"}),
+    ("[S1, S2]", {"S1", "S2"}),
+    ("[S1 S2]", {"S1", "S2"}),
+    ("[S1，S2]", {"S1", "S2"}),
+    ("[S1、S2]", {"S1", "S2"}),
+    ("[S1][D2]", {"S1", "D2"}),
+    ("[ S1 ,\n D2\t]", {"S1", "D2"}),
+    ("[S1\nS2] then [S2 , S1] and [S1]", {"S1", "S2"}),
+    ("[s1, S0, S01, D99]", {"s1", "S0", "S01", "D99"}),
+    ("[S1] (with a parenthetical aside)", {"S1"}),
+    ("[sic], [Supplementary], [Data] and [Self Forcing]", set()),
+    ("[Self Forcing](https://example.org) and [S9](https://example.org)", set()),
+    ("[Data](https://example.test/[S1])", set()),
+    ('[Data](https://example.test/paper "[S1]")', set()),
+    ("[Data](https://example.test/paper '[S9]') [S1]", {"S1"}),
+    ("[Data](https://example.test/paper ([S9])) [S1]", {"S1"}),
+    ("[Data](<https://example.test/a b/[S9]>) [S1]", {"S1"}),
+    ("[Data](https://example.test/(x)/[S1-S3]) [S2]", {"S2"}),
+    ("[notes [S9]](https://example.test/paper) [S1]", {"S1"}),
+    # Only an immediate ]( opens a link; a later parenthetical is still scanned.
+    ("[S1] (see https://example.test/[S2])", {"S1", "S2"}),
+    ("【S1】", set()),
+    ("[S1-S3]", None),
+    ("[S2; S9]", None),
+    ("[S 2]", None),
+    ("[S9a]", None),
+    ("[S1, S2, and S9]", None),
+    ("[S1,, S2]", None),
+    ("[S1] [S1-S3]", None),
+    # A label-led bracket whose ( does not complete an inline link is not a link.
+    ("[S1-S3](see dossier)", None),
+    ("[S2; S9](not a url) [S1]", None),
+    ("[S1-S3](unclosed", None),
+    ("[S9](see dossier) [S1]", {"S9", "S1"}),
+    ("[S1-S3](notes.md) [S1]", {"S1"}),
+])
+def test_v2_citation_group_syntax(text, cited):
+    """Grammar only: tokens are kept verbatim and authorization happens later."""
+    packet = {"schema_version": 2, "sources": [], "documents": []}
+    assert cited_labels(packet, text) == (None if cited is None else frozenset(cited))
+
+
+def test_citation_grammar_is_legacy_only_for_v1_packets():
+    text = "[S1, S2] [D9] [sic] [S1](https://example.org)"
+    assert cited_labels({"schema_version": 1, "sources": []}, text) == {"S1, S2", "sic", "S1"}
+    # Any later packet version reads the group grammar, not the v1 scanner.
+    later = {"schema_version": 3, "sources": [], "documents": []}
+    assert cited_labels(later, text) == {"S1", "S2", "D9"}
 
 
 def test_document_bounds_and_forged_excerpts_are_refused(dossier):

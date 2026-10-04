@@ -10,7 +10,7 @@ from ..control import InvalidTransition, NotFound
 from ..sources.reader import SourceKnowledgeReader, SourceContentUnavailable, SourceQueryInvalid
 from .context import (
     ACTOR, COMMAND, MAX_DOCUMENTS, MAX_EXCERPT_BYTES, MAX_EXCERPTS, MAX_SNAPSHOT_BYTES,
-    ResearchFailure, canonical, citation_labels, digest, mode_for, selection_identity,
+    ResearchFailure, canonical, citation_labels, cited_labels, digest, mode_for, selection_identity,
 )
 from .documents import ResearchDocumentReader, ResearchDocumentUnavailable
 
@@ -258,8 +258,8 @@ class ResearchService:
         context = self.store.get_research_context(run_id)
         if context is None:
             return text
-        labels, pattern = citation_labels(context["snapshot"])
-        cited = set(pattern.findall(text))
+        labels, _ = citation_labels(context["snapshot"])
+        cited = cited_labels(context["snapshot"], text)
         if not cited or not cited <= labels:
             return text if text.startswith(DRAFT) else DRAFT + text
         return text

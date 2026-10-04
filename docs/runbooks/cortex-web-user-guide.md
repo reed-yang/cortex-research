@@ -72,7 +72,11 @@ status and use Previous/Next when an expected item is not visible.
    open Outputs. Read Preview; switch to Source to inspect the Markdown and
    LaTeX. Source provenance holds the technical evidence record. `[D1]` labels
    identify dossier excerpts; `[S1]` labels identify retrieved paper evidence.
-   These labels do not establish that the research claims are true.
+   One bracket may group labels, as in `[S1, D2]`; ordinary brackets and
+   Markdown links are not citations, and an answer that cites no label, an
+   unknown label or a malformed label bracket such as `[S1-S3]` is saved as an
+   unverified draft. These labels do not establish that the research claims are
+   true.
 8. In the same conversation, send a follow-up without another command:
 
    ```text

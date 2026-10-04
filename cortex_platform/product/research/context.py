@@ -160,6 +160,49 @@ def citation_labels(packet):
     return labels, re.compile(rf"\[([{prefixes}][^\]]*)\]")
 
 
+#: An immediate inline link, skipped whole: text with at most one level of
+#: nested brackets, a plain destination with balanced parentheses or a <...>
+#: destination, and an optional "...", '...' or (...) title.
+_INLINE_LINK = (
+    r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]"
+    r"\(\s*(?:<[^<>\n]*>|(?:[^\s()]|\([^\s()]*\))*)"
+    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
+)
+#: An ASCII bracket whose body starts like a label; it must be a group. A
+#: following "(" that does not complete an inline link does not exempt it.
+_LABEL_BRACKET = r"\[(\s*[sSdD]\s*[0-9][^\]]*)\]"
+#: Links are tried first, so labels in their text, destination or title are skipped.
+_CITATION_SCAN = re.compile(rf"{_INLINE_LINK}|{_LABEL_BRACKET}")
+#: Label tokens separated by one comma (ASCII, ， or 、) or by whitespace alone.
+_LABEL_GROUP = re.compile(r"\s*([sSdD][0-9]+(?:(?:\s*[,，、]\s*|\s+)[sSdD][0-9]+)*)\s*")
+_LABEL_SEPARATOR = re.compile(r"[\s,，、]+")
+
+
+def cited_labels(packet, text):
+    """The labels a response cites under its packet's grammar; None if malformed.
+
+    A v1 packet keeps its original scanner: every S-led bracket body is one
+    indivisible label. Every later version reads complete groups such as
+    ``[S1, D2]`` and ``[S1][D2]``. Brackets that do not start with a label and
+    inline links ``[text](url "title")``, including any labels inside them, are
+    not citations, while a label-led bracket outside the group grammar makes
+    the response malformed. Tokens are kept verbatim, so authorization stays an
+    exact match against citation_labels.
+    """
+    if packet["schema_version"] == 1:
+        return frozenset(citation_labels(packet)[1].findall(text))
+    cited = set()
+    for match in _CITATION_SCAN.finditer(text):
+        body = match.group(1)
+        if body is None:
+            continue
+        group = _LABEL_GROUP.fullmatch(body)
+        if group is None:
+            return None
+        cited.update(_LABEL_SEPARATOR.split(group.group(1)))
+    return frozenset(cited)
+
+
 def selection_identity(packet):
     """Which item revision a packet was selected under, or None for paper-only."""
     item = packet.get("item")

@@ -64,6 +64,26 @@ def execute(store, run, backend=None, service=None, releases=None):
     return result, backend, releases, orchestrator
 
 
+def assert_citation_outcome(store, run, drafted):
+    """Message, run.completed and the saved Output agree; re-annotation is stable."""
+    status = "unverified_draft" if drafted else "labels_valid_claims_unverified"
+    message = store.list_messages(run["thread_id"])[-1]["content"]
+    assert message.startswith(DRAFT) is drafted
+    event = next(e for e in store.list_run_events(run["id"]) if e["type"] == "run.completed")
+    assert event["payload"]["citation_status"] == status
+    assert event["payload"]["summary"].startswith(DRAFT) is drafted
+    version = store.get_research_result(run["id"], run["active_attempt_id"])
+    root = store.get_asset_root("research-artifacts")
+    saved = (root.private_path / version["materialization_action"]["relative_path"]).read_text()
+    assert saved.startswith(DRAFT) is drafted and not saved.startswith(DRAFT + DRAFT)
+    assert f'"citation_status": "{status}"' in saved
+    service = ResearchService(store)
+    assert service.annotate(run["id"], message) == message
+    # Joined attempt messages keep the status of their parts.
+    joined = message + "\n\n" + message
+    assert service.annotate(run["id"], joined) == joined
+
+
 def context_request(store, run, context):
     return dict(run_id=run["id"], thread_id=run["thread_id"], attempt_id=run["active_attempt_id"],
                 message_id=context["message_id"], query=context["query"], snapshot=context["snapshot"],
@@ -210,6 +230,45 @@ def test_invalid_citations_are_visible_drafts(knowledge, response):
     event = next(e for e in store.list_run_events(run["id"]) if e["type"] == "run.completed")
     assert event["payload"]["citation_status"] == "unverified_draft"
     assert event["payload"]["summary"].startswith(DRAFT)
+
+
+@pytest.mark.parametrize("response,drafted", [
+    # v1 bracket bodies stay indivisible, so groups and S-led prose draft.
+    ("Grouped [S1, S2].", True),
+    ("Quoted [sic] [S1].", True),
+    ("See [Supplementary] [S1].", True),
+    ("[Self Forcing](https://example.test/paper) [S1]", True),
+    # v1 never parses D brackets, and a link with label text still cites.
+    ("Adjacent [S1][D99].", False),
+    ("[S1](https://example.test/paper)", False),
+    ("Adjacent [S1][S2].", False),
+])
+def test_v1_citation_parser_compatibility(knowledge, response, drafted):
+    store, *_ = knowledge
+    run = queued(store)
+    result, _, _, _ = execute(store, run, AnswerBackend(response))
+    assert result["state"] == "completed", store.list_run_events(run["id"])
+    snapshot = store.get_research_context(run["id"])["snapshot"]
+    assert snapshot["schema_version"] == 1
+    assert [source["label"] for source in snapshot["sources"]] == ["S1", "S2"]
+    assert_citation_outcome(store, run, drafted)
+
+
+def test_annotation_preserves_no_context_and_existing_draft(knowledge):
+    store, *_ = knowledge
+    run = queued(store)
+    service = ResearchService(store)
+    assert store.get_research_context(run["id"]) is None
+    for text in ("No citations", "Wrong [S99]", DRAFT + "Already drafted [S1]"):
+        assert service.annotate(run["id"], text) == text
+    result, _, _, _ = execute(store, run, AnswerBackend("Wrong [S99]"))
+    assert result["state"] == "completed"
+    drafted = store.list_messages(run["thread_id"])[-1]["content"]
+    assert drafted == DRAFT + "Wrong [S99]"
+    assert service.annotate(run["id"], drafted) == drafted
+    # An existing prefix is never removed, even when later text cites validly.
+    continued = drafted + "\n\nValid [S1][S2]."
+    assert service.annotate(run["id"], continued) == continued
 
 
 def test_revoked_followup_reports_research_refusal_without_executing(knowledge):
