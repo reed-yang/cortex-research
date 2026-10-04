@@ -92,7 +92,10 @@ class IdeaFragmentsStore:
                     thread_id,
                     context_item_id,
                     actor_id,
-                    self._now(),
+                    # Fixed microsecond precision: the list orders by this
+                    # string, and `_now()` drops a zero fraction, which would
+                    # sort a whole-second save after a later one.
+                    self._registry_now(),
                 ),
             )
             # The text never enters the audit trail: only where it came from.

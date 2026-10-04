@@ -493,6 +493,24 @@ def test_an_exactly_full_last_page_has_no_cursor(
     assert len(second) == 2 and second.next_cursor is None
 
 
+def test_a_later_save_in_the_same_second_lists_first(
+    store: ControlStore, clock: MovableClock
+) -> None:
+    # A whole-second time keeps its fraction in the stored string; otherwise
+    # "...12:00:00Z" would sort after "...12:00:00.400000Z" saved later.
+    earlier = _web(store, "on the second", key="frac-0").value
+    clock.now = clock.now + timedelta(microseconds=400_000)
+    later = _web(store, "later in the same second", key="frac-1").value
+
+    assert earlier["created_at"] == "2026-09-01T12:00:00.000000Z"
+    assert later["created_at"] == "2026-09-01T12:00:00.400000Z"
+    first = store.list_fragments(limit=1)
+    assert [item["id"] for item in first] == [later["id"]]
+    second = store.list_fragments(limit=1, cursor=first.next_cursor)
+    assert [item["id"] for item in second] == [earlier["id"]]
+    assert second.next_cursor is None
+
+
 def test_equal_timestamps_page_by_id_without_loss(store: ControlStore) -> None:
     # The clock never moves, so every row shares created_at.
     saved = [_web(store, f"idea {index}", key=f"tie-{index}").value["id"] for index in range(5)]
