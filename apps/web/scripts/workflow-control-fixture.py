@@ -754,6 +754,105 @@ def emit_redacted(root: Path) -> dict[str, Any]:
     return {"state": "completed", "redacted_events": 1}
 
 
+CAPTURE_PAPER_ID = "2608.00042"
+CAPTURE_PAYLOAD = f"https://arxiv.org/abs/{CAPTURE_PAPER_ID} 请总结方法部分"
+CAPTURE_NOTE = "Synthetic capture note"
+CAPTURE_ROOT_ID = "workflow-corpus"
+CAPTURE_PAPER_TITLE = "Synthetic Capture Paper for Library Navigation"
+
+
+def seed_capture(root: Path) -> dict[str, Any]:
+    """One paper Capture driven to `failed` through the store's own transitions."""
+
+    state = _read_state(root)
+    store = ControlStore(_database(root))
+    created = store.create_capture(
+        payload=CAPTURE_PAYLOAD,
+        note=CAPTURE_NOTE,
+        actor_id="fixture",
+        idempotency_key="workflow-capture-create",
+    ).value
+    store.approve_capture(
+        capture_id=created["id"],
+        expected_revision=created["revision"],
+        actor_id="fixture",
+        idempotency_key="workflow-capture-approve",
+    )
+    claimed = store.claim_capture(
+        capture_id=created["id"],
+        worker_id="workflow-fixture",
+        lease_seconds=60,
+        actor_id="fixture",
+        idempotency_key="workflow-capture-claim1",
+    ).value
+    failed = store.complete_capture(
+        capture_id=created["id"],
+        claim_owner="workflow-fixture",
+        claim_epoch=claimed["claim_epoch"],
+        outcome="failed",
+        failure_category="materialization_failed",
+        actor_id="fixture",
+        idempotency_key="workflow-capture-failed",
+    ).value
+    _write_state(root, {**state, "capture_id": failed["id"], "capture_revision": str(failed["revision"])})
+    return {"state": "capture_failed", "captures": 1}
+
+
+def adopt_capture_paper(root: Path) -> dict[str, Any]:
+    """Adopt the failed Capture's paper by a separate, committed manifest."""
+
+    from cortex_platform.product.sources.adoption import AdoptionEntry, build_manifest
+
+    state = _read_state(root)
+    store = ControlStore(_database(root))
+    corpus = _child(root, "data", "workflow-corpus")
+    corpus.mkdir(mode=0o700, exist_ok=True)
+    store.register_asset_root(
+        root_id=CAPTURE_ROOT_ID,
+        private_path=corpus,
+        max_bytes=1_000_000,
+        enabled=True,
+        actor_id="fixture",
+        idempotency_key="workflow-capture-root",
+    )
+    store.commit_adoption_manifest(
+        manifest=build_manifest([
+            AdoptionEntry(
+                paper_dir="20260901-Synthetic_Capture_Paper",
+                authority="arxiv",
+                authority_id=CAPTURE_PAPER_ID,
+                official_title=CAPTURE_PAPER_TITLE,
+                content_digest=_digest(CAPTURE_PAPER_TITLE),
+            )
+        ]),
+        corpus_root_id=CAPTURE_ROOT_ID,
+        actor_id="fixture",
+        idempotency_key="workflow-capture-adopt",
+    )
+    linked = store.adopted_sources_by_canonical_id([f"arxiv:{CAPTURE_PAPER_ID}"])
+    if len(linked) != 1:
+        raise AssertionError("the adopted paper is not linkable")
+    _write_state(root, {**state, "capture_source_id": linked[f"arxiv:{CAPTURE_PAPER_ID}"]})
+    return {"state": "capture_paper_adopted", "linked": len(linked)}
+
+
+def assert_capture(root: Path) -> dict[str, Any]:
+    """The link is navigation only: the Capture is still the same failed row."""
+
+    state = _read_state(root)
+    capture = ControlStore(_database(root)).get_capture(state["capture_id"])
+    if (
+        capture["state"] != "failed"
+        or capture["failure_category"] != "materialization_failed"
+        or str(capture["revision"]) != state["capture_revision"]
+        or capture["payload"] != CAPTURE_PAYLOAD
+        or capture["note"] != CAPTURE_NOTE
+        or capture["consumed_source_ids"] is not None
+    ):
+        raise AssertionError("opening the adopted source changed the failed Capture")
+    return {"state": "capture_still_failed"}
+
+
 def _manifest_counts(store: ControlStore, run_id: str, thread_id: str, workspace_id: str) -> dict[str, int]:
     projection = ResearchWorkflowProjector(store).project(run_id)
     return {
@@ -862,7 +961,10 @@ def assert_g1(root: Path) -> dict[str, Any]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="workflow-control-fixture")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("assert-network-guard", "seed-g0", "advance-source", "advance-lineage", "emit-redacted", "assert-g0", "assert-g1"):
+    for name in (
+        "assert-network-guard", "seed-g0", "advance-source", "advance-lineage", "emit-redacted", "assert-g0", "assert-g1",
+        "seed-capture", "adopt-capture-paper", "assert-capture",
+    ):
         command = commands.add_parser(name)
         command.add_argument("--root", required=True)
     replay = commands.add_parser("replay-completed")
@@ -882,6 +984,9 @@ def main() -> int:
         "emit-redacted": emit_redacted,
         "assert-g0": assert_g0,
         "assert-g1": assert_g1,
+        "seed-capture": seed_capture,
+        "adopt-capture-paper": adopt_capture_paper,
+        "assert-capture": assert_capture,
     }
     if arguments.command == "assert-network-guard":
         result = {"state": "network_guarded", "probes": network_guard_probes}

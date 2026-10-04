@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from urllib.parse import unquote, urlsplit
 
 from ..resources import parse_resource_uri
@@ -19,6 +19,30 @@ _ARXIV_PATH_RE = re.compile(
     r"(?:v(?P<version>[1-9][0-9]*))?(?P<pdf>\.pdf)?\Z",
 )
 _DOI_RE = re.compile(r"10\.[0-9]{4,9}/[-._;()/:a-z0-9]+\Z", re.IGNORECASE)
+# The Capture parser also admits the HTML view; `canonicalize_locator` keeps
+# its narrower abs/pdf set.
+_CAPTURE_PATH_RE = re.compile(
+    r"/(?P<view>abs|pdf|html)/(?P<work>[0-9]{4}\.[0-9]{4,5})"
+    r"(?:v(?P<version>[1-9][0-9]*))?(?P<pdf>\.pdf)?\Z",
+)
+_CAPTURE_HOSTS = frozenset({"arxiv.org", "www.arxiv.org"})
+_CAPTURE_TOKEN_RE = re.compile(r"\S+")
+
+
+@dataclass(frozen=True)
+class ArxivCapturePayload:
+    """The one arXiv paper a Capture names, and the words around it.
+
+    `note` is derived on read and never stored: the submitted payload stays
+    the durable record.
+    """
+
+    work_id: str
+    note: str
+
+    @property
+    def canonical_id(self) -> str:
+        return f"arxiv:{self.work_id}"
 
 
 def canonicalize_arxiv_id(value: str) -> CanonicalLocator:
@@ -76,6 +100,73 @@ def canonicalize_locator(value: str) -> CanonicalLocator:
         + (f"v{match.group('version')}" if match.group("version") else "")
     )
     return replace(canonical, claim_kind="url")
+
+
+def parse_arxiv_capture_payload(payload: str) -> ArxivCapturePayload:
+    """Find the one arXiv paper a Capture payload names.
+
+    A locator is one whitespace-delimited token: a modern ID, `arXiv:<id>`,
+    or an http, https or scheme-less arxiv.org/www.arxiv.org abs, pdf or
+    html path with an optional version. A URL query or fragment never names
+    the paper and is ignored. Nothing is fetched. The same paper may appear
+    more than once; two different papers are refused. Every other character
+    of the payload is the note, trimmed only at its two ends.
+    """
+
+    if not isinstance(payload, str):
+        raise ValueError("capture payload is invalid")
+    works: set[str] = set()
+    spans: list[tuple[int, int]] = []
+    for match in _CAPTURE_TOKEN_RE.finditer(payload):
+        work = _capture_token_work(match.group())
+        if work is not None:
+            works.add(work)
+            spans.append(match.span())
+    if not works:
+        raise ValueError("capture payload names no arXiv paper")
+    if len(works) > 1:
+        raise ValueError("capture payload names more than one arXiv paper")
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        pieces.append(payload[cursor:start])
+        cursor = end
+    pieces.append(payload[cursor:])
+    return ArxivCapturePayload(work_id=works.pop(), note="".join(pieces).strip())
+
+
+def _capture_token_work(token: str) -> str | None:
+    """The arXiv work one payload token names exactly, or None."""
+
+    try:
+        token.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    try:
+        return canonicalize_arxiv_id(token).authority_id
+    except ValueError:
+        pass
+    if token.lower().startswith(("arxiv.org/", "www.arxiv.org/")):
+        token = f"https://{token}"
+    try:
+        split = urlsplit(token)
+    except ValueError:
+        return None
+    # The whole authority must be the bare host: this one comparison refuses
+    # userinfo, any port and a trailing dot.
+    if (
+        split.scheme not in {"http", "https"}
+        or split.netloc.lower() not in _CAPTURE_HOSTS
+        or unquote(split.path) != split.path
+    ):
+        return None
+    match = _CAPTURE_PATH_RE.fullmatch(split.path)
+    if match is None or (match.group("pdf") and match.group("view") != "pdf"):
+        return None
+    return canonicalize_arxiv_id(
+        match.group("work")
+        + (f"v{match.group('version')}" if match.group("version") else "")
+    ).authority_id
 
 
 def canonicalize_doi(value: str) -> CanonicalLocator:

@@ -55,6 +55,12 @@ function seeded(): FakeControl {
     { id: "deny", label: "Deny", tone: "danger" },
   ], { attempt_id: "attempt_abcdef01" });
   control.capture("capture_0badc0de", "https://example.com/echo");
+  // A failed capture whose paper is now in the library: its derived note,
+  // link sentence and button are audited, and the source id stays in Details.
+  control.capture("capture_f00dfeed", "https://arxiv.org/abs/2401.12345 summarize the method", {
+    state: "failed", failure_category: "materialization_failed",
+    available_source_id: "source_11aabbcc", payload_note: "summarize the method",
+  });
   control.source("source_11aabbcc", "arxiv:2401.12345", "Memory in long-horizon agents");
   // A research item whose every identity -- the item, its origin, its document
   // version and its digest -- is one the audit would catch if it reached a

@@ -83,6 +83,8 @@ function capture(id, payload, kind, note, state, extra = {}) {
     consumed_source_ids: null,
     failure_category: null,
     blocked_by: null,
+    available_source_id: null,
+    payload_note: null,
     revision: 1,
     created_at: earlier,
     updated_at: now,

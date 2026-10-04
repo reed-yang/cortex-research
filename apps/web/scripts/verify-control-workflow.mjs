@@ -51,6 +51,11 @@ const training = `# Training Plan
 Primary metrics: temporal consistency, memory retrieval precision, and update latency [Helios protocol, 2026].
 `;
 const artifactBodies = [livingV1, livingV2, evidence, training];
+// The failed paper Capture `workflow-control-fixture.py seed-capture` writes.
+const capturePayload = "https://arxiv.org/abs/2608.00042 请总结方法部分";
+const captureNote = "Synthetic capture note";
+const captureDerivedNote = "请总结方法部分";
+const capturePaperTitle = "Synthetic Capture Paper for Library Navigation";
 const execution = { pids: [], ports: [], root: null, secrets: [] };
 
 function outputCollector(description) {
@@ -658,6 +663,7 @@ async function main() {
   let websocketProbe;
   let failure;
   let networkGuardProbes = 0;
+  let captureSourceOpened = false;
   try {
     await mkdir(path.join(temporaryRoot, "home"), { mode: 0o700 });
     const networkGuardSummary = await runFixture("assert-network-guard", temporaryRoot, capability, secrets, processOutputs);
@@ -835,6 +841,44 @@ async function main() {
     }
     assert.equal(replaySummary.manifest.events, g1Summary.manifest.events + 1);
 
+    // A failed paper Capture: the Inbox shows the note derived from its
+    // submitted text, then -- once the same paper is adopted separately -- a
+    // read-only way into the Library that leaves the Capture failed.
+    summaries.push(await runFixture("seed-capture", temporaryRoot, capability, secrets, processOutputs));
+    await activePage.goto(new URL("/?view=inbox", web.origin).href, { waitUntil: "domcontentloaded" });
+    const captureCard = activePage.locator(`article[aria-label="${copy.capture.label}"]`).filter({ hasText: capturePayload });
+    await captureCard.waitFor();
+    await captureCard.getByText(copy.captureStates.failed, { exact: true }).waitFor();
+    await captureCard.getByText(captureNote, { exact: true }).waitFor();
+    await captureCard.getByText(copy.capture.payloadNote, { exact: true }).waitFor();
+    await captureCard.getByText(captureDerivedNote, { exact: true }).waitFor();
+    assert.equal(await captureCard.getByRole("button", { name: copy.capture.openSource }).count(), 0, "an unadopted paper must offer no Library link");
+    summaries.push(await runFixture("adopt-capture-paper", temporaryRoot, capability, secrets, processOutputs));
+    await activePage.getByRole("button", { name: copy.inbox.refresh, exact: true }).click();
+    const openSource = captureCard.getByRole("button", { name: copy.capture.openSource });
+    await openSource.waitFor();
+    await captureCard.getByText(copy.capture.availableInLibrary, { exact: true }).waitFor();
+    assert.equal(await captureCard.getByRole("button", { name: copy.inbox.reopen }).count(), 0, "a failed Capture must stay terminal");
+    await assertNoOverflow(activePage);
+    const captureMutations = [];
+    const recordMutation = (request) => {
+      if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/")) captureMutations.push(request.method());
+    };
+    activePage.on("request", recordMutation);
+    await openSource.click();
+    await activePage.getByRole("heading", { name: copy.library.title }).waitFor();
+    await activePage.getByRole("heading", { name: capturePaperTitle, level: 3 }).waitFor();
+    assert.equal(
+      await activePage.locator(`nav[aria-label="${copy.library.sources}"] button[aria-current="true"]`).filter({ hasText: capturePaperTitle }).count(),
+      1,
+      "the adopted source must be the Library selection",
+    );
+    await quiesceResponses(responseRecords);
+    activePage.off("request", recordMutation);
+    assert.deepEqual(captureMutations, [], "opening a source must send no command");
+    summaries.push(await runFixture("assert-capture", temporaryRoot, capability, secrets, processOutputs));
+    captureSourceOpened = true;
+
     const state = await browserState(activePage);
     browserStates.push(state);
     const serviceWorker = await activePage.evaluate(async () => await (await fetch("/sw.js")).text());
@@ -912,7 +956,7 @@ async function main() {
     }
   }
   if (failure) throw failure;
-  process.stdout.write(`${JSON.stringify({ artifact_leak_probes: artifactLeakProbes, browser_websocket_guard_probes: blockedWebSockets.length, network_guard_probes: networkGuardProbes, pids, ports, response_boundary_probes: responseBoundaryProbes, sse_frame_probes: sseFrameProbes, status: "ok" })}\n`);
+  process.stdout.write(`${JSON.stringify({ artifact_leak_probes: artifactLeakProbes, browser_websocket_guard_probes: blockedWebSockets.length, capture_source_opened: captureSourceOpened, network_guard_probes: networkGuardProbes, pids, ports, response_boundary_probes: responseBoundaryProbes, sse_frame_probes: sseFrameProbes, status: "ok" })}\n`);
 }
 
 await main().catch((error) => {

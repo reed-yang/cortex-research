@@ -164,6 +164,26 @@ after a configuration repair or a separate library import; it is not the current
 health of that paper. Compare its Created time and Capture id with the attempt
 you are investigating, and check Library for an already imported source.
 
+A paper capture names exactly one arXiv paper as one whitespace-separated token:
+a modern ID such as `2601.00042` or `2601.00042v2`, `arXiv:2601.00042`, or an
+`arxiv.org` or `www.arxiv.org` abs, pdf or html link, with or without `https://`
+or `http://`. A query or fragment on the link is ignored. Text before and after
+that token is shown on the card as "Note from submitted text", separately from
+the note you typed; neither the submission nor your note is rewritten, and the
+derived note has no length limit of its own. Only the canonical paper ID is sent
+to ingestion. A capture is not imported, and fails as `invalid_source`, when it
+names two different papers, when the ID or link touches other text without a
+space (for example `论文2601.00042` or a link followed by `。`), or when the link
+uses another host, a port, user information or an encoded path.
+
+When the same paper is later adopted into the Library, for example by a new
+capture of it, refreshing the Inbox shows "This paper is now in your library; this
+capture remains failed." with an Open source button. Open source only navigates
+to that Library source; it sends no command, and the failed capture keeps its
+state and history. The link means the paper is currently adopted under an
+enabled corpus root, not that this capture succeeded or that the source's files
+and index are healthy.
+
 The Inbox lists captures newest first by submission time, with each card's
 state as a badge. While it is open, it rereads them every five seconds when a
 capture is approved or being read, and every 30 seconds otherwise; a later

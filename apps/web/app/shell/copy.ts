@@ -123,6 +123,13 @@ export const copy = Object.freeze({
     ocrUnavailable:
       "This paper is PDF only, and OCR is not ready on this Cortex installation. Run cortex skills status there to see why, then capture it again.",
     importedOne: "Imported into your library.",
+    // The text around the one paper a submitted payload names. The operator's
+    // own note keeps its place above it, unlabelled as before.
+    payloadNote: "Note from submitted text",
+    // A failed capture whose paper has since reached the library some other
+    // way. The capture's own outcome and history do not change.
+    availableInLibrary: "This paper is now in your library; this capture remains failed.",
+    openSource: "Open source",
     reopenExplanation:
       "Reopening puts this capture back in the approved queue and accepts that the reader that lost it may already have imported it once.",
     confirmReopen: "Confirm reopen",
@@ -328,6 +335,7 @@ export const copy = Object.freeze({
     blockedBy: "Blocked by",
     corpusHint: "Corpus hint",
     importedAs: "Imported as",
+    librarySource: "Library source",
     stage: (stage: string) => `Stage ${stage}.`,
     category: (category: string) => `Category ${category}.`,
     identifier: "identifier",

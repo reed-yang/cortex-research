@@ -19,6 +19,7 @@ export function CaptureCard({
   selected,
   onDecide,
   onReopenIntent,
+  onOpenSource,
 }: {
   capture: Capture;
   disabled: boolean;
@@ -26,7 +27,11 @@ export function CaptureCard({
   selected: boolean;
   onDecide: (capture: Capture, action: CaptureActionName) => void;
   onReopenIntent: (captureId: string | null) => void;
+  onOpenSource: (sourceId: string) => void;
 }) {
+  // Only a failed capture is ever linked, and the link is navigation: the
+  // capture keeps its failed state and has no new command to offer.
+  const availableSource = capture.state === "failed" ? capture.available_source_id : null;
   const imported = capture.consumed_source_ids ?? [];
   const node = useRef<HTMLElement | null>(null);
   // A refused duplicate points at the row it collided with. Saying "already in
@@ -53,6 +58,14 @@ export function CaptureCard({
       </div>
       <p className="text-sm break-words">{capture.payload}</p>
       {capture.note ? <p className="text-sm text-muted-foreground">{capture.note}</p> : null}
+      {/* Derived from the submission once it was approved; the submission and
+          the operator's own note above are unchanged. */}
+      {capture.payload_note ? (
+        <div className="flex flex-col gap-0.5 text-sm text-muted-foreground">
+          <p className="text-xs font-medium">{copy.capture.payloadNote}</p>
+          <p className="whitespace-pre-wrap break-words">{capture.payload_note}</p>
+        </div>
+      ) : null}
       {/* ⟦V-R3 / P9-3⟧ Which run still holds this capture's carrier thread. The
           operator cannot decide it until that run ends, so the card says so
           rather than offering a button that would be refused. */}
@@ -69,6 +82,7 @@ export function CaptureCard({
           {imported.length === 1 ? copy.capture.importedOne : label.importedAsMany(imported.length)}
         </p>
       ) : null}
+      {availableSource ? <p className="text-sm text-muted-foreground">{copy.capture.availableInLibrary}</p> : null}
       <div className="flex flex-wrap gap-2">
         {capture.state === "pending" ? (
           <Button disabled={disabled} onClick={() => onDecide(capture, "approve")} size="sm" type="button">{copy.inbox.approve}</Button>
@@ -90,6 +104,11 @@ export function CaptureCard({
             variant="outline"
           >
             {copy.inbox.reopen}
+          </Button>
+        ) : null}
+        {availableSource ? (
+          <Button onClick={() => onOpenSource(availableSource)} size="sm" type="button" variant="outline">
+            {copy.capture.openSource}
           </Button>
         ) : null}
       </div>
@@ -117,6 +136,7 @@ export function CaptureCard({
           {capture.blocked_by ? <><dt>{copy.details.blockedBy}</dt><dd>{capture.blocked_by}</dd></> : null}
           {capture.known_source_id ? <><dt>{copy.details.corpusHint}</dt><dd>{capture.known_source_id}</dd></> : null}
           {imported.length ? <><dt>{copy.details.importedAs}</dt><dd>{imported.join(", ")}</dd></> : null}
+          {availableSource ? <><dt>{copy.details.librarySource}</dt><dd>{availableSource}</dd></> : null}
         </dl>
       </details>
     </article>

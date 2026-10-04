@@ -1075,3 +1075,151 @@ def test_claim_replays_only_for_the_current_fence(store: ControlStore) -> None:
             idempotency_key="capture-key-0001-claim",
         )
     assert invalid.value.source == "stale_claim_receipt"
+
+
+# -- the current Library association a failed Capture may point at ----------
+
+
+def _adopt(
+    store: ControlStore,
+    work: str,
+    *,
+    root_id: str = "research-corpus",
+    key: str,
+) -> str:
+    """Commit one real adoption manifest and return the adopted source id."""
+
+    from cortex_platform.product.sources.adoption import AdoptionEntry, build_manifest
+
+    record = store.commit_adoption_manifest(
+        manifest=build_manifest(
+            [
+                AdoptionEntry(
+                    paper_dir=f"20260901-Paper_{work.replace('.', '_')}",
+                    authority="arxiv",
+                    authority_id=work,
+                    official_title=f"Synthetic paper {work}",
+                    content_digest="b" * 64,
+                )
+            ]
+        ),
+        corpus_root_id=root_id,
+        actor_id="local-operator",
+        idempotency_key=key,
+    )
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT source_id FROM adoption_entries WHERE manifest_id = ?",
+            (record.manifest_id,),
+        ).fetchone()
+    return str(row["source_id"])
+
+
+def _root(store: ControlStore, tmp_path: Path, root_id: str, key: str) -> None:
+    store.register_asset_root(
+        root_id=root_id,
+        private_path=tmp_path / root_id,
+        max_bytes=1 << 30,
+        enabled=True,
+        actor_id="local-operator",
+        idempotency_key=key,
+    )
+
+
+def test_adopted_sources_link_only_an_exact_ready_adoption(
+    store: ControlStore, tmp_path: Path
+) -> None:
+    _root(store, tmp_path, "research-corpus", "capture-root-000001")
+    _root(store, tmp_path, "retired-corpus", "capture-root-000002")
+    adopted = _adopt(store, "2601.00042", key="capture-adopt-000001")
+    moved = _adopt(store, "2601.00046", key="capture-adopt-000002")
+    _adopt(store, "2601.00045", root_id="retired-corpus", key="capture-adopt-000003")
+    root = store.get_asset_root("retired-corpus")
+    store.update_asset_root(
+        root_id="retired-corpus",
+        private_path=root.private_path,
+        max_bytes=root.max_bytes,
+        enabled=False,
+        expected_revision=root.revision,
+        actor_id="local-operator",
+        idempotency_key="capture-root-000003",
+    )
+    with store._connect() as conn:
+        # A source whose engine binding no longer matches its adoption entry.
+        conn.execute(
+            "UPDATE sources SET engine_ref = 'paper:elsewhere' WHERE id = ?",
+            (moved,),
+        )
+        # A registered source that was never adopted or imported.
+        conn.execute(
+            """INSERT INTO sources
+               (id, authority, authority_id, canonical_id, source_kind,
+                official_title, engine_ref, import_state, revision,
+                created_at, updated_at)
+               VALUES ('source-pending', 'arxiv', '2601.00043',
+                       'arxiv:2601.00043', 'paper', 'Synthetic pending',
+                       NULL, 'pending', 0, '2026-09-01T12:00:00+00:00',
+                       '2026-09-01T12:00:00+00:00')"""
+        )
+        # An imported binding with the adopted paper's title but no committed
+        # adoption entry of its own.
+        conn.execute(
+            """INSERT INTO sources
+               (id, authority, authority_id, canonical_id, source_kind,
+                official_title, engine_ref, import_state, revision,
+                created_at, updated_at)
+               VALUES ('source-unadopted', 'arxiv', '2601.00044',
+                       'arxiv:2601.00044', 'paper', 'Synthetic paper 2601.00042',
+                       'paper:20260901-Unadopted', 'imported', 0,
+                       '2026-09-01T12:00:00+00:00', '2026-09-01T12:00:00+00:00')"""
+        )
+        conn.commit()
+
+    found = store.adopted_sources_by_canonical_id(
+        [
+            "arxiv:2601.00042",
+            "arxiv:2601.00042",
+            "arxiv:2601.00043",
+            "arxiv:2601.00044",
+            "arxiv:2601.00045",
+            "arxiv:2601.00046",
+            "arxiv:2601.00099",
+            "Synthetic paper 2601.00042",
+        ]
+    )
+
+    assert found == {"arxiv:2601.00042": adopted}
+    assert store.adopted_sources_by_canonical_id([]) == {}
+
+
+def test_adopted_source_lookup_never_touches_a_failed_capture(
+    store: ControlStore, tmp_path: Path
+) -> None:
+    approved = _approved(store, "https://arxiv.org/abs/2601.00042 请总结")
+    claimed = _claim(store, approved["id"])
+    failed = store.complete_capture(
+        capture_id=approved["id"],
+        claim_owner="p4-worker",
+        claim_epoch=claimed["claim_epoch"],
+        outcome="failed",
+        failure_category="materialization_failed",
+        actor_id="p4",
+        idempotency_key="capture-key-0001-failed",
+    ).value
+    _root(store, tmp_path, "research-corpus", "capture-root-000001")
+    source_id = _adopt(store, "2601.00042", key="capture-adopt-000001")
+
+    assert store.adopted_sources_by_canonical_id(["arxiv:2601.00042"]) == {
+        "arxiv:2601.00042": source_id
+    }
+    after = store.get_capture(approved["id"])
+    assert after == failed
+    assert after["payload"] == "https://arxiv.org/abs/2601.00042 请总结"
+    assert after["note"] == ""
+
+
+def test_adopted_source_lookup_is_bounded_and_typed(store: ControlStore) -> None:
+    with pytest.raises(ValueError):
+        store.adopted_sources_by_canonical_id([f"arxiv:{n}" for n in range(1_001)])
+    with pytest.raises(ValueError):
+        store.adopted_sources_by_canonical_id([7])  # type: ignore[list-item]

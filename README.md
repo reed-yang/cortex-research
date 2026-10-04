@@ -48,6 +48,12 @@ Hermes gen9 runtime is supplied separately. See
   page avoids the export API entirely. The API is used only if the page request
   or metadata validation fails. Full text is read directly from the HTML URL.
   Exhausting metadata paths reports a known failure before corpus writes.
+  A paper capture names one arXiv paper as one whitespace-separated token (a
+  modern ID, `arXiv:<id>`, or an http, https or scheme-less arxiv.org abs, pdf
+  or html link); only its canonical ID reaches ingestion, and the surrounding
+  text is shown as a separate derived note. Two different papers, or a link on
+  another host, are refused as `invalid_source`
+  ([user guide](docs/runbooks/cortex-web-user-guide.md#retry-a-failed-paper-capture)).
 - **External readings publication.** Opt-in macOS publication to an existing
   readings directory, with automatic additions, generated-file updates and
   protected notes. Publication runs in a no-delete sandbox and has separate

@@ -104,6 +104,14 @@ export type Capture = {
   // read from the capture's audit row -- the captures table has no column for
   // it -- and null whenever the category points at nothing.
   blocked_by: string | null;
+  // Derived by the daemon on read, never stored. The Library source this
+  // failed capture's paper is now adopted as -- a current association, not a
+  // change to the capture -- and null for every other state.
+  available_source_id: string | null;
+  // The submitted text around the one arXiv paper the payload names, once
+  // the capture is approved; null for pending and dismissed rows and for a
+  // payload that names no single paper. The explicit `note` is separate.
+  payload_note: string | null;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -298,6 +306,8 @@ const CAPTURE_FIELDS = [
   "consumed_source_ids",
   "failure_category",
   "blocked_by",
+  "available_source_id",
+  "payload_note",
   "revision",
   "created_at",
   "updated_at",
@@ -342,6 +352,8 @@ export const decodeCapture: Decoder<Capture> = (value, path = "capture") => {
     consumed_source_ids: captureSourceIds(record.consumed_source_ids, `${path}.consumed_source_ids`),
     failure_category: nullableString(record.failure_category, `${path}.failure_category`),
     blocked_by: nullableString(record.blocked_by, `${path}.blocked_by`),
+    available_source_id: nullableString(record.available_source_id, `${path}.available_source_id`),
+    payload_note: nullableString(record.payload_note, `${path}.payload_note`),
     revision: integer(record.revision, `${path}.revision`),
     created_at: string(record.created_at, `${path}.created_at`),
     updated_at: string(record.updated_at, `${path}.updated_at`),

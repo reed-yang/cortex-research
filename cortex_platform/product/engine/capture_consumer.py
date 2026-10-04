@@ -229,12 +229,20 @@ class CaptureConsumer:
     # -- payload resolution -------------------------------------------------
 
     def payload_for(self, source_id: str) -> EnginePayload:
-        """Resolve `capture-<id>` back to the raw payload the operator staged.
+        """Resolve `capture-<id>` to the one arXiv paper its payload names.
 
         The store never cross-checks the placeholder, so this is the only place
-        it means anything -- and the payload is used exactly as captured, since
-        capture performs no resolution.
+        it means anything. It runs only after approval, and it is syntactic:
+        `parse_arxiv_capture_payload` finds one arXiv token and the child is
+        handed that paper's canonical ID, never the operator's surrounding
+        words. Any other payload keeps its captured kind, which the engine
+        refuses before anything runs; its raw text is still what a
+        reconciliation hands the child, as it was when it was dispatched.
         """
+
+        from cortex_platform.product.sources.identity import (
+            parse_arxiv_capture_payload,
+        )
 
         from .port import capture_id_from_source
 
@@ -245,9 +253,12 @@ class CaptureConsumer:
             capture = self._store.get_capture(capture_id)
         except NotFound as error:
             raise LookupError(source_id) from error
-        payload = str(capture["payload"]).strip()
-        kind = "arxiv" if _looks_like_arxiv(payload) else str(capture["kind"])
-        return EnginePayload(kind=kind, identifier=payload)
+        payload = str(capture["payload"])
+        try:
+            parsed = parse_arxiv_capture_payload(payload)
+        except ValueError:
+            return EnginePayload(kind=str(capture["kind"]), identifier=payload.strip())
+        return EnginePayload(kind="arxiv", identifier=parsed.work_id)
 
     # -- the loop -----------------------------------------------------------
 
@@ -799,18 +810,3 @@ class CaptureConsumer:
             actor_id=MACHINE_ACTOR,
             idempotency_key=_idempotency_key("settle", run_id),
         )
-
-
-def _looks_like_arxiv(payload: str) -> bool:
-    """Whether a captured payload names an arXiv paper.
-
-    Deliberately syntactic. Deciding what a URL resolves to is resolution, and
-    resolution happens after the operator's approval, not inside a dedup key.
-    """
-
-    import re
-
-    text = payload.strip()
-    if re.fullmatch(r"\d{4}\.\d{4,5}(v\d+)?", text):
-        return True
-    return bool(re.search(r"arxiv\.org/(abs|pdf|html)/\d{4}\.\d{4,5}", text))

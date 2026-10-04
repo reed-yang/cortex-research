@@ -9,6 +9,7 @@ from cortex_platform.product.sources import (
     canonicalize_locator,
     canonicalize_source_locator,
 )
+from cortex_platform.product.sources.identity import parse_arxiv_capture_payload
 
 
 def test_arxiv_versions_are_observations_of_one_work() -> None:
@@ -253,3 +254,165 @@ def test_candidate_version_is_a_strict_positive_integer(version: object) -> None
             official_title="Echo-Infinity",
             version=1,
         )
+
+
+# -- Capture payloads: one arXiv token plus the operator's own words ---------
+
+_WORK = "2601.00042"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        _WORK,
+        f"{_WORK}v2",
+        f"arXiv:{_WORK}",
+        f"ARXIV:{_WORK}v3",
+        f"https://arxiv.org/abs/{_WORK}",
+        f"https://www.arxiv.org/abs/{_WORK}v2",
+        f"https://arxiv.org/pdf/{_WORK}",
+        f"https://arxiv.org/pdf/{_WORK}.pdf",
+        f"https://arxiv.org/pdf/{_WORK}v2.pdf",
+        f"https://arxiv.org/html/{_WORK}v1",
+        f"HTTPS://ArXiv.org/abs/{_WORK}",
+        f"http://arxiv.org/abs/{_WORK}",
+        f"arxiv.org/abs/{_WORK}",
+        f"www.arxiv.org/pdf/{_WORK}v1",
+        f"https://arxiv.org/abs/{_WORK}?context=cs.LG",
+        f"https://arxiv.org/abs/{_WORK}#section-3",
+        # A query never names the paper, even when it holds another ID.
+        f"https://arxiv.org/abs/{_WORK}?ref=2602.00001",
+    ],
+)
+def test_capture_payload_accepts_every_supported_arxiv_token(token: str) -> None:
+    parsed = parse_arxiv_capture_payload(token)
+
+    assert parsed.work_id == _WORK
+    assert parsed.canonical_id == f"arxiv:{_WORK}"
+    assert parsed.note == ""
+
+
+@pytest.mark.parametrize(
+    "payload,note",
+    [
+        (f"https://arxiv.org/abs/{_WORK} 请总结方法部分", "请总结方法部分"),
+        (f"{_WORK} 请总结方法部分", "请总结方法部分"),
+        (f"{_WORK}\n请重点看实验\n以及局限", "请重点看实验\n以及局限"),
+        # Prose before the locator, whitespace-separated, is the same note.
+        (f"这篇值得读 https://arxiv.org/abs/{_WORK}", "这篇值得读"),
+        (f"这篇值得读　https://arxiv.org/abs/{_WORK}", "这篇值得读"),
+        (
+            f"先看这篇\nhttps://arxiv.org/abs/{_WORK}\n重点：方法",
+            "先看这篇\n\n重点：方法",
+        ),
+        (f"  {_WORK}  第一行\n\n  第二行  ", "第一行\n\n  第二行"),
+    ],
+)
+def test_capture_payload_keeps_the_surrounding_text_as_the_note(
+    payload: str, note: str
+) -> None:
+    parsed = parse_arxiv_capture_payload(payload)
+
+    assert parsed.work_id == _WORK
+    assert parsed.note == note
+
+
+def test_capture_payload_note_is_not_bounded_by_the_explicit_note_limit() -> None:
+    instructions = "请逐段解释。" * 500
+    parsed = parse_arxiv_capture_payload(f"{_WORK} {instructions}")
+
+    assert len(instructions) > 2_000
+    assert parsed.note == instructions
+
+
+def test_the_same_paper_named_twice_is_one_paper() -> None:
+    parsed = parse_arxiv_capture_payload(
+        f"{_WORK} compare with https://arxiv.org/abs/{_WORK}v2"
+    )
+
+    assert parsed.work_id == _WORK
+    assert parsed.note == "compare with"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        f"{_WORK} versus 2602.00001",
+        f"https://arxiv.org/abs/{_WORK} 对比 arXiv:2602.00001",
+        f"这篇 https://arxiv.org/pdf/{_WORK} 和 https://arxiv.org/abs/2602.00001",
+    ],
+)
+def test_two_different_papers_are_refused(payload: str) -> None:
+    with pytest.raises(ValueError, match="more than one"):
+        parse_arxiv_capture_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "",
+        "   \n ",
+        "a note with no paper in it",
+        "https://example.com/some/blog/post",
+        # Misleading hosts that merely contain an arXiv path.
+        f"https://example.com/arxiv.org/abs/{_WORK}",
+        f"https://notarxiv.org/abs/{_WORK}",
+        f"https://arxiv.org.example.net/abs/{_WORK}",
+        f"https://arxiv.org./abs/{_WORK}",
+        f"example.com/arxiv.org/abs/{_WORK}",
+        # Userinfo, ports, encoded paths and other schemes.
+        f"https://user@arxiv.org/abs/{_WORK}",
+        f"https://arxiv.org:443/abs/{_WORK}",
+        f"https://arxiv.org:/abs/{_WORK}",
+        "https://arxiv.org/abs/2601%2E00042",
+        f"ftp://arxiv.org/abs/{_WORK}",
+        f"https:/arxiv.org/abs/{_WORK}",
+        # Malformed versions and path suffixes.
+        f"{_WORK}v0",
+        f"{_WORK}v01",
+        f"{_WORK}v",
+        f"https://arxiv.org/abs/{_WORK}v0",
+        f"https://arxiv.org/abs/{_WORK}.pdf",
+        f"https://arxiv.org/html/{_WORK}.pdf",
+        f"https://arxiv.org/abs/{_WORK}/",
+        f"https://arxiv.org/abs/{_WORK}/extra",
+        f"https://arxiv.org/list/{_WORK}",
+        f"https://arxiv.org/ABS/{_WORK}",
+        "2601.123",
+        "2601.123456",
+        "２６０１.00042",
+        "hep-th/9901001",
+        # A token that is not whitespace-delimited is prose, not a locator.
+        f"论文{_WORK}",
+        f"请看https://arxiv.org/abs/{_WORK}",
+        f"({_WORK})",
+        f"{_WORK},",
+        f"https://arxiv.org/abs/{_WORK}。",
+    ],
+)
+def test_capture_payload_refuses_everything_but_a_clean_arxiv_token(
+    payload: str,
+) -> None:
+    with pytest.raises(ValueError):
+        parse_arxiv_capture_payload(payload)
+
+
+def test_capture_payload_refuses_a_non_string() -> None:
+    with pytest.raises(ValueError):
+        parse_arxiv_capture_payload(None)  # type: ignore[arg-type]
+
+
+def test_capture_parsing_leaves_the_source_locator_forms_unchanged() -> None:
+    # The capture parser is broader than the source-intent locator on
+    # purpose; the locator keeps refusing http, query and html forms, and
+    # the top-level parser keeps refusing scheme-less URLs and prose.
+    for value in (
+        f"http://arxiv.org/abs/{_WORK}",
+        f"https://arxiv.org/abs/{_WORK}?context=cs.LG",
+        f"https://arxiv.org/html/{_WORK}v1",
+    ):
+        with pytest.raises(ValueError):
+            canonicalize_locator(value)
+    for value in (f"arxiv.org/abs/{_WORK}", f"{_WORK} 请总结"):
+        with pytest.raises(ValueError):
+            canonicalize_source_locator(value)

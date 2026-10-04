@@ -1616,6 +1616,11 @@ class ControlAPI:
         )
         return value
 
+    # The states after the operator's approval, in which a payload is acted on.
+    _CAPTURE_PARSED_STATES = frozenset(
+        {"approved", "claimed", "uncertain", "consumed", "failed"}
+    )
+
     def _capture_projections(
         self, captures: Sequence[Mapping[str, Any]]
     ) -> list[dict[str, Any]]:
@@ -1647,7 +1652,21 @@ class ControlAPI:
         (control/store.py:1183), which is why a reopened capture already stopped
         reporting one; a dismissed capture stops here instead, by state, with
         the category and its chip intact.
+
+        `payload_note` and `available_source_id` are derived the same way and
+        are always present. Once the operator has approved a Capture, its
+        payload is parsed for one arXiv paper (`parse_arxiv_capture_payload`)
+        and the text around that paper is the note; the stored payload and
+        explicit note are never rewritten, and pending or dismissed rows are
+        not parsed. Only a failed Capture asks the Library whether its paper
+        has since been adopted, in one batched read per page. The link is a
+        current association, not a change to the Capture or proof that it
+        succeeded.
         """
+
+        # Imported here, not at module level, so no line cited in this module
+        # moves.
+        from ..sources.identity import parse_arxiv_capture_payload
 
         ids = [
             str(capture["id"])
@@ -1657,10 +1676,34 @@ class ControlAPI:
             and str(capture.get("state") or "") not in CAPTURE_TERMINAL_STATES
         ]
         blocked = self.store.capture_blocked_by(ids) if ids else {}
+        notes: dict[str, str] = {}
+        papers: dict[str, str] = {}
+        for capture in captures:
+            state = str(capture.get("state") or "")
+            if state not in self._CAPTURE_PARSED_STATES:
+                continue
+            try:
+                parsed = parse_arxiv_capture_payload(str(capture["payload"]))
+            except ValueError:
+                continue
+            if parsed.note:
+                notes[str(capture["id"])] = parsed.note
+            if state == "failed":
+                papers[str(capture["id"])] = parsed.canonical_id
+        available = (
+            self.store.adopted_sources_by_canonical_id(sorted(set(papers.values())))
+            if papers
+            else {}
+        )
         items: list[dict[str, Any]] = []
         for capture in captures:
+            capture_id = str(capture["id"])
             value = self._public_value(dict(capture))
-            value["blocked_by"] = blocked.get(str(capture["id"]))
+            value["blocked_by"] = blocked.get(capture_id)
+            value["available_source_id"] = (
+                available.get(papers[capture_id]) if capture_id in papers else None
+            )
+            value["payload_note"] = notes.get(capture_id)
             items.append(value)
         return items
 
