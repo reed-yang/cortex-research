@@ -59,7 +59,7 @@ export class FakeControl {
     return row;
   }
   capture(id: string, payload: string, extra: Row = {}): Row {
-    const row = { id, capture_key: payload, payload, kind: /^https?:/.test(payload) ? "url" : "text", note: "", state: "pending", known_source_id: null, consumed_source_ids: null, failure_category: null, blocked_by: null, revision: 0, created_at: now, updated_at: now, ...extra };
+    const row = { id, capture_key: payload, payload, kind: /^https?:/.test(payload) ? "url" : "text", note: "", state: "pending", known_source_id: null, consumed_source_ids: null, failure_category: null, blocked_by: null, available_source_id: null, payload_note: null, revision: 0, created_at: now, updated_at: now, ...extra };
     this.captures.push(row);
     return row;
   }
@@ -295,7 +295,7 @@ export class FakeControl {
     if (m) { const d = this.decisions.find((x) => x.id === m![1])!; Object.assign(d, { state: "resolved", resolution: { choice: body.choice }, revision: (d.revision as number) + 1, resolved_at: now }); return this.json(d); }
     // The real client posts only `payload` and `note`: approval is a second
     // command against the staged row, never a flag on the create.
-    if (path === "captures") { const c = { id: `capture_${this.captures.length + 1}`, capture_key: String(body.payload), payload: String(body.payload), kind: /^https?:/.test(String(body.payload)) ? "url" : "text", note: String(body.note ?? ""), state: "pending", known_source_id: null, consumed_source_ids: null, failure_category: null, blocked_by: null, revision: 0, created_at: now, updated_at: now }; this.captures.push(c); return this.json(c, 201); }
+    if (path === "captures") { const c = { id: `capture_${this.captures.length + 1}`, capture_key: String(body.payload), payload: String(body.payload), kind: /^https?:/.test(String(body.payload)) ? "url" : "text", note: String(body.note ?? ""), state: "pending", known_source_id: null, consumed_source_ids: null, failure_category: null, blocked_by: null, available_source_id: null, payload_note: null, revision: 0, created_at: now, updated_at: now }; this.captures.push(c); return this.json(c, 201); }
     m = path.match(/^captures\/([^/]+)\/(approve|dismiss|reopen)$/);
     if (m) { const c = this.captures.find((x) => x.id === m![1])!; c.state = { approve: "approved", dismiss: "dismissed", reopen: "pending" }[m[2]]!; c.revision = (c.revision as number) + 1; return this.json(c); }
     return this.problem(404, "not_found");

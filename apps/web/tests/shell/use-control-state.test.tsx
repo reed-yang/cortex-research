@@ -180,6 +180,48 @@ describe("useControlState", () => {
     });
   });
 
+  it("opens a source from the Inbox and keeps it selected across the Library's first read", async () => {
+    const control = seeded();
+    control.source("source_paper", "arxiv:2601.00042", "Synthetic paper");
+    control.source("source_other", "arxiv:2601.00043", "Another synthetic paper");
+    window.history.replaceState(null, "", "/?project=ws_1&view=inbox");
+    const { result } = renderHook(() => useControlState(control.client()));
+    await waitFor(() => expect(control.gets).toContain("captures"));
+
+    act(() => { result.current[1].openSource("source_paper"); });
+
+    await waitFor(() => expect(result.current[0].sourceDetail?.id).toBe("source_paper"));
+    expect(result.current[0].view).toBe("library");
+    expect(result.current[0].selectedSourceId).toBe("source_paper");
+    await waitFor(() => expect(result.current[0].sourcesLoading).toBe(false));
+    expect(result.current[0].sources.map((source) => source.id)).toEqual(["source_paper", "source_other"]);
+    // The Library entry read cleared the selection and the pending one was
+    // applied after it, so the detail read the fence kept is this source's.
+    expect(result.current[0].selectedSourceId).toBe("source_paper");
+    expect(result.current[0].sourceDetail?.id).toBe("source_paper");
+    expect(control.gets.filter((path) => path === "sources/source_paper")).toHaveLength(1);
+    // Opening a source is navigation: no command is sent.
+    expect(control.posts).toEqual([]);
+  });
+
+  it("drops a pending source when the operator leaves before the Library loads", async () => {
+    const control = seeded();
+    control.source("source_paper", "arxiv:2601.00042", "Synthetic paper");
+    window.history.replaceState(null, "", "/?project=ws_1&view=inbox");
+    const { result } = renderHook(() => useControlState(control.client()));
+    await waitFor(() => expect(control.gets).toContain("captures"));
+
+    act(() => {
+      result.current[1].openSource("source_paper");
+      result.current[1].setView("inbox");
+    });
+    act(() => { result.current[1].setView("library"); });
+
+    await waitFor(() => expect(result.current[0].sources.map((source) => source.id)).toEqual(["source_paper"]));
+    expect(result.current[0].selectedSourceId).toBeNull();
+    expect(control.gets).not.toContain("sources/source_paper");
+  });
+
   it("answers capture with whether Cortex took it", async () => {
     const control = seeded();
     const { result } = renderHook(() => useControlState(control.client()));

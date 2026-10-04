@@ -294,6 +294,8 @@ const capture = {
   consumed_source_ids: null,
   failure_category: null,
   blocked_by: null,
+  available_source_id: null,
+  payload_note: null,
   revision: 0,
   created_at: now,
   updated_at: now,
@@ -681,6 +683,22 @@ describe("Cortex Control client contract", () => {
     expect(decodeCapture(capture).blocked_by).toBeNull();
   });
 
+  it("carries the derived note and a failed capture's Library source", () => {
+    const failed = decodeCapture({
+      ...capture,
+      payload: "https://arxiv.org/abs/2601.00042 请总结方法部分",
+      state: "failed",
+      failure_category: "materialization_failed",
+      available_source_id: "source_paper",
+      payload_note: "请总结方法部分",
+    });
+    expect(failed.available_source_id).toBe("source_paper");
+    expect(failed.payload_note).toBe("请总结方法部分");
+    expect(failed.note).toBe("read later");
+    expect(decodeCapture(capture).available_source_id).toBeNull();
+    expect(decodeCapture(capture).payload_note).toBeNull();
+  });
+
   it("refuses a capture that answers another identity", async () => {
     await expect(servingCapture({ ...capture, id: "capture_other" }).getCapture("capture_1"))
       .rejects.toBeInstanceOf(ContractDecodeError);
@@ -711,6 +729,11 @@ describe("Cortex Control client contract", () => {
     // one this web did not ship with and must not be rendered a field short.
     ["no blocked_by at all", (value: Record<string, unknown>) => { delete value.blocked_by; }],
     ["a non-string blocked_by", (value: Record<string, unknown>) => { value.blocked_by = 7; }],
+    // Both derived keys are required-present for the same reason.
+    ["no available_source_id at all", (value: Record<string, unknown>) => { delete value.available_source_id; }],
+    ["a non-string available_source_id", (value: Record<string, unknown>) => { value.available_source_id = ["source_paper"]; }],
+    ["no payload_note at all", (value: Record<string, unknown>) => { delete value.payload_note; }],
+    ["a non-string payload_note", (value: Record<string, unknown>) => { value.payload_note = { text: "note" }; }],
   ])("refuses a capture with %s", (_label, mutate) => {
     const value: Record<string, unknown> = { ...capture };
     mutate(value);

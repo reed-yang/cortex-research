@@ -193,6 +193,9 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   const sourceGeneration = useRef(0);
   const sourceListGeneration = useRef(0);
   const selectedSourceIdRef = useRef<string | null>(null);
+  // A source opened from another view. Entering the Library resets the
+  // selection, so the entry read applies this one after that reset.
+  const pendingSourceIdRef = useRef<string | null>(null);
   const activeThreadId = useRef<string | null>(null);
   const activeWorkspaceId = useRef<string | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
@@ -297,28 +300,6 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
 
   // Sources are corpus-wide, so the listing and the record are guarded by their
   // own generation counter plus the requested id, exactly like run selection.
-  const loadSources = useCallback(async () => {
-    const generation = ++sourceListGeneration.current;
-    sourceGeneration.current += 1;
-    selectedSourceIdRef.current = null;
-    setSelectedSourceId(null);
-    setSourceDetail(null);
-    setSourceDetailError(null);
-    setSourcesLoading(true);
-    setSourcesError(null);
-    try {
-      const envelope = await clientRef.current.listSources();
-      if (sourceListGeneration.current !== generation) return;
-      setSources(envelope.items);
-    } catch (error) {
-      if (sourceListGeneration.current !== generation) return;
-      setSources([]);
-      setSourcesError(error instanceof Error ? error.message : copy.errors.unreadable);
-    } finally {
-      if (sourceListGeneration.current === generation) setSourcesLoading(false);
-    }
-  }, []);
-
   const selectSource = useCallback((id: string) => {
     const generation = sourceGeneration.current + 1;
     sourceGeneration.current = generation;
@@ -336,6 +317,33 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
         setSourceDetailError(error instanceof Error ? error.message : copy.errors.unreadable);
       });
   }, []);
+
+  const loadSources = useCallback(async () => {
+    const generation = ++sourceListGeneration.current;
+    sourceGeneration.current += 1;
+    selectedSourceIdRef.current = null;
+    setSelectedSourceId(null);
+    setSourceDetail(null);
+    setSourceDetailError(null);
+    // Selected after the reset, so its detail read carries the newer
+    // generation and the fence keeps it.
+    const pending = pendingSourceIdRef.current;
+    pendingSourceIdRef.current = null;
+    if (pending) selectSource(pending);
+    setSourcesLoading(true);
+    setSourcesError(null);
+    try {
+      const envelope = await clientRef.current.listSources();
+      if (sourceListGeneration.current !== generation) return;
+      setSources(envelope.items);
+    } catch (error) {
+      if (sourceListGeneration.current !== generation) return;
+      setSources([]);
+      setSourcesError(error instanceof Error ? error.message : copy.errors.unreadable);
+    } finally {
+      if (sourceListGeneration.current === generation) setSourcesLoading(false);
+    }
+  }, [selectSource]);
 
   const loadResearchItems = useCallback(async (
     kind: ResearchItemKind,
@@ -590,6 +598,8 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   // the operator switched into it or the query opened straight onto it. An
   // effect keyed on the view is the only place that sees both.
   useEffect(() => {
+    // A source opened for the Library is dropped once the shell is elsewhere.
+    if (view !== "library") pendingSourceIdRef.current = null;
     // Deferred past the commit, like the first load: a loader flips its own
     // pending flag before it awaits anything.
     const timer = window.setTimeout(() => {
@@ -844,7 +854,23 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     return true;
   }, [clearThreadDetail, loadWorkspace, selectThread, showEngine, workspaceRows]);
 
-  const selectView = useCallback((next: ShellView) => { setView(next); }, []);
+  const selectView = useCallback((next: ShellView) => {
+    if (next !== "library") pendingSourceIdRef.current = null;
+    setView(next);
+  }, []);
+
+  // A source named from another view -- a failed capture whose paper is now
+  // adopted -- is opened by entering the Library with a pending selection.
+  // Selecting first and then switching would race: the Library's entry read
+  // resets the selection after the switch, and that reset would land last.
+  const openSource = useCallback((id: string) => {
+    if (view === "library") {
+      selectSource(id);
+      return;
+    }
+    pendingSourceIdRef.current = id;
+    setView("library");
+  }, [selectSource, view]);
 
   const createWorkspace = useCallback((title: string) => runPrepared(
     copy.notice.projectCreated,
@@ -1218,6 +1244,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     decideCapture,
     refreshCaptures,
     selectSource,
+    openSource,
     refreshSources,
     selectResearchKind,
     selectResearchStatus,
@@ -1229,7 +1256,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     retry,
   }), [
     archiveThread, browseResearchItems, capture, createRun, createThread, createWorkspace, decideCapture,
-    loadOlderRuns, messageCommitted, openResearchThread, openThread, refreshCaptures, refreshResearchItems,
+    loadOlderRuns, messageCommitted, openResearchThread, openSource, openThread, refreshCaptures, refreshResearchItems,
     refreshSources, refreshThread, renameThread, renameWorkspace, resolveDecision, retainTurn, retry,
     runAction, runCreated, selectResearchItem, selectResearchKind, selectResearchStatus, selectRun,
     selectSource, selectThread, selectView, selectWorkspace, takeRetainedTurn, unarchiveThread,

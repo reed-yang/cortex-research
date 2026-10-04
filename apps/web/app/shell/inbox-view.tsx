@@ -199,6 +199,7 @@ export function InboxView({ state, actions, client }: ViewProps) {
               disabled={disabled}
               key={capture.id}
               onDecide={decide}
+              onOpenSource={actions.openSource}
               onReopenIntent={setReopenConfirmId}
               selected={capture.id === state.selectedCaptureId}
             />

@@ -375,9 +375,9 @@ def _receipt_subject_id(response_column: str) -> str:
     otherwise hide. ⟦batchS N3⟧ The engine reads the None creator too:
     `capture_consumer._thread` adopts a `capture <id>` thread only when
     `thread_creator` returns its own actor
-    (engine/capture_consumer.py:625), so the consumer's own carrier thread
+    (engine/capture_consumer.py:636), so the consumer's own carrier thread
     reads as somebody else's and the capture is set aside as
-    `ForeignCarrierThread` (engine/capture_consumer.py:629).
+    `ForeignCarrierThread` (engine/capture_consumer.py:640).
 
     ⟦batchS ADJ-1⟧ And the write the corruption permits is not only an
     operator's. A capture thread that stops matching
@@ -14555,3 +14555,49 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore):
     @staticmethod
     def _json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    # Kept at the end of the class so that no line cited elsewhere moves.
+    def adopted_sources_by_canonical_id(
+        self, canonical_ids: Sequence[str]
+    ) -> dict[str, str]:
+        """The Library source each canonical ID is currently adopted as.
+
+        One query for a whole page of IDs. A source qualifies only by exact
+        `canonical_id` equality, an `existing`/`imported` state with an engine
+        binding, and an entry of a committed adoption manifest whose
+        `engine_ref` matches that binding and whose corpus root is enabled.
+        Titles, aliases and merely registered sources never match. The answer
+        is a current association: it does not say how the source got there,
+        that its files are intact or that its index is fresh.
+        """
+
+        values = list(canonical_ids)
+        if any(not isinstance(value, str) for value in values):
+            raise ValueError("canonical_ids must be strings")
+        wanted = sorted(set(values))
+        if len(wanted) > 1_000:
+            raise ValueError("at most 1000 canonical ids may be looked up at once")
+        if not wanted:
+            return {}
+        placeholders = ", ".join("?" for _ in wanted)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT sources.canonical_id, sources.id FROM sources
+                    WHERE sources.canonical_id IN ({placeholders})
+                      AND sources.import_state IN ('existing', 'imported')
+                      AND sources.engine_ref IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1 FROM adoption_entries
+                          JOIN adoption_manifests
+                            ON adoption_manifests.manifest_id
+                               = adoption_entries.manifest_id
+                          JOIN asset_roots
+                            ON asset_roots.root_id
+                               = adoption_manifests.corpus_root_id
+                          WHERE adoption_entries.source_id = sources.id
+                            AND adoption_entries.engine_ref = sources.engine_ref
+                            AND asset_roots.enabled = 1
+                      )""",
+                tuple(wanted),
+            ).fetchall()
+        return {str(row["canonical_id"]): str(row["id"]) for row in rows}

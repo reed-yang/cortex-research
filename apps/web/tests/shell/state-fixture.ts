@@ -7,7 +7,7 @@ const ACTION_NAMES = [
   "selectThread", "createThread", "renameThread", "archiveThread", "unarchiveThread", "selectRun",
   "loadOlderRuns", "createRun", "runAction", "resolveDecision", "retainTurn", "takeRetainedTurn",
   "messageCommitted", "runCreated",
-  "turnOutcome", "capture", "decideCapture", "refreshCaptures", "selectSource", "refreshSources", "refreshThread", "retry", "openThread",
+  "turnOutcome", "capture", "decideCapture", "refreshCaptures", "selectSource", "openSource", "refreshSources", "refreshThread", "retry", "openThread",
   "selectResearchKind", "selectResearchStatus", "selectResearchItem", "browseResearchItems",
   "refreshResearchItems", "openResearchThread",
 ] as const;

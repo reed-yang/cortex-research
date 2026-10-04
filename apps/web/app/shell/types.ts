@@ -113,6 +113,9 @@ export type ControlActions = {
   decideCapture(capture: Capture, action: CaptureActionName): Promise<void>;
   refreshCaptures(): void;
   selectSource(id: string): void;
+  // Navigates to the Library and selects this source there, from any view.
+  // Read-only: it sends no command.
+  openSource(id: string): void;
   refreshSources(): void;
   // Ideas, Explorations or Projects: a new kind reads the first page and drops
   // whatever dossier was open, because the item behind it is not in this list.

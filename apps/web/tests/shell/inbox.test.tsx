@@ -132,6 +132,50 @@ describe("InboxView", () => {
     expect(screen.getAllByText(copy.capture.failed)).toHaveLength(1);
   });
 
+  it("shows the note from the submitted text apart from the explicit note", async () => {
+    const control = seeded();
+    control.capture("capture_noted", "https://arxiv.org/abs/2601.00042 请总结方法部分", {
+      state: "approved", note: "Compare with the memory idea", payload_note: "请总结方法部分",
+    });
+    await openInbox(control);
+
+    const card = (await screen.findByText("https://arxiv.org/abs/2601.00042 请总结方法部分")).closest("article")!;
+    expect(within(card).getByText("Compare with the memory idea")).toBeTruthy();
+    const derived = within(card).getByText(copy.capture.payloadNote).parentElement!;
+    expect(within(derived).getByText("请总结方法部分")).toBeTruthy();
+    expect(within(derived).queryByText("Compare with the memory idea")).toBeNull();
+  });
+
+  it("opens the Library source a failed capture's paper is now adopted as", async () => {
+    const control = seeded();
+    control.source("source_paper", "arxiv:2601.00042", "Synthetic paper");
+    control.capture("capture_failed", "https://arxiv.org/abs/2601.00042", {
+      state: "failed", failure_category: "materialization_failed", available_source_id: "source_paper",
+      revision: 3, created_at: "2026-09-06T10:00:00Z",
+    });
+    control.capture("capture_lost", "https://arxiv.org/abs/2601.00099", {
+      state: "failed", failure_category: "materialization_failed", created_at: "2026-09-06T09:00:00Z",
+    });
+    const user = userEvent.setup();
+    await openInbox(control);
+
+    const card = (await screen.findByText("https://arxiv.org/abs/2601.00042")).closest("article")!;
+    expect(within(card).getByText(copy.capture.availableInLibrary)).toBeTruthy();
+    // A failed capture stays terminal: there is still nothing to reopen or retry.
+    expect(within(card).queryByRole("button", { name: "Reopen" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: /retry/i })).toBeNull();
+    const lost = screen.getByText("https://arxiv.org/abs/2601.00099").closest("article")!;
+    expect(within(lost).queryByRole("button", { name: copy.capture.openSource })).toBeNull();
+    expect(within(lost).queryByText(copy.capture.availableInLibrary)).toBeNull();
+
+    await user.click(within(card).getByRole("button", { name: copy.capture.openSource }));
+
+    await waitFor(() => expect(control.gets).toContain("sources/source_paper"));
+    await screen.findByLabelText("Library");
+    expect(control.posts).toEqual([]);
+    expect(control.captures.find((row) => row.id === "capture_failed")).toMatchObject({ state: "failed", revision: 3 });
+  });
+
   it("asks for a second gesture before reopening a capture", async () => {
     const control = seeded();
     control.capture("capture_uncertain", "https://example.com/lost", { state: "uncertain" });

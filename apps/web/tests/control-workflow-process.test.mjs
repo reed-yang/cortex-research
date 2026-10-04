@@ -123,6 +123,7 @@ test("real temporary research workflow crosses the Web boundary and cleans up", 
   for (const pid of summary.pids) assert.equal(processExists(pid), false, `PID ${pid} survived acceptance`);
   assert.equal(summary.artifact_leak_probes, 16);
   assert.equal(summary.browser_websocket_guard_probes, 1);
+  assert.equal(summary.capture_source_opened, true);
   assert.equal(summary.network_guard_probes, 12);
   assert.equal(summary.response_boundary_probes, 3);
   assert.equal(summary.sse_frame_probes, 3);

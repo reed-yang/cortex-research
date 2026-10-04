@@ -56,7 +56,7 @@ function stubActions(overrides: Partial<ControlActions> = {}): ControlActions {
     runAction: asyncNoop, resolveDecision: asyncNoop, retainTurn: noop, takeRetainedTurn: () => null,
     messageCommitted: noop, runCreated: noop,
     turnOutcome: noop, capture: async () => false, decideCapture: asyncNoop, refreshCaptures: noop,
-    selectSource: noop, refreshSources: noop, refreshThread: noop, retry: noop,
+    selectSource: noop, openSource: noop, refreshSources: noop, refreshThread: noop, retry: noop,
     openThread: async () => true,
     selectResearchKind: noop, selectResearchStatus: noop, selectResearchItem: noop,
     browseResearchItems: noop, refreshResearchItems: noop, openResearchThread: async () => true,

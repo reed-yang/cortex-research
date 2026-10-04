@@ -109,6 +109,7 @@ function fakeActions(): ControlActions {
     decideCapture: vi.fn(async () => {}),
     refreshCaptures: vi.fn(),
     selectSource: vi.fn(),
+    openSource: vi.fn(),
     refreshSources: vi.fn(),
     refreshThread: vi.fn(),
     retry: vi.fn(),

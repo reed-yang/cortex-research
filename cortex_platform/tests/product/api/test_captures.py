@@ -80,10 +80,14 @@ def test_capture_create_returns_the_public_row(tmp_path: Path) -> None:
         "consumed_source_ids",
         "failure_category",
         "blocked_by",
+        "available_source_id",
+        "payload_note",
         "revision",
         "created_at",
         "updated_at",
     }
+    assert created.payload["available_source_id"] is None
+    assert created.payload["payload_note"] is None
     assert set(created.payload).isdisjoint(_LEASE_FIELDS)
 
     replay = _create(api)
@@ -771,3 +775,253 @@ def test_an_uncertain_capture_that_names_nothing_reports_nothing(
     ).payload
     assert fetched["failure_category"] == "outcome_unknown"
     assert fetched["blocked_by"] is None
+
+
+# -- derived note and the current Library association ------------------------
+
+_ARXIV_PAYLOAD = "https://arxiv.org/abs/2601.00042 请总结方法部分"
+
+
+def _approve(api: ControlAPI, capture: dict, key: str):
+    return api.handle(
+        method="POST",
+        target=f"/api/v1/captures/{capture['id']}/approve",
+        headers=_headers(key=key),
+        body=json.dumps({"expected_revision": capture["revision"]}).encode(),
+    )
+
+
+def _fail(api: ControlAPI, capture_id: str, prefix: str) -> dict:
+    claimed = api.store.claim_capture(
+        capture_id=capture_id,
+        worker_id="p4-worker",
+        lease_seconds=60,
+        actor_id="p4",
+        idempotency_key=f"{prefix}-claim-0001",
+    ).value
+    return api.store.complete_capture(
+        capture_id=capture_id,
+        claim_owner="p4-worker",
+        claim_epoch=claimed["claim_epoch"],
+        outcome="failed",
+        failure_category="materialization_failed",
+        actor_id="p4",
+        idempotency_key=f"{prefix}-fail-00001",
+    ).value
+
+
+def _get(api: ControlAPI, capture_id: str) -> dict:
+    response = api.handle(
+        method="GET", target=f"/api/v1/captures/{capture_id}", headers=_headers()
+    )
+    assert response.status == 200, response.payload
+    return response.payload
+
+
+def _adopt(api: ControlAPI, tmp_path: Path, work: str, *, key: str) -> str:
+    from cortex_platform.product.sources.adoption import AdoptionEntry, build_manifest
+
+    if not api.store.list_asset_roots():
+        api.store.register_asset_root(
+            root_id="research-corpus",
+            private_path=tmp_path / "corpus",
+            max_bytes=1 << 30,
+            enabled=True,
+            actor_id="local-operator",
+            idempotency_key="api-capture-root-0001",
+        )
+    api.store.commit_adoption_manifest(
+        manifest=build_manifest(
+            [
+                AdoptionEntry(
+                    paper_dir=f"20260901-Paper_{work.replace('.', '_')}",
+                    authority="arxiv",
+                    authority_id=work,
+                    official_title=f"Synthetic paper {work}",
+                    content_digest="c" * 64,
+                )
+            ]
+        ),
+        corpus_root_id="research-corpus",
+        actor_id="local-operator",
+        idempotency_key=key,
+    )
+    return next(
+        str(source["id"])
+        for source in api.store.list_sources()
+        if source["canonical_id"] == f"arxiv:{work}"
+    )
+
+
+def test_every_capture_response_carries_the_two_derived_keys(tmp_path: Path) -> None:
+    api = _api(tmp_path)
+    created = _create(api, payload=_ARXIV_PAYLOAD)
+    assert created.status == 201
+    # Parsing is part of acting on a Capture, so a pending row is not parsed.
+    assert created.payload["payload_note"] is None
+    assert created.payload["available_source_id"] is None
+    assert _create(api, payload=_ARXIV_PAYLOAD).payload == created.payload
+
+    approved = _approve(api, created.payload, "api-capture-derived-ap1")
+    assert approved.status == 200
+    assert approved.payload["payload_note"] == "请总结方法部分"
+    assert approved.payload["available_source_id"] is None
+    # The submission and the explicit note stay exactly as submitted.
+    assert approved.payload["payload"] == _ARXIV_PAYLOAD
+    assert approved.payload["note"] == "read later"
+    replayed = _approve(api, created.payload, "api-capture-derived-ap1")
+    assert dict(replayed.headers)["Idempotency-Replayed"] == "true"
+    assert replayed.payload == approved.payload
+
+    duplicate = _create(api, payload=_ARXIV_PAYLOAD, key="api-capture-create-dup")
+    assert duplicate.status == 409
+    assert duplicate.payload["current"] == approved.payload
+
+    stale = api.handle(
+        method="POST",
+        target=f"/api/v1/captures/{created.payload['id']}/dismiss",
+        headers=_headers(key="api-capture-derived-ds1"),
+        body=json.dumps({"expected_revision": 0}).encode(),
+    )
+    assert stale.status == 409
+    assert stale.payload["current"]["payload_note"] == "请总结方法部分"
+
+    dismissed = api.handle(
+        method="POST",
+        target=f"/api/v1/captures/{created.payload['id']}/dismiss",
+        headers=_headers(key="api-capture-derived-ds2"),
+        body=json.dumps({"expected_revision": 1}).encode(),
+    )
+    assert dismissed.status == 200
+    assert dismissed.payload["payload_note"] is None
+    assert dismissed.payload["available_source_id"] is None
+
+
+def test_the_derived_note_follows_the_capture_through_its_lifecycle(
+    tmp_path: Path,
+) -> None:
+    api = _api(tmp_path)
+    created = _create(api, payload=f"这篇值得读\n{_ARXIV_PAYLOAD}").payload
+    approved = _approve(api, created, "api-capture-life-appr1").payload
+    claimed = api.store.claim_capture(
+        capture_id=created["id"],
+        worker_id="p4-worker",
+        lease_seconds=60,
+        actor_id="p4",
+        idempotency_key="api-capture-life-claim1",
+    ).value
+    assert _get(api, created["id"])["payload_note"] == "这篇值得读\n 请总结方法部分"
+    uncertain = api.store.complete_capture(
+        capture_id=created["id"],
+        claim_owner="p4-worker",
+        claim_epoch=claimed["claim_epoch"],
+        outcome="uncertain",
+        actor_id="p4",
+        idempotency_key="api-capture-life-unsure",
+    ).value
+    assert _get(api, created["id"])["payload_note"] == "这篇值得读\n 请总结方法部分"
+    reopened = api.handle(
+        method="POST",
+        target=f"/api/v1/captures/{created['id']}/reopen",
+        headers=_headers(key="api-capture-life-reopen"),
+        body=json.dumps(
+            {"expected_revision": uncertain["revision"], "acknowledged": True}
+        ).encode(),
+    )
+    assert reopened.status == 200
+    assert reopened.payload["payload_note"] == "这篇值得读\n 请总结方法部分"
+    assert approved["state"] == "approved"
+
+    plain = _create(
+        api, payload="https://example.com/post", key="api-capture-life-plain1"
+    ).payload
+    assert _approve(api, plain, "api-capture-life-plain2").payload["payload_note"] is None
+
+
+def test_a_failed_capture_links_a_later_exact_adoption_and_stays_failed(
+    tmp_path: Path,
+) -> None:
+    api = _api(tmp_path)
+    created = _create(api, payload=_ARXIV_PAYLOAD).payload
+    _approve(api, created, "api-capture-link-appr01")
+    failed = _fail(api, created["id"], "api-capture-link")
+    before = _get(api, created["id"])
+    assert before["state"] == "failed"
+    assert before["available_source_id"] is None
+    assert before["payload_note"] == "请总结方法部分"
+
+    # Another paper's adoption is not this Capture's paper.
+    _adopt(api, tmp_path, "2601.00099", key="api-capture-adopt-other")
+    assert _get(api, created["id"])["available_source_id"] is None
+
+    source_id = _adopt(api, tmp_path, "2601.00042", key="api-capture-adopt-match")
+    after = _get(api, created["id"])
+    assert after["available_source_id"] == source_id
+    # The link is a read, never a transition: the failed row is untouched.
+    assert after["state"] == "failed"
+    assert after["failure_category"] == "materialization_failed"
+    assert after["revision"] == failed["revision"]
+    assert after["updated_at"] == failed["updated_at"]
+    assert api.store.get_capture(created["id"]) == failed
+    listed = api.handle(method="GET", target="/api/v1/captures", headers=_headers())
+    assert listed.payload["items"] == [after]
+
+
+def test_only_failed_captures_with_a_parsed_paper_get_a_link(tmp_path: Path) -> None:
+    api = _api(tmp_path)
+    _adopt(api, tmp_path, "2601.00042", key="api-capture-only-adopt1")
+    pending = _create(api, payload=_ARXIV_PAYLOAD, key="api-capture-only-pend01").payload
+    assert pending["available_source_id"] is None
+
+    other = _create(
+        api, payload="https://example.com/a/2601.00042", key="api-capture-only-text01"
+    ).payload
+    _approve(api, other, "api-capture-only-text02")
+    _fail(api, other["id"], "api-capture-only-text")
+    unparsed = _get(api, other["id"])
+    assert unparsed["state"] == "failed"
+    assert unparsed["available_source_id"] is None
+    assert unparsed["payload_note"] is None
+
+
+def test_a_capture_page_reads_the_library_association_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = _api(tmp_path)
+    source_id = _adopt(api, tmp_path, "2601.00042", key="api-capture-page-adopt1")
+    for index, payload in enumerate(
+        (
+            _ARXIV_PAYLOAD,
+            "2601.00042v2 第二次",
+            "arXiv:2601.00043 another paper",
+            "https://example.com/not-a-paper",
+        )
+    ):
+        created = _create(
+            api, payload=payload, key=f"api-capture-page-create{index}"
+        ).payload
+        _approve(api, created, f"api-capture-page-approve{index}")
+        _fail(api, created["id"], f"api-capture-page-{index}")
+
+    calls: list[list[str]] = []
+    real = api.store.adopted_sources_by_canonical_id
+
+    def counted(canonical_ids):
+        calls.append(list(canonical_ids))
+        return real(canonical_ids)
+
+    monkeypatch.setattr(api.store, "adopted_sources_by_canonical_id", counted)
+    listed = api.handle(method="GET", target="/api/v1/captures", headers=_headers())
+
+    assert listed.status == 200
+    assert {
+        item["payload"]: item["available_source_id"]
+        for item in listed.payload["items"]
+    } == {
+        _ARXIV_PAYLOAD: source_id,
+        "2601.00042v2 第二次": source_id,
+        "arXiv:2601.00043 another paper": None,
+        "https://example.com/not-a-paper": None,
+    }
+    assert len(calls) == 1
+    assert sorted(set(calls[0])) == ["arxiv:2601.00042", "arxiv:2601.00043"]
