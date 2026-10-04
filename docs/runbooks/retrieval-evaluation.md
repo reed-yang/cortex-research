@@ -116,7 +116,9 @@ chunks or title hits. These figures are not recall at the first k unique
 paper ranks, and that definition must stay fixed across before/after runs.
 `R` is never reduced to the papers present in the snapshot. Packet fields also
 record `query`, `retrieval_query` and `retrieval_mode` verbatim, and list
-packet sources missing from the 6-slot direct search.
+packet sources missing from the 6-slot direct search. Each search limit and the
+packet list at most 50 `must_find_missing` identities; `must_find_missing_count`
+and `must_find_missing_truncated` give the full count.
 
 Summaries give overall and per-language macro means with their `n`. Chinese
 counts are distinct returned papers for queries tagged `zh`; `mixed` is
@@ -170,9 +172,11 @@ afterwards; any change sets `inputs.unchanged` to false.
 `preflight` counts adopted sources by availability reason (for example
 `directory:missing` or `notes:hardlinked`) and lists relevance identities that
 are not adopted or are unavailable. `baseline_complete` is false, and the exit
-status is 1, when any query failed, a relevance identity is adopted but
-unavailable, or an input changed. Relevance identities that are not adopted
-are reported but do not block, since they stay in the recall denominator.
+status is 1, when any query failed, a relevance identity is not adopted
+(`relevance_identity_not_adopted`) or is adopted but unavailable
+(`relevance_identity_unavailable`), or an input changed. Both kinds of
+identity stay in the recall denominator; correct the suite or the snapshot
+before treating a run as a baseline.
 
 ## Comparisons
 

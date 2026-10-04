@@ -149,12 +149,23 @@ def test_metric_denominators_and_duplicate_sources():
     assert metrics["identities"] == [A, B]
     assert metrics["missing_relevant_identities"] == [C, D]
     assert metrics["must_find_missing"] == [C]
+    assert metrics["must_find_missing_count"] == 1 and metrics["must_find_missing_truncated"] is False
     twenty = retrieval_metrics(six + [{"canonical_id": C}, {"canonical_id": E}], (A, B, C, D))
     assert twenty["recall_at_k"] == 0.75
     assert twenty["distinct_papers_at_k"] == 4
     assert twenty["relevant_identities"] == [A, B, C]
     empty = retrieval_metrics([], (A, B, C, D))
     assert empty["recall_at_k"] == 0.0 and empty["distinct_papers_at_k"] == 0
+
+
+MANY = tuple(f"arxiv:2610.{20000 + index:05d}" for index in range(60))
+
+
+def test_must_find_misses_beyond_the_listing_bound_are_counted():
+    metrics = retrieval_metrics([{"canonical_id": MANY[0]}], MANY, must_find=MANY)
+    assert metrics["must_find_missing"] == list(MANY[1:51])
+    assert metrics["must_find_missing_count"] == 59 and metrics["must_find_missing_truncated"] is True
+    assert metrics["missing_relevant_count"] == 59
 
 
 @pytest.mark.parametrize(("value", "expected"), [
@@ -183,6 +194,9 @@ def _suite_bytes(**overrides) -> bytes:
     return json.dumps(suite, ensure_ascii=False).encode()
 
 
+HUGE_INTEGER = b'{"schema_version": ' + b"1" * 5000 + b', "relevance_sets": {}, "queries": []}'
+
+
 def _query(**overrides):
     return [{"id": "q1", "query": "kestrel", "language": "en", "relevance_set": "birds"} | overrides]
 
@@ -201,6 +215,8 @@ def _query(**overrides):
     _suite_bytes(queries=[]),
     _suite_bytes(queries=_query(language="fr")),
     _suite_bytes(queries=_query(relevance_set="missing")),
+    _suite_bytes(queries=_query(relevance_set=["birds"])),
+    _suite_bytes(queries=_query(relevance_set={"birds": 1})),
     _suite_bytes(queries=_query(must_find=[C])),
     _suite_bytes(queries=_query(must_find=[A, A])),
     _suite_bytes(queries=_query(unknown=True)),
@@ -214,11 +230,19 @@ def _query(**overrides):
     b'{"schema_version": 1, "relevance_sets": {"birds": ["' + A.encode() + b'"]}, '
     b'"queries": [{"id": "q1", "query": "\\ud800", "language": "en", "relevance_set": "birds"}]}',
     b'{"schema_version": NaN, "relevance_sets": {}, "queries": []}',
+    pytest.param(HUGE_INTEGER, id="integer-digit-limit"),
 ])
 def test_suite_validation_rejects_malformed_suites(tmp_path, raw):
     path = tmp_path / "suite.json"
     path.write_bytes(raw)
     with pytest.raises(SuiteInvalid):
+        load_suite(path)
+
+
+def test_specific_suite_errors_keep_their_message(tmp_path):
+    path = tmp_path / "suite.json"
+    path.write_bytes(b'{"schema_version": 1, "schema_version": 1, "relevance_sets": {}, "queries": []}')
+    with pytest.raises(SuiteInvalid, match="duplicate JSON object key"):
         load_suite(path)
 
 
@@ -468,8 +492,13 @@ def test_index_must_be_the_corpus_parent_database_and_dotdot_is_refused(checkpoi
     assert raised.value.code == 2
 
 
-def test_malformed_suite_exits_two(checkpointed_suite, capsys):
-    checkpointed_suite.suite.write_text("{}", encoding="utf-8")
+@pytest.mark.parametrize("raw", [
+    b"{}",
+    _suite_bytes(queries=_query(relevance_set=["birds"])),
+    pytest.param(HUGE_INTEGER, id="integer-digit-limit"),
+])
+def test_malformed_suite_exits_two(checkpointed_suite, capsys, raw):
+    checkpointed_suite.suite.write_bytes(raw)
     code, report, _ = cli(checkpointed_suite, capsys)
     assert code == 2 and report is None
 
@@ -571,13 +600,33 @@ def test_snapshot_defects_are_named_and_block_a_baseline(checkpointed_suite, tmp
     assert by_id(report)["en-birds"]["retrieval"]["at_6"]["status"] == "measured"
 
 
-def test_unadopted_relevance_identity_is_reported_without_shrinking_recall(checkpointed_suite):
+def test_unadopted_relevance_identity_blocks_a_baseline_without_shrinking_recall(checkpointed_suite):
     write_suite(checkpointed_suite.suite, sets={"birds": [A, B, C, D, "arxiv:2610.09999"], "robots": [E]})
     report, code = run(checkpointed_suite)
-    assert code == 0
+    assert code == 1 and report["status"] == "incomplete" and report["baseline_complete"] is False
+    assert report["blockers"] == ["relevance_identity_not_adopted"]
     assert report["preflight"]["relevance"]["not_adopted"] == ["arxiv:2610.09999"]
     six = by_id(report)["en-birds"]["retrieval"]["at_6"]
     assert six["recall_at_k"] == 0.4 and six["missing_relevant_count"] == 3
+
+
+def test_must_find_counts_on_search_and_packet_outcomes(checkpointed_suite):
+    write_suite(checkpointed_suite.suite, sets={"many": list(MANY)}, queries=[
+        {"id": "many", "query": "kestrel", "language": "en", "relevance_set": "many",
+         "must_find": list(MANY)}])
+    report, _ = run(checkpointed_suite)
+    row = report["queries"][0]
+    for outcome in (row["retrieval"]["at_6"], row["retrieval"]["at_20"], row["packet"]):
+        assert len(outcome["must_find_missing"]) == 50
+        assert outcome["must_find_missing_count"] == 60 and outcome["must_find_missing_truncated"] is True
+    write_suite(checkpointed_suite.suite, queries=[
+        {"id": "none", "query": "zzzunmatched", "language": "en", "relevance_set": "birds",
+         "must_find": [A]}])
+    report, _ = run(checkpointed_suite)
+    packet = report["queries"][0]["packet"]
+    assert packet["status"] == "research_no_evidence"
+    assert (packet["must_find_missing"], packet["must_find_missing_count"],
+            packet["must_find_missing_truncated"]) == ([A], 1, False)
 
 
 def test_independent_limit_failures_stay_visible(checkpointed_suite):

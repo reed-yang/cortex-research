@@ -226,7 +226,7 @@ def _validate_suite(data) -> dict:
             raise SuiteInvalid(f"query {query_id!r} text is empty, oversized or not valid Unicode")
         if item["language"] not in LANGUAGES:
             raise SuiteInvalid(f"query {query_id!r} language is unsupported")
-        if item["relevance_set"] not in relevance:
+        if not isinstance(item["relevance_set"], str) or item["relevance_set"] not in relevance:
             raise SuiteInvalid(f"query {query_id!r} references an unknown relevance set")
         must_find = _identities(item.get("must_find", []), f"query {query_id!r} must_find", allow_empty=True)
         if not set(must_find) <= set(relevance[item["relevance_set"]]):
@@ -250,8 +250,10 @@ def load_suite(path: Path) -> dict:
     try:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
                           parse_constant=_reject_constant)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
-        raise SuiteInvalid("suite is not valid UTF-8 JSON") from None
+    except SuiteInvalid:
+        raise
+    except (ValueError, RecursionError):
+        raise SuiteInvalid("suite is not valid, bounded UTF-8 JSON") from None
     suite = _validate_suite(data)
     suite["sha256"] = hashlib.sha256(raw).hexdigest()
     return suite
@@ -383,6 +385,13 @@ def prepare_packet(reader: CheckpointedEvaluationReader, sources: list[dict], qu
 # -- Metrics -----------------------------------------------------------------
 
 
+def _must_find(must_find, present) -> dict:
+    """Must-find misses, listed up to MAX_LISTED, with the full count and a truncation flag."""
+    missing = [identity for identity in must_find if identity not in present]
+    return {"must_find_missing": missing[:MAX_LISTED], "must_find_missing_count": len(missing),
+            "must_find_missing_truncated": len(missing) > MAX_LISTED}
+
+
 def retrieval_metrics(results, relevance, must_find=()) -> dict:
     """Distinct-paper metrics for one cutoff over the complete relevance set."""
     identities = list(dict.fromkeys(result["canonical_id"] for result in results))
@@ -394,7 +403,7 @@ def retrieval_metrics(results, relevance, must_find=()) -> dict:
         "relevant_papers_at_k": len(relevant), "recall_at_k": _ratio(len(relevant), len(relevance)),
         "identities": identities, "relevant_identities": relevant,
         "missing_relevant_count": len(missing), "missing_relevant_identities": missing[:MAX_LISTED],
-        "must_find_missing": [identity for identity in must_find if identity not in returned][:MAX_LISTED],
+        **_must_find(must_find, returned),
     }
 
 
@@ -723,19 +732,18 @@ def _search_outcome(reader, query: str, limit: int, relevance, must_find) -> dic
 def _packet_outcome(control, corpus, sources, query, relevance, must_find, six, cache) -> dict:
     empty = {"schema_version": None, "sha256": None, "bytes": None, "query": None,
              "retrieval_query": None, "retrieval_mode": None, "canonical_ids": [],
-             "relevant_papers": 0, "must_find_missing": list(must_find)[:MAX_LISTED],
+             "relevant_papers": 0, **_must_find(must_find, ()),
              "sources_not_in_search_at_6": [], "sources": [], "coverage": None}
+    unmeasured = {"relevant_papers": None} | dict.fromkeys(_must_find((), ()))
     reader = CheckpointedEvaluationReader(control, corpus)
     try:
         packet, sha256 = prepare_packet(reader, sources, query)
     except ResearchFailure as failure:
         if failure.category == "research_no_evidence":
             return empty | {"status": "research_no_evidence", "failure": None, "recall": 0.0}
-        return empty | {"status": "failed", "failure": failure.category, "recall": None,
-                        "relevant_papers": None, "must_find_missing": None}
+        return empty | unmeasured | {"status": "failed", "failure": failure.category, "recall": None}
     except EvaluationError as error:
-        return empty | {"status": "failed", "failure": error.category, "recall": None,
-                        "relevant_papers": None, "must_find_missing": None}
+        return empty | unmeasured | {"status": "failed", "failure": error.category, "recall": None}
     ids = [source["canonical_id"] for source in packet["sources"]]
     relevant = [identity for identity in ids if identity in set(relevance)]
     searched = set(six.get("identities", ())) if six["status"] == "measured" else None
@@ -747,7 +755,7 @@ def _packet_outcome(control, corpus, sources, query, relevance, must_find, six, 
         "query": packet["query"], "retrieval_query": packet["retrieval_query"],
         "retrieval_mode": packet["retrieval_mode"], "canonical_ids": ids,
         "relevant_papers": len(relevant), "recall": _ratio(len(relevant), len(relevance)),
-        "must_find_missing": [identity for identity in must_find if identity not in ids][:MAX_LISTED],
+        **_must_find(must_find, set(ids)),
         "sources_not_in_search_at_6": None if searched is None else [i for i in ids if i not in searched],
         "sources": [{
             "label": source["label"], "source_id": source["source_id"],
@@ -1001,6 +1009,8 @@ def evaluate(control: Path, corpus: Path, index: Path, suite_path: Path) -> tupl
     blockers = []
     if any(row["failures"] for row in rows):
         blockers.append("query_failures")
+    if preflight["relevance"]["not_adopted_count"]:
+        blockers.append("relevance_identity_not_adopted")
     if preflight["relevance"]["unavailable_count"]:
         blockers.append("relevance_identity_unavailable")
     if changed:
