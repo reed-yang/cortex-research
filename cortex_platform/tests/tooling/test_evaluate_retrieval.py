@@ -683,13 +683,13 @@ GROUNDING_FRONT = ("---\npaper_dir: synthetic\narxiv_id: \nfull_text_sha: " + "0
 BRIEF = ("mechanism", "bottleneck", "rejects_assumes", "key_results", "open_threads", "anchors")
 
 
-def grounding_sidecar(*, fenced=True, human=None, **fields) -> str:
+def grounding_sidecar(*, fenced=True, human=None, ascii=False, **fields) -> str:
     """The grounding v2 sidecar shape: front matter, fenced JSON, Markdown mirror."""
     payload = {key: fields.get(key, f"{key} text") for key in BRIEF}
     if human is not None:
         payload["human"] = human
         payload["keywords"] = ["synthetic"]
-    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    body = json.dumps(payload, ensure_ascii=ascii, indent=2)
     mirror = "\n".join(f"## {key}\n\n{payload[key]}\n" for key in BRIEF if isinstance(payload[key], str))
     return GROUNDING_FRONT + ("```json\n" + body + "\n```\n\n" if fenced else body + "\n\n") + mirror
 
@@ -704,8 +704,8 @@ def test_section_ranges_recognize_exact_heading_bodies():
            "## Key Results\n\nResult body.\n\n### Detail\n\nDeeper 结果.\n\n"
            "## LIMITATIONS ##\r\n\r\nLimit body.\r\n## Keywords\nkestrel\n").encode()
     ranges = section_ranges(raw)
-    (key,) = body(raw, ranges["key_results"])
-    assert key.strip().startswith("Result body.") and "Deeper 结果." in key and "LIMITATIONS" not in key
+    # Nested heading lines split the body; only the text between them counts.
+    assert body(raw, ranges["key_results"]) == ["\nResult body.\n\n", "\nDeeper 结果.\n\n"]
     (limit,) = body(raw, ranges["limitations"])
     assert limit.strip() == "Limit body." and "Keywords" not in limit
 
@@ -715,6 +715,15 @@ def test_section_ranges_recognize_exact_heading_bodies():
     ("## 3. Key Results\n\nBody.\n\n## **Limitations**\n\nBody.\n", None, None),
     # Heading-only sections and prose mentions are known negatives.
     ("## Key Results\n\n## Limitations\n\nLimit.\n", [], ["\nLimit.\n"]),
+    ("## Key Results\n\n### More detail\n\n## Limitations\n\nLimit.\n", [], ["\nLimit.\n"]),
+    # Empty ATX and setext headings end a section; a thematic break after a blank line does not.
+    ("## Key Results\n\nResult.\n\n##\n\nLater body.\n", ["\nResult.\n\n"], []),
+    ("## Key Results\n\nResult.\n\nLater\n-----\n\nLater body.\n", ["\nResult.\n\n"], []),
+    ("## Key Results\n\nResult.\n\nLater\n=====\n\nLater body.\n", ["\nResult.\n\n"], []),
+    ("## Key Results\n\nResult.\n---\n", [], []),
+    ("## Key Results\n\nResult.\n\n---\n\nMore.\n", ["\nResult.\n\n---\n\nMore.\n"], []),
+    # A setext heading titled like a target is not the evidence-reads name: unknown.
+    ("Key Results\n===========\n\nBody.\n", None, []),
     ("Our limitations and key results are discussed in prose only.\n", [], []),
     ("# Key Results\n   \n", [], []),
     # Unclosed front matter or fence cannot be classified.
@@ -849,6 +858,46 @@ def test_located_windows_count_and_mislocated_windows_stay_unknown(covered):
         "confirmed": 0, "sources": 1, "unknown": 1, "share": None, "confirmed_lower_bound": 0.0}
 
 
+@pytest.mark.parametrize(("sections", "retained", "expected"), [
+    # A complete section whose only content is a nested heading.
+    ("## Key Results\n\n### More detail\n\n## Keywords\n\nk\n", "## Key Results\n\n### More detail\n\n", False),
+    # A partial excerpt that keeps only the heading and a nested heading.
+    ("## Key Results\n\n### More detail\n\nDeep result.\n", "## Key Results\n\n### More detail\n", False),
+    ("## Key Results\n\n### More detail\n\nDeep result.\n", "### More detail\n\nDeep result.\n", True),
+    # A window that keeps only the next section's body after an empty ATX or setext heading.
+    ("## Key Results\n\nResult.\n\n##\n\nLater body.\n", "Later body.\n", False),
+    ("## Key Results\n\nResult.\n\nLater\n-----\n\nLater body.\n", "Later body.\n", False),
+])
+def test_heading_lines_and_later_sections_are_not_target_body(covered, sections, retained, expected):
+    raw = _notes("Gamma Study", sections).encode()
+    (covered.corpus / "20261001-Gamma" / "notes.md").write_bytes(raw)
+    reader, row = _source(covered, "20261001-Gamma")
+    start = raw.index(retained.encode())
+    flags = _coverage(reader, row, [_window(raw, "notes", start, len(retained.encode()))])["sources"][0]
+    assert flags["notes_key_results"] is expected
+
+
+def test_escaped_grounding_strings_are_decoded_before_coverage(covered):
+    reader, row = _source(covered, "20261001-Gamma")
+    path = covered.corpus / "20261001-Gamma" / "grounding.md"
+    raw = grounding_sidecar(ascii=True, key_results="中文结果。", open_threads="开放问题。",
+                            human={"key_results_human": "\n\t ", "limitations": "人工限制。"}).encode()
+    assert b"\\u4e2d" in raw
+    path.write_bytes(raw)
+    fence_end = raw.index(b"```\n\n") + 4
+    full = _coverage(reader, row, [_window(raw, "grounding", 0, fence_end)])["sources"][0]
+    assert full["grounding_key_results"] is True and full["grounding_open_threads"] is True
+    assert full["grounding_limitations_human"] is True
+    assert full["grounding_key_results_human"] is False
+    # Escaped whitespace alone is not body; a cut inside an escape cannot be classified.
+    raw = grounding_sidecar(ascii=True, key_results="\n\n中").encode()
+    path.write_bytes(raw)
+    value = raw.index(b"\\n\\n\\u4e2d")
+    for size, expected in ((value + 4, False), (value + 8, None), (value + 10, True)):
+        flags = _coverage(reader, row, [_window(raw, "grounding", 0, size)])["sources"][0]
+        assert flags["grounding_key_results"] is expected
+
+
 def test_missing_and_unsupported_grounding_audits_are_unknown(covered):
     reader, row = _source(covered, "20261001-Gamma")
     grounding = grounding_sidecar(key_results="Gamma result.").encode()
@@ -911,3 +960,36 @@ def test_indexed_section_flags_use_the_hit_section_and_retained_body(covered):
                                          "content_sha256": "1" * 64,
                                          "locator": "source:x:chunk:1:sha256:" + "1" * 64}])
     assert unmatched["sources"][0]["indexed_limitations_section"] is None
+
+
+def test_indexed_flags_parse_the_prefix_beyond_truncated_section_metadata(covered):
+    section = "Results " + "x" * 1000 + " and Limitations"
+    text = f"Paper: Delta Study | Section: {section}\n\nzebrafinch results body"
+    assert len(section.encode()) > 1000 and len(text.encode()) < 2000
+    _write(covered.index, "INSERT INTO chunks (paper_dir, section, chunk_idx, text) VALUES (?, ?, ?, ?)",
+           ("20261001-Delta", section, 9, text))
+    write_suite(covered.suite, queries=[
+        {"id": "indexed", "query": "zebrafinch", "language": "en", "relevance_set": "birds"}])
+    report, _ = run(covered)
+    (source,) = report["queries"][0]["packet"]["sources"]
+    assert source["canonical_id"] == D
+    assert source["coverage"]["indexed_results_section"] is True
+    assert source["coverage"]["indexed_limitations_section"] is True
+
+
+@pytest.mark.parametrize(("excerpt", "expected"), [
+    # The prefix names another section, or lacks the generated blank-line separator.
+    ("Paper: Delta Study | Section: Other\n\nzebrafinch body", None),
+    ("Paper: Delta Study | Section: Results\nzebrafinch body", None),
+    # The excerpt bound cut the prefix itself: no body was retained.
+    ("Paper: Delta Study | Section: Results and more", False),
+])
+def test_unparseable_indexed_prefixes_are_unknown(covered, excerpt, expected):
+    reader, row = _source(covered, "20261001-Delta")
+    content = hashlib.sha256(excerpt.encode()).hexdigest()
+    locator = f"source:{row['id']}:chunk:7:sha256:{content}"
+    evidence = {"kind": "indexed_passage", "text": excerpt, "retained_sha256": digest(excerpt),
+                "content_sha256": content, "locator": locator}
+    hit = {"evidence_id": locator, "content_sha256": content, "excerpt": excerpt, "section": "Results"}
+    flags = _coverage(reader, row, [evidence], [hit])["sources"][0]
+    assert flags["indexed_results_section"] is expected

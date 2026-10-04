@@ -85,19 +85,23 @@ DEFINITIONS = {
     "packet_recall": ("|packet canonical_ids intersect R| / |R| for the fresh, unselected, "
                       "library-only ResearchService.prepare packet."),
     "language": "zh and mixed cohorts are reported separately; mixed English hits do not prove Chinese retrieval.",
-    "coverage": ("Retained packet bytes that overlap a non-blank target body: notes headings titled exactly "
-                 "'Key Results'/'Limitations' (casefold), grounding JSON string values under key_results, "
-                 "human.key_results_human, open_threads and human.limitations. Indexed flags use the "
-                 "full-text section of the packet's own search hit and may lag files. null means unknown; "
+    "coverage": ("Retained packet bytes that overlap a non-blank target body: notes ATX headings titled "
+                 "exactly 'Key Results'/'Limitations' (casefold), excluding nested heading lines; grounding "
+                 "JSON string values, with escapes decoded, under key_results, human.key_results_human, "
+                 "open_threads and human.limitations. Indexed flags use the full-text section named in the "
+                 "generated prefix of the packet's own search hit and may lag files. null means unknown; "
                  "a share is reported only when every packet source is classifiable. Section-content "
                  "coverage, not claim support."),
 }
 _LOCATOR = re.compile(r"(?P<kind>notes|grounding|full_text):lines:(?P<first>\d+)-(?P<last>\d+):offset:(?P<offset>\d+)")
 _FRONT_MATTER = re.compile(rb"---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
 _FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
-_HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*")
+# An ATX heading may be empty ("##"); a setext underline follows paragraph text.
+_HEADING = re.compile(r" {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*")
+_SETEXT = re.compile(r" {0,3}(=+|-+)[ \t]*")
 _NUMBERING = re.compile(r"(?:\d+(?:\.\d+)*|[ivx]+)[.):]?\s+")
-_JSON_ESCAPE = re.compile(r"\\(?:u[0-9a-fA-F]{0,4}|.)?", re.S)
+_JSON_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+_INDEXED_SECTION = " | Section: "
 NOTES_TARGETS = {"key results": "key_results", "limitations": "limitations"}
 GROUNDING_TARGETS = {
     ("key_results",): "key_results", ("human", "key_results_human"): "key_results_human",
@@ -411,14 +415,19 @@ def retrieval_metrics(results, relevance, must_find=()) -> dict:
 
 
 def _outline(raw: bytes):
-    """ATX headings as (level, title, line start, body start); None when unclassifiable."""
+    """Headings as (level, title, line start, body start, setext); None when unclassifiable.
+
+    Empty ATX headings and setext headings (paragraph text underlined with '='
+    or '-') are section boundaries. A setext heading starts at its paragraph's
+    first line, so its text never counts as the previous section's body.
+    """
     start = 0
     if raw.startswith(b"---"):
         match = _FRONT_MATTER.match(raw)
         if match is None:
             return None
         start = match.end()
-    headings, fence, position = [], None, start
+    headings, fence, position, paragraph = [], None, start, None
     for line in raw[start:].splitlines(keepends=True):
         line_start, position = position, position + len(line)
         text = line.decode("utf-8").rstrip("\r\n")
@@ -429,11 +438,21 @@ def _outline(raw: bytes):
                 fence = None
             continue
         if marker:
-            fence = marker[1]
+            fence, paragraph = marker[1], None
             continue
         heading = _HEADING.fullmatch(text)
+        underline = None if heading or paragraph is None else _SETEXT.fullmatch(text)
         if heading:
-            headings.append((len(heading[1]), heading[2].strip(), line_start, position))
+            headings.append((len(heading[1]), (heading[2] or "").strip(), line_start, position, False))
+            paragraph = None
+        elif underline:
+            title = " ".join(raw[paragraph:line_start].decode("utf-8").split())
+            headings.append((1 if underline[1][0] == "=" else 2, title, paragraph, position, True))
+            paragraph = None
+        elif not text.strip():
+            paragraph = None
+        elif paragraph is None:
+            paragraph = line_start
     return None if fence is not None else headings
 
 
@@ -446,27 +465,37 @@ def _loose_title(title: str) -> str:
 
 
 def section_ranges(raw: bytes) -> dict:
-    """Byte ranges of non-blank 'Key Results'/'Limitations' heading bodies.
+    """Byte ranges of non-blank 'Key Results'/'Limitations' heading body text.
 
-    Titles must equal the names exactly after strip().casefold(), the rule
-    evidence-reads selects by. A body runs to the next heading of the same or
-    higher level. A target that only appears as a numbered or decorated
-    variant, or a file with unclosed front matter or fence, is None (unknown).
+    Titles must be ATX headings equal to the names exactly after
+    strip().casefold(), the rule evidence-reads selects by. A body runs to the
+    next heading of the same or higher level; nested heading lines are cut out,
+    so a section holding only sub-headings has no body. A target that only
+    appears as a numbered, decorated or setext variant, or a file with unclosed
+    front matter or fence, is None (unknown).
     """
     outline = _outline(raw)
     if outline is None:
         return dict.fromkeys(NOTES_TARGETS.values())
     found = {name: [] for name in NOTES_TARGETS.values()}
     uncertain = set()
-    for index, (level, title, _, body_start) in enumerate(outline):
-        name = NOTES_TARGETS.get(title.casefold())
+    for index, (level, title, _, body_start, setext) in enumerate(outline):
+        name = None if setext else NOTES_TARGETS.get(title.casefold())
         if name is None:
             if _loose_title(title) in NOTES_TARGETS:
                 uncertain.add(NOTES_TARGETS[_loose_title(title)])
             continue
-        end = next((item[2] for item in outline[index + 1:] if item[0] <= level), len(raw))
-        if raw[body_start:end].decode("utf-8").strip():
-            found[name].append((body_start, end))
+        later = outline[index + 1:]
+        end = next((item[2] for item in later if item[0] <= level), len(raw))
+        segments, cursor = [], body_start
+        for nested in later:
+            if nested[2] >= end:
+                break
+            segments.append((cursor, nested[2]))
+            cursor = nested[3]
+        segments.append((cursor, end))
+        found[name].extend(segment for segment in segments
+                           if raw[segment[0]:segment[1]].decode("utf-8").strip())
     return {name: None if not ranges and name in uncertain else ranges for name, ranges in found.items()}
 
 
@@ -625,16 +654,43 @@ def _located_span(evidence: dict, audited):
     return start, start + len(text)
 
 
-def _overlaps(raw: bytes, span, ranges, *, literal: bool) -> bool:
+def _json_characters(raw: bytes, first: int, last: int):
+    """(start, end, character) byte spans of a validated JSON string body, escapes decoded."""
+    text, offset, index = raw[first:last].decode("utf-8"), first, 0
+    while index < len(text):
+        if text[index] == "\\":
+            piece = text[index:index + (6 if text[index + 1] == "u" else 2)]
+            character = chr(int(piece[2:], 16)) if len(piece) == 6 else _JSON_ESCAPES[piece[1]]
+        else:
+            piece = character = text[index]
+        size = len(piece.encode("utf-8"))
+        yield offset, offset + size, character
+        offset, index = offset + size, index + len(piece)
+
+
+def _overlaps(raw: bytes, span, ranges, *, literal: bool) -> bool | None:
+    """Whether the span keeps non-blank target text.
+
+    JSON string bodies are judged by decoded characters. A span that cuts
+    through the escape of a non-blank character, and keeps no complete one,
+    cannot be classified and is None.
+    """
+    cut = False
     for first, last in ranges:
         low, high = max(span[0], first), min(span[1], last)
-        if low < high:
-            fragment = raw[low:high].decode("utf-8", "ignore")
-            if literal:
-                fragment = _JSON_ESCAPE.sub("", fragment)
-            if fragment.strip():
+        if low >= high:
+            continue
+        if not literal:
+            if raw[low:high].decode("utf-8", "ignore").strip():
                 return True
-    return False
+            continue
+        for start, end, character in _json_characters(raw, first, last):
+            if character.isspace() or end <= low or start >= high:
+                continue
+            if low <= start and end <= high:
+                return True
+            cut = True
+    return None if cut else False
 
 
 def _any_known(values) -> bool | None:
@@ -644,12 +700,26 @@ def _any_known(values) -> bool | None:
     return None if None in values else False
 
 
-def _indexed_body(text: str, section: str) -> str:
+def _indexed_body(text: str, section: str):
+    """(section name, retained body) after the generated prefix; None when it cannot be parsed.
+
+    Search bounds section metadata to fewer bytes than the excerpt, so the
+    name is read from the excerpt's own one-line 'Paper: … | Section: …'
+    prefix, which must start with the hit's (possibly shortened) section.
+    """
     if section == "__catalog__" or not text.startswith("Paper: "):
-        return text
-    marker = f" | Section: {section}\n\n"
-    position = text.find(marker)
-    return "" if position < 0 else text[position + len(marker):]
+        return section, text
+    head = text.find(_INDEXED_SECTION + section)
+    if head < 0 or "\n" in text[:head]:
+        return None
+    name = head + len(_INDEXED_SECTION)
+    end = text.find("\n\n", name + len(section))
+    if end < 0:
+        # The excerpt bound cut the one-line prefix itself: no body is retained.
+        return None if "\n" in text[name:] else (section, "")
+    if "\n" in text[name:end]:
+        return None
+    return text[name:end], text[end + 2:]
 
 
 def _indexed_coverage(source: dict, hits: dict) -> dict:
@@ -658,12 +728,14 @@ def _indexed_coverage(source: dict, hits: dict) -> dict:
         if item["kind"] != "indexed_passage":
             continue
         hit = hits.get(item["locator"])
-        if hit is None or hit["content_sha256"] != item["content_sha256"] or hit["excerpt"] != item["text"]:
+        parsed = None if hit is None or hit["content_sha256"] != item["content_sha256"] \
+            or hit["excerpt"] != item["text"] else _indexed_body(item["text"], hit["section"])
+        if parsed is None:
             results.append(None)
             limitations.append(None)
             continue
-        section = hit["section"].strip().casefold()
-        retained = bool(_indexed_body(item["text"], hit["section"]).strip())
+        section = parsed[0].strip().casefold()
+        retained = bool(parsed[1].strip())
         results.append(retained and "result" in section)
         limitations.append(retained and "limitation" in section)
     return {"indexed_results_section": _any_known(results),

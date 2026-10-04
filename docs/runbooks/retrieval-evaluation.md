@@ -139,24 +139,29 @@ target body:
 - `notes_key_results`, `notes_limitations`: Markdown ATX headings whose title
   equals `Key Results` or `Limitations` after `strip().casefold()`, ignoring
   front matter and fenced blocks. A body runs to the next heading of the same
-  or a higher level.
+  or a higher level. Nested heading lines are not body text, so a section that
+  holds only sub-headings is a known negative. Empty ATX headings (`##`) and
+  setext headings (text underlined with `=` or `-`) end a section.
 - `grounding_key_results`, `grounding_key_results_human`,
   `grounding_open_threads`, `grounding_limitations_human`: string values under
   the top-level `key_results`, `human.key_results_human`, `open_threads` and
   `human.limitations` of one JSON object, optionally fenced as `json`, after
   optional front matter. Property names and the trailing Markdown mirror never
-  count.
+  count. JSON escapes are decoded before a value is judged non-blank.
 - `indexed_results_section`, `indexed_limitations_section`: the full-text
   section name of the packet's own search hit contains `result` or
   `limitation` and the excerpt keeps a body after the generated
-  `Paper: … | Section: …` prefix. Indexed text may lag the files, and these
-  flags never stand in for notes or grounding coverage.
+  `Paper: … | Section: …` prefix. The name is read from that prefix, because
+  search shortens section metadata to 1000 bytes. Indexed text may lag the
+  files, and these flags never stand in for notes or grounding coverage.
 
 `has_key_results_text` and `has_limitations_text` combine the notes and
 grounding flags of one source. Each flag is `true`, `false` or `null`
-(unknown). Unknown covers unsupported grounding layouts, numbered or decorated
-near-miss headings, unclosed front matter or fences, unreadable files and
-evidence whose locator or hash does not match. Aggregates report the confirmed
+(unknown). Unknown covers unsupported grounding layouts, numbered, decorated
+or setext near-miss headings, unclosed front matter or fences, unreadable
+files, evidence whose locator or hash does not match, a retained span that
+cuts through the JSON escape of a non-blank character without keeping a
+complete one, and an indexed excerpt whose prefix cannot be parsed. Aggregates report the confirmed
 count, the packet-source denominator, the unknown count, a share only when
 nothing is unknown, and the confirmed lower bound. This is section-content
 coverage, not a judgment that a passage supports a claim.
