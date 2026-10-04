@@ -7,7 +7,7 @@ const ACTION_NAMES = [
   "selectThread", "createThread", "renameThread", "archiveThread", "unarchiveThread", "selectRun",
   "loadOlderRuns", "createRun", "runAction", "resolveDecision", "retainTurn", "takeRetainedTurn",
   "messageCommitted", "runCreated",
-  "turnOutcome", "capture", "decideCapture", "refreshCaptures", "selectSource", "openSource", "refreshSources", "refreshThread", "retry", "openThread",
+  "turnOutcome", "capture", "decideCapture", "refreshCaptures", "saveIdea", "refreshFragments", "selectSource", "openSource", "refreshSources", "refreshThread", "retry", "openThread",
   "selectResearchKind", "selectResearchStatus", "selectResearchItem", "browseResearchItems",
   "refreshResearchItems", "openResearchThread",
 ] as const;
@@ -27,7 +27,7 @@ export function baseState(overrides: Partial<ControlState> = {}): ControlState {
     workspaces: [], workspace: null, threads: [], archivedThreads: [], thread: null, loadedThreadId: null,
     messages: [], runs: [], nextRunCursor: null, run: null, selectedRunId: null, events: [],
     decisions: [], pendingDecisions: [], research: null, lastTurnOutcome: null, captures: [],
-    capturesLoading: false, capturesError: null, sources: [], sourcesLoading: false, sourcesError: null,
+    capturesLoading: false, capturesError: null, fragments: [], fragmentsLoading: false, fragmentsError: null, sources: [], sourcesLoading: false, sourcesError: null,
     sourceDetail: null, sourceDetailError: null, selectedSourceId: null, capabilities: null, selectedCaptureId: null,
     researchKind: "idea", researchStatus: null, researchItems: [], researchTotal: 0, researchLimit: 100,
     researchOffset: 0, researchListLoading: false, researchListError: null, selectedResearchItemId: null,

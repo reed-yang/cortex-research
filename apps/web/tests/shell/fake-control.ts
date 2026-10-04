@@ -11,6 +11,10 @@ export class FakeControl {
   events: Row[] = [];
   decisions: Row[] = [];
   captures: Row[] = [];
+  // Idea fragments in save order; the list route answers newest first.
+  fragments: Row[] = [];
+  // Control's receipts for fragment saves: a retried key answers the stored row.
+  private fragmentReceipts = new Map<string, Row>();
   sources: Row[] = [];
   contents: Row[] = [];
   research: Record<string, Row> = {};
@@ -27,6 +31,9 @@ export class FakeControl {
   // actually load" needs the request, not just the resulting rows.
   gets: string[] = [];
   failNext: { path: RegExp; status: number; category: string; current?: Row } | null = null;
+  // The next matching POST commits and then loses its response, the way a
+  // socket that closes after the write does.
+  loseNextResponse: RegExp | null = null;
   // A test that has to observe the shell WHILE a read is in flight arms this
   // hook; the fetch awaits it before it answers, so the in-flight window is a
   // fact of the test rather than a race with the microtask queue.
@@ -61,6 +68,11 @@ export class FakeControl {
   capture(id: string, payload: string, extra: Row = {}): Row {
     const row = { id, capture_key: payload, payload, kind: /^https?:/.test(payload) ? "url" : "text", note: "", state: "pending", known_source_id: null, consumed_source_ids: null, failure_category: null, blocked_by: null, available_source_id: null, payload_note: null, revision: 0, created_at: now, updated_at: now, ...extra };
     this.captures.push(row);
+    return row;
+  }
+  fragment(id: string, text: string, extra: Row = {}): Row {
+    const row = { id, text, note: "", origin: "web", thread_id: null, context_item_id: null, created_at: now, ...extra };
+    this.fragments.push(row);
     return row;
   }
   // Events carry their own cursor, which is what `/events` pages on.
@@ -160,8 +172,14 @@ export class FakeControl {
     }
     if (method === "POST") {
       const body = JSON.parse(String(init?.body ?? "{}")) as Row;
-      this.posts.push({ path, body, key: new Headers(init?.headers).get("Idempotency-Key") });
-      return this.handlePost(path, body);
+      const key = new Headers(init?.headers).get("Idempotency-Key");
+      this.posts.push({ path, body, key });
+      const response = this.handlePost(path, body, key);
+      if (this.loseNextResponse && this.loseNextResponse.test(path)) {
+        this.loseNextResponse = null;
+        throw new TypeError("socket closed after write");
+      }
+      return response;
     }
     this.gets.push(`${path}${url.search}`);
     return this.handleGet(path, url.searchParams);
@@ -219,6 +237,9 @@ export class FakeControl {
       return content ? this.json(content) : this.problem(404, "research_document_unavailable");
     }
     if (path === "captures") return list(this.captures);
+    if (path === "fragments") return list([...this.fragments].reverse());
+    m = path.match(/^fragments\/([^/]+)$/);
+    if (m) { const f = this.fragments.find((x) => x.id === m![1]); return f ? this.json(f) : this.problem(404, "not_found"); }
     if (path === "sources") return list(this.sources);
     // Search is a sibling route of the record, so it is answered before the
     // `sources/{id}` pattern can claim the word "search" as an identifier.
@@ -240,7 +261,14 @@ export class FakeControl {
     return this.problem(404, "not_found");
   }
 
-  private handlePost(path: string, body: Row): Response {
+  private handlePost(path: string, body: Row, key: string | null = null): Response {
+    if (path === "fragments") {
+      const stored = key ? this.fragmentReceipts.get(key) : undefined;
+      if (stored) return new Response(JSON.stringify(stored), { status: 201, headers: { "Content-Type": "application/json", "Idempotency-Replayed": "true" } });
+      const f = this.fragment(`fragment_${this.fragments.length + 1}`, String(body.text), { note: String(body.note) });
+      if (key) this.fragmentReceipts.set(key, f);
+      return this.json(f, 201);
+    }
     let m = path.match(/^workspaces\/([^/]+)\/rename$/);
     if (m) { const w = this.workspaces.find((x) => x.id === m![1])!; Object.assign(w, { title: body.title, revision: (w.revision as number) + 1 }); return this.json(w); }
     m = path.match(/^threads\/([^/]+)\/(rename|archive|unarchive)$/);

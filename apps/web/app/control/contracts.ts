@@ -117,6 +117,22 @@ export type Capture = {
   updated_at: string;
 };
 
+// A save-only idea. The text is verbatim and never rewritten; the adapter
+// reference and the actor stay in Control and are refused if they appear.
+export const FRAGMENT_ORIGINS = ["web", "telegram"] as const;
+
+export type FragmentOrigin = (typeof FRAGMENT_ORIGINS)[number];
+
+export type Fragment = {
+  id: string;
+  text: string;
+  note: string;
+  origin: FragmentOrigin;
+  thread_id: string | null;
+  context_item_id: string | null;
+  created_at: string;
+};
+
 export type RunEvent = {
   cursor: string;
   schema_version: number;
@@ -357,6 +373,40 @@ export const decodeCapture: Decoder<Capture> = (value, path = "capture") => {
     revision: integer(record.revision, `${path}.revision`),
     created_at: string(record.created_at, `${path}.created_at`),
     updated_at: string(record.updated_at, `${path}.updated_at`),
+  };
+};
+
+export const FRAGMENT_FIELDS = [
+  "id",
+  "text",
+  "note",
+  "origin",
+  "thread_id",
+  "context_item_id",
+  "created_at",
+];
+
+export const decodeFragment: Decoder<Fragment> = (value, path = "fragment") => {
+  const record = object(value, path);
+  for (const name of Object.keys(record)) {
+    if (!FRAGMENT_FIELDS.includes(name)) {
+      throw new ContractDecodeError(`${path}.${name}`, "unexpected fragment field");
+    }
+  }
+  const missing = FRAGMENT_FIELDS.find((name) => !(name in record));
+  if (missing) throw new ContractDecodeError(`${path}.${missing}`, "expected a fragment field");
+  const origin = string(record.origin, `${path}.origin`);
+  if (!(FRAGMENT_ORIGINS as readonly string[]).includes(origin)) {
+    throw new ContractDecodeError(`${path}.origin`, "expected web or telegram");
+  }
+  return {
+    id: string(record.id, `${path}.id`),
+    text: string(record.text, `${path}.text`),
+    note: string(record.note, `${path}.note`),
+    origin: origin as FragmentOrigin,
+    thread_id: nullableString(record.thread_id, `${path}.thread_id`),
+    context_item_id: nullableString(record.context_item_id, `${path}.context_item_id`),
+    created_at: string(record.created_at, `${path}.created_at`),
   };
 };
 

@@ -1,7 +1,7 @@
 // A read-only stand-in for the Control daemon, seeded with one world that is
 // wide enough for every shell surface: two projects (one of them empty), a
 // live thread with a pending decision, a failed thread, an archived thread,
-// three adopted sources and two captures. Every response is a fixed literal,
+// three adopted sources, two captures and two saved ideas. Every response is a fixed literal,
 // so a screenshot taken against it is the same bytes on every machine.
 
 import { createServer } from "node:http";
@@ -95,6 +95,19 @@ function capture(id, payload, kind, note, state, extra = {}) {
 const captures = [
   capture("cap_ttt", "https://arxiv.org/abs/2607.07675", "url", "Compare with the frozen cache baseline.", "pending"),
   capture("cap_note", "Memory drift should be measured before the context is scaled.", "text", "", "approved"),
+];
+
+// Saved ideas, newest first as the list route answers: one sent from Telegram
+// in the live thread and one typed in the Web Inbox.
+const fragments = [
+  {
+    id: "fragment_tg", text: "Try a smaller memory window first,\nthen compare drift.", note: "",
+    origin: "telegram", thread_id: thread.id, context_item_id: null, created_at: now,
+  },
+  {
+    id: "fragment_web", text: "Measure memory drift per layer.", note: "From the reading group.",
+    origin: "web", thread_id: null, context_item_id: null, created_at: earlier,
+  },
 ];
 
 // One readable document, so the Library's reader has something to show and the
@@ -206,6 +219,7 @@ export async function startMockControlServer(port = 8799) {
       send(response, 200, sourceNotes.get(contentRoute[1]));
     }
     else if (url.pathname === "/api/v1/captures") send(response, 200, page(captures));
+    else if (url.pathname === "/api/v1/fragments") send(response, 200, page(fragments));
     else if (url.pathname === "/api/v1/decisions" && url.searchParams.get("state") === "pending") send(response, 200, page([decision]));
     else if (url.pathname === "/api/v1/events") send(response, 200, { items: url.searchParams.has("after_cursor") ? [] : [failureEvent, event], next_cursor: event.cursor });
     else send(response, 404, { type: "urn:cortex:problem:not_found", title: "Not found", status: 404, category: "not_found", retryable: false, owner: "mock-cortexd" });

@@ -1260,3 +1260,101 @@ describe("Web access boundary health", () => {
     expect(duplicate.status).toBe(403);
   });
 });
+
+describe("idea fragment gateway", () => {
+  async function postFragment(body: string, path = ["fragments"]) {
+    return POST(
+      new NextRequest(`http://127.0.0.1:3000/api/cortex/${path.join("/")}`, {
+        method: "POST",
+        headers: mutationHeaders(),
+        body,
+      }),
+      { params: Promise.resolve({ path }) },
+    );
+  }
+
+  it.each([
+    { label: "list", path: ["fragments"] },
+    { label: "detail", path: ["fragments", "fragment_1"] },
+  ])("forwards the fragment $label read", async ({ path }) => {
+    configureControlGateway();
+    const upstream = vi.fn(async () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await GET(
+      new NextRequest(`http://127.0.0.1:3000/api/cortex/${path.join("/")}`, { headers: boundaryHeaders() }),
+      { params: Promise.resolve({ path }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(String((upstream.mock.calls[0] as unknown[])[0])).toBe(`http://127.0.0.1:8799/api/v1/${path.join("/")}`);
+  });
+
+  it.each([
+    ["fragments?limit=2", ["fragments"]],
+    ["fragments?cursor=fragment_1", ["fragments"]],
+    ["fragments/fragment_1?x=1", ["fragments", "fragment_1"]],
+  ])("refuses any query on %s", async (requestPath, path) => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await GET(
+      new NextRequest(`http://127.0.0.1:3000/api/cortex/${requestPath}`, { headers: boundaryHeaders() }),
+      { params: Promise.resolve({ path: path as string[] }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a multi-line idea", JSON.stringify({ text: "  first line\n第二行 ", note: "later" })],
+    ["an astral idea at the text bound", JSON.stringify({ text: "😀".repeat(16_384), note: "" })],
+    ["a note at its bound", JSON.stringify({ text: "idea", note: "é".repeat(2_000) })],
+  ])("forwards %s unchanged", async (_label, body) => {
+    configureControlGateway();
+    const upstream = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.body).toBe(body);
+      return new Response("{}", { status: 201, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await postFragment(body);
+
+    expect(response.status).toBe(201);
+    expect(String(upstream.mock.calls[0][0])).toBe("http://127.0.0.1:8799/api/v1/fragments");
+  });
+
+  it.each([
+    ["an extra key", '{"text":"idea","note":"","origin":"telegram"}'],
+    ["a missing note", '{"text":"idea"}'],
+    ["a missing text", '{"note":""}'],
+    ["a non-string text", '{"text":7,"note":""}'],
+    ["a null note", '{"text":"idea","note":null}'],
+    ["text one code point above the bound", JSON.stringify({ text: "😀".repeat(16_385), note: "" })],
+    ["a note above its bound", JSON.stringify({ text: "idea", note: "n".repeat(2_001) })],
+    ["an array", '["text","note"]'],
+  ])("refuses a fragment body with %s before Control", async (_label, body) => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await postFragment(body);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ category: "invalid_request" });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("does not forward a POST to a fragment detail", async () => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await postFragment('{"text":"idea","note":""}', ["fragments", "fragment_1"]);
+
+    expect(response.status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+});

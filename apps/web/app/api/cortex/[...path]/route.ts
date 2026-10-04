@@ -29,6 +29,9 @@ const GET_ROUTES = [
   /^decisions$/,
   /^captures$/,
   new RegExp(`^captures\\/${ID}$`),
+  // No query is forwarded, so the Web reads the first (newest) page only.
+  /^fragments$/,
+  new RegExp(`^fragments\\/${ID}$`),
 ];
 
 const CAPTURE_STATES = [
@@ -54,6 +57,7 @@ const POST_ROUTES = [
   new RegExp(`^decisions\\/${ID}\\/resolve$`),
   /^captures$/,
   new RegExp(`^captures\\/${ID}\\/(?:approve|dismiss|reopen)$`),
+  /^fragments$/,
 ];
 
 type RouteContext = { params: Promise<{ path: string[] }> };
@@ -186,6 +190,18 @@ function hasExactCaptureBody(body: string): boolean {
     [...decoded.payload].length <= 16_384;
 }
 
+// An idea is saved verbatim, so the edge pins exactly two string fields and
+// Control's bounds. Like the capture payload, both bounds count code points,
+// which is what the store's `len()` and SQLite's `length()` count.
+function hasExactFragmentBody(body: string): boolean {
+  const decoded = exactObjectBody(body, ["text", "note"]);
+  if (!decoded) return false;
+  return typeof decoded.text === "string" &&
+    typeof decoded.note === "string" &&
+    [...decoded.text].length <= 16_384 &&
+    [...decoded.note].length <= 2_000;
+}
+
 function hasExactRevisionBody(body: string): boolean {
   return exactObjectBody(body, ["expected_revision"]) !== null;
 }
@@ -218,6 +234,7 @@ const EXACT_BODY_ROUTES: Array<[RegExp, (body: string) => boolean, string]> = [
   [new RegExp(`^source-intents\\/${ID}\\/resolve$`), hasExactResolveBody, "The resolve command body is invalid"],
   [new RegExp(`^decisions\\/${ID}\\/resolve$`), hasExactResolveBody, "The resolve command body is invalid"],
   [/^captures$/, hasExactCaptureBody, "The capture command body is invalid"],
+  [/^fragments$/, hasExactFragmentBody, "The idea body is invalid"],
   [new RegExp(`^captures\\/${ID}\\/(?:approve|dismiss)$`), hasExactRevisionBody, "The capture command body is invalid"],
   [new RegExp(`^captures\\/${ID}\\/reopen$`), hasExactReopenBody, "The capture command body is invalid"],
   [new RegExp(`^workspaces\\/${ID}\\/rename$`), hasExactRenameBody, "The rename command body is invalid"],

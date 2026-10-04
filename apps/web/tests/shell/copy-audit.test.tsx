@@ -14,7 +14,7 @@ afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
 // shortened id is the same leak, so the suffix is any word body -- plus bare
 // uuids and long hashes, which carry no prefix at all.
 const RAW_ID = new RegExp([
-  "\\b(?:run|attempt|thr|thread|ws|workspace|cap|capture|src|source|dec|decision|msg|message|evt|event)_[A-Za-z0-9-]+",
+  "\\b(?:run|attempt|thr|thread|ws|workspace|cap|capture|src|source|dec|decision|msg|message|evt|event|fragment|ri)_[A-Za-z0-9-]+",
   "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
   "\\b[0-9a-f]{24,}\\b",
 ].join("|"), "i");
@@ -28,6 +28,9 @@ const SPOKEN_ATTRIBUTES = ["aria-label", "placeholder", "title", "alt"];
 function visibleText(container: HTMLElement): string {
   const clone = container.cloneNode(true) as HTMLElement;
   clone.querySelectorAll("[data-details]").forEach((node) => node.remove());
+  // Text the operator wrote and Cortex shows verbatim (a saved idea) is theirs,
+  // not chrome; the audit covers everything around it.
+  clone.querySelectorAll("[data-verbatim]").forEach((node) => node.remove());
   const parts: string[] = [];
   const walker = clone.ownerDocument.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) parts.push(walker.currentNode.nodeValue ?? "");
@@ -40,6 +43,8 @@ function visibleText(container: HTMLElement): string {
 function bannedWord(text: string): string | null {
   return text.match(BANNED_WORDS)?.[1] ?? null;
 }
+
+const VERBATIM_IDEA = "  Replay the dedup idea against hash 0123456789abcdef0123456789abcdef\n  second line";
 
 function seeded(): FakeControl {
   const control = new FakeControl();
@@ -62,6 +67,13 @@ function seeded(): FakeControl {
     available_source_id: "source_11aabbcc", payload_note: "summarize the method",
   });
   control.source("source_11aabbcc", "arxiv:2401.12345", "Memory in long-horizon agents");
+  // A saved idea is the operator's own words, shown verbatim: they may say
+  // "replay" or paste a hash, and the audit must not prohibit that. Its ids --
+  // the idea, the bound thread, the item at the time -- stay under Details.
+  control.fragment("fragment_5eed1dea", VERBATIM_IDEA, {
+    origin: "telegram", thread_id: "thread_1a2b3c4d", context_item_id: "ri_" + "c".repeat(32),
+    note: "check the cursor logic",
+  });
   // A research item whose every identity -- the item, its origin, its document
   // version and its digest -- is one the audit would catch if it reached a
   // screen outside a disclosure.
@@ -120,6 +132,16 @@ describe("shell copy audit", () => {
       await screen.findByRole("heading", { name: copy[view].title });
       check(view);
     }
+
+    // The idea is shown exactly as saved, even though its words would fail
+    // the chrome audit above.
+    await open("inbox");
+    const idea = await waitFor(() => {
+      const node = container.querySelector("[data-fragment-id] [data-verbatim]");
+      expect(node).not.toBeNull();
+      return node!;
+    });
+    expect(idea.textContent).toBe(VERBATIM_IDEA);
 
     // The dossier too: it is the one screen that holds an item's original
     // identity, its document version and that version's digest.
@@ -192,7 +214,7 @@ describe("the guards the audit runs on", () => {
   it("sees an identifier however short its body is, and no ordinary phrase", () => {
     for (const id of [
       "ws_1", "thread_1", "run_abc", "run_deadbeef01", "thr_9f8e", "cap_2", "src_11aabbcc",
-      "dec_00ff00ff", "msg_1", "evt_7", "workspace_1", "attempt_abcdef01",
+      "dec_00ff00ff", "msg_1", "evt_7", "workspace_1", "attempt_abcdef01", "fragment_1", "ri_" + "a".repeat(32),
       "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "a".repeat(24),
     ]) {
       expect(`Cortex says ${id} here.`.match(RAW_ID)?.[0] ?? null, id).not.toBeNull();

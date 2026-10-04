@@ -1,6 +1,6 @@
 import type { PreparedMutation } from "../control/client";
 import type { ReplayState } from "../control/event-replay";
-import type { Capture, Decision, Message, Run, RunEvent, Thread, Workspace } from "../control/contracts";
+import type { Capture, Decision, Fragment, Message, Run, RunEvent, Thread, Workspace } from "../control/contracts";
 import type { ResearchWorkflowProjection, SourceProjection } from "../control/research-contracts";
 import type {
   ResearchItem,
@@ -51,6 +51,11 @@ export type ControlState = {
   selectedCaptureId: string | null;
   capturesLoading: boolean;
   capturesError: string | null;
+  // Saved ideas, newest first: the first page Control answers, read on Inbox
+  // entry, after a save and on demand. A failed read keeps the rows shown.
+  fragments: Fragment[];
+  fragmentsLoading: boolean;
+  fragmentsError: string | null;
   sources: SourceProjection[];
   sourcesLoading: boolean;
   sourcesError: string | null;
@@ -112,6 +117,11 @@ export type ControlActions = {
   capture(payload: string, note: string, approveNow: boolean): Promise<boolean>;
   decideCapture(capture: Capture, action: CaptureActionName): Promise<void>;
   refreshCaptures(): void;
+  // Saves the text exactly as typed and starts nothing. `true` once Control
+  // confirmed the save; an unconfirmed save keeps its command, so saving the
+  // same text and note again retries it under the same key.
+  saveIdea(text: string, note: string): Promise<boolean>;
+  refreshFragments(): void;
   selectSource(id: string): void;
   // Navigates to the Library and selects this source there, from any view.
   // Read-only: it sends no command.
