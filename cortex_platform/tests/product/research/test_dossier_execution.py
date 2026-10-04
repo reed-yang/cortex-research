@@ -477,6 +477,145 @@ def test_excerpts_are_bounded_windows_with_line_and_offset_locators():
     assert document_excerpts("", "anything") == []
 
 
+#: One line that fills the byte-bounded head by itself, so line 2 starts the body.
+HEAD_LINE = "H" * MAX_EXCERPT_BYTES
+
+
+def ranked(body, query, head=HEAD_LINE):
+    """Excerpts for a document made of one full head line and the given body lines."""
+    return document_excerpts("\n".join([head, *body]) + "\n", query)
+
+
+def line_range(excerpt):
+    """The 1-based inclusive line range an excerpt locator names."""
+    first, last = excerpt["locator"].split(":")[1].split("-")
+    return int(first), int(last)
+
+
+def filler(count, **matches):
+    """Body lines of filler with selected 0-based indexes replaced by match text."""
+    lines = [f"filler line {index}" for index in range(count)]
+    for index, text in matches.items():
+        lines[int(index.lstrip("_"))] = text
+    return lines
+
+
+def test_distinct_terms_outrank_earlier_single_term_windows():
+    body = filler(60, _5="alpha early one", _20="alpha early two", _40="alpha beta gamma later")
+    excerpts = ranked(body, "alpha beta gamma")
+    assert [item["kind"] for item in excerpts] == ["document_prefix", "document_match", "document_match"]
+    assert excerpts[0]["locator"] == "lines:1-1:offset:0" and excerpts[0]["text"] == HEAD_LINE
+    # Body index 40 is document line 42; the window keeps two lines before it
+    # and six exclusive after, exactly as the first-match windows did.
+    expected = "\n".join(body[38:46])
+    assert excerpts[1] == {
+        "kind": "document_match", "text": expected, "retained_sha256": digest(expected),
+        "locator": f"lines:40-47:offset:{MAX_EXCERPT_BYTES + 1 + sum(len(line) + 1 for line in body[:38])}"}
+    assert "alpha early one" in excerpts[2]["text"]
+    assert not any("alpha early two" in item["text"] for item in excerpts)
+    ranges = sorted(line_range(item) for item in excerpts)
+    assert all(left[1] < right[0] for left, right in zip(ranges, ranges[1:]))
+
+
+def test_repeating_one_term_does_not_outrank_distinct_terms():
+    body = filler(60, _5="alpha alpha alpha alpha", _20="alpha beta", _40="alpha")
+    excerpts = ranked(body, "alpha beta")
+    assert "alpha beta" in excerpts[1]["text"]
+    assert "alpha alpha alpha alpha" in excerpts[2]["text"]
+    assert len(excerpts) == MAX_EXCERPTS
+
+
+def test_equal_scores_break_ties_by_start_line_then_end_line():
+    # Body lines 0 and 1 both clamp their window start to the end of the head,
+    # so they tie on start line; the shorter window (earlier end line) wins.
+    body = filler(60, _0="alpha", _1="alpha", _30="alpha", _50="alpha")
+    excerpts = ranked(body, "alpha")
+    assert [item["locator"].split(":offset")[0] for item in excerpts] == [
+        "lines:1-1", "lines:2-7", "lines:30-37"]
+    assert excerpts == ranked(body, "alpha")
+
+
+def test_match_windows_never_start_inside_or_overlap_the_head():
+    # 60 filler lines of 100 bytes leave the head at document lines 1-60, so
+    # the match at line 62 would start its window at line 60 without the clamp.
+    head = "\n".join(["alpha inside the head"] + ["h" * 99] * 60)
+    excerpts = document_excerpts(head + "\nalpha right after the head\n" + "tail\n" * 20, "alpha")
+    head_end = line_range(excerpts[0])[1]
+    assert excerpts[0]["kind"] == "document_prefix" and "alpha inside the head" in excerpts[0]["text"]
+    assert len(excerpts) == 2 and excerpts[1]["text"].startswith("h" * 99)
+    assert line_range(excerpts[1])[0] == head_end + 1
+
+
+def test_cjk_bigrams_select_later_evidence_over_early_single_character_matches():
+    # Early lines share single characters (的, 效, 码) with the query but no bigram.
+    early = [f"第{index}条日志的内容效码" for index in range(40)]
+    body = early + ["推测解码的加速效果明显", "补充", "补充", "补充", "补充", "补充", "补充",
+                    "补充", "补充", "解码速度另有记录"] + ["补充"] * 10
+    excerpts = ranked(body, "推测解码的加速效果", head="头" * (MAX_EXCERPT_BYTES // 3))
+    assert len(excerpts) == 3
+    assert "推测解码的加速效果明显" in excerpts[1]["text"]
+    assert "解码速度另有记录" in excerpts[2]["text"]
+    assert not any("第0条日志" in item["text"] for item in excerpts[1:])
+
+
+def test_isolated_han_characters_and_boundaries_form_no_terms():
+    from cortex_platform.product.research.service import _document_terms
+
+    assert _document_terms("机器学习，推理ok 码 A") == {"机器", "器学", "学习", "推理", "ok"}
+    assert _document_terms("Wan2.1 推 理") == {"wan2"}
+    body = filler(30, _10="推测解码 记录")
+    # A single Han character, or characters split by punctuation, whitespace or
+    # ASCII, used to match every line containing them; now only the head remains.
+    for query in ("码", "推，测", "推 测", "推1测", "推、测"):
+        assert [item["kind"] for item in ranked(body, query)] == ["document_prefix"], query
+    assert len(ranked(body, "推测")) == 2
+
+
+def test_scoring_reads_only_the_retained_clipped_bytes():
+    # The window around body line 0 would hold alpha, beta and gamma unclipped,
+    # but clipping to MAX_EXCERPT_BYTES keeps only the long alpha line.
+    body = ["alpha " + "x" * MAX_EXCERPT_BYTES, "beta gamma"] + filler(30, _18="alpha beta")
+    excerpts = ranked(body, "alpha beta gamma")
+    assert len(excerpts) == 3
+    assert "alpha beta" in excerpts[1]["text"] and line_range(excerpts[1])[0] > 3
+    assert excerpts[2]["text"].startswith("alpha xxx") and line_range(excerpts[2]) == (2, 2)
+    assert len(excerpts[2]["text"].encode("utf-8")) == MAX_EXCERPT_BYTES
+    assert not any("gamma" in item["text"] for item in excerpts)
+
+
+def test_multibyte_clipping_keeps_valid_utf8_hashes_and_original_offsets():
+    line = "a" + "解码" * 1500
+    text = "\n".join([HEAD_LINE, line, "tail"]) + "\n"
+    excerpts = document_excerpts(text, "解码")
+    match = excerpts[1]
+    # 1 + 3 * 1999 bytes fit; the next three-byte character would not.
+    assert match["text"] == line[:2000] and len(match["text"].encode("utf-8")) == 5998
+    assert match["retained_sha256"] == digest(match["text"])
+    assert match["locator"] == f"lines:2-2:offset:{MAX_EXCERPT_BYTES + 1}"
+    offset = int(match["locator"].rsplit(":", 1)[1])
+    assert text.encode("utf-8")[offset:].decode("utf-8").startswith(match["text"])
+
+
+def test_empty_queries_and_blank_documents_keep_only_what_exists():
+    body = filler(20, _10="alpha")
+    assert [item["kind"] for item in ranked(body, "")] == ["document_prefix"]
+    assert [item["kind"] for item in ranked(body, "beta")] == ["document_prefix"]
+    assert document_excerpts("", "alpha") == []
+    assert document_excerpts("  \n\n\t\n", "alpha") == []
+
+
+def test_line_numbers_and_offsets_follow_str_splitlines_separators():
+    text = (HEAD_LINE + "\r\n" + "one\x0ctwo three\r\n" + "filler\n" * 3
+            + "alpha target\n" + "tail\n" * 8)
+    match = document_excerpts(text, "alpha")[1]
+    # Lines 2-4 are split by form feed and U+2028; the window starts two lines
+    # before the match at line 8. Its offset counts 6000+2, 4, 6, 7 and 7 bytes.
+    assert match["locator"] == f"lines:6-13:offset:{MAX_EXCERPT_BYTES + 26}"
+    assert match["text"] == "filler\nfiller\nalpha target" + "\ntail" * 5
+    offset = int(match["locator"].rsplit(":", 1)[1])
+    assert text.encode("utf-8")[offset:].decode("utf-8").startswith(match["text"])
+
+
 def test_selected_item_title_feeds_paper_retrieval(dossier, knowledge):
     store, *_ = dossier
     add_chunks(knowledge[2], ENGLISH, ["robotics project milestones"])
