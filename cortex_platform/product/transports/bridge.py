@@ -1422,7 +1422,7 @@ class InboundTurnBridge:
         never open. `_sweep_stalled` runs on the loop's cadence tick, where
         launching a worker to hand a pin back would be far worse than the pin.
         So this builds the two things a release actually needs -- the store and
-        `ManagedTransportWorker.releases` (managed_worker.py:806), the updater
+        `ManagedTransportWorker.releases` (managed_worker.py:852), the updater
         service the binding already resolved through, which is constructed with
         the worker and needs no `acquire()` -- and no runtime.
         """

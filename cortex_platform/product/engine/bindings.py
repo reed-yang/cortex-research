@@ -230,7 +230,7 @@ class EngineRoots:
     `research-corpus` at `<data_dir>/research/corpus`, so the name is `corpus`.
     `CORTEX_PAPERS_DIR` names that directory directly, but
     `CORTEX_AGENT_READINGS` is one level up because
-    `profiles/research/src/cortex_research/index_papers.py:16-33` appends
+    `profiles/research/src/cortex_research/index_papers.py:18-35` appends
     `papers` to it, and appending `papers` to the corpus's parent
     answers the corpus only when the corpus is itself called `papers`. Binding
     one and not the other splits the corpus (F4), so `readings_root` is a
