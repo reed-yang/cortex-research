@@ -30,7 +30,7 @@ RESEARCH_CONTEXTS_MIGRATION = 17
 #: never deleted. A column, not a table, so backup.py's table roster is unchanged.
 THREAD_ARCHIVE_MIGRATION = 18
 RESEARCH_ITEMS_MIGRATION = 19
-#: Save-only idea fragments. Provisional slot: renumbered against main at merge.
+#: Save-only idea fragments: verbatim operator text that starts no turn or run.
 IDEA_FRAGMENTS_MIGRATION = 20
 SCHEMA_VERSION = IDEA_FRAGMENTS_MIGRATION
 
