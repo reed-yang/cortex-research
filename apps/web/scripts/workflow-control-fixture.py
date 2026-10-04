@@ -9,6 +9,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import stat
 import tempfile
 from collections import Counter
@@ -853,6 +854,50 @@ def assert_capture(root: Path) -> dict[str, Any]:
     return {"state": "capture_still_failed"}
 
 
+# The idea the browser saves through the Inbox: leading and trailing spaces, a
+# blank line, CJK and an emoji, all of which must arrive unchanged.
+IDEA_TEXT = "  第一行的想法 🎬\n\n  indented second line  "
+IDEA_NOTE = "Synthetic idea note"
+_EFFECT_TABLES = ("messages", "runs", "captures", "idea_fragments")
+
+
+def _effect_counts(root: Path) -> dict[str, int]:
+    with sqlite3.connect(f"{_database(root).as_uri()}?mode=ro", uri=True) as conn:
+        return {
+            table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in _EFFECT_TABLES
+        }
+
+
+def record_effects(root: Path) -> dict[str, Any]:
+    """Row counts before the browser saves an idea."""
+
+    counts = _effect_counts(root)
+    _write_state(root, {**_read_state(root), **{f"before_{key}": str(value) for key, value in counts.items()}})
+    return {"state": "effects_recorded", **counts}
+
+
+def assert_fragment(root: Path) -> dict[str, Any]:
+    """One idea saved verbatim, and no message, run or Capture beside it."""
+
+    state = _read_state(root)
+    before = {table: int(state[f"before_{table}"]) for table in _EFFECT_TABLES}
+    after = _effect_counts(root)
+    expected = {**before, "idea_fragments": before["idea_fragments"] + 1}
+    if after != expected:
+        raise AssertionError(f"saving an idea changed other rows: {before} -> {after}")
+    [fragment] = list(ControlStore(_database(root)).list_fragments(limit=1))
+    if (
+        fragment["text"] != IDEA_TEXT
+        or fragment["note"] != IDEA_NOTE
+        or fragment["origin"] != "web"
+        or fragment["thread_id"] is not None
+        or fragment["context_item_id"] is not None
+    ):
+        raise AssertionError("the saved idea is not the text the browser sent")
+    return {"state": "fragment_saved_verbatim", **after}
+
+
 def _manifest_counts(store: ControlStore, run_id: str, thread_id: str, workspace_id: str) -> dict[str, int]:
     projection = ResearchWorkflowProjector(store).project(run_id)
     return {
@@ -963,7 +1008,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     for name in (
         "assert-network-guard", "seed-g0", "advance-source", "advance-lineage", "emit-redacted", "assert-g0", "assert-g1",
-        "seed-capture", "adopt-capture-paper", "assert-capture",
+        "seed-capture", "adopt-capture-paper", "assert-capture", "record-effects", "assert-fragment",
     ):
         command = commands.add_parser(name)
         command.add_argument("--root", required=True)
@@ -987,6 +1032,8 @@ def main() -> int:
         "seed-capture": seed_capture,
         "adopt-capture-paper": adopt_capture_paper,
         "assert-capture": assert_capture,
+        "record-effects": record_effects,
+        "assert-fragment": assert_fragment,
     }
     if arguments.command == "assert-network-guard":
         result = {"state": "network_guarded", "probes": network_guard_probes}

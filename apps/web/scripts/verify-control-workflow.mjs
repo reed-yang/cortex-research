@@ -56,6 +56,9 @@ const capturePayload = "https://arxiv.org/abs/2608.00042 请总结方法部分";
 const captureNote = "Synthetic capture note";
 const captureDerivedNote = "请总结方法部分";
 const capturePaperTitle = "Synthetic Capture Paper for Library Navigation";
+// The idea `workflow-control-fixture.py assert-fragment` expects, byte for byte.
+const ideaText = "  第一行的想法 🎬\n\n  indented second line  ";
+const ideaNote = "Synthetic idea note";
 const execution = { pids: [], ports: [], root: null, secrets: [] };
 
 function outputCollector(description) {
@@ -664,6 +667,7 @@ async function main() {
   let failure;
   let networkGuardProbes = 0;
   let captureSourceOpened = false;
+  let ideaSaved = false;
   try {
     await mkdir(path.join(temporaryRoot, "home"), { mode: 0o700 });
     const networkGuardSummary = await runFixture("assert-network-guard", temporaryRoot, capability, secrets, processOutputs);
@@ -879,6 +883,58 @@ async function main() {
     summaries.push(await runFixture("assert-capture", temporaryRoot, capability, secrets, processOutputs));
     captureSourceOpened = true;
 
+    // A saved idea: the first save reaches Control and commits, and the page
+    // is then handed the gateway's own retryable 503 in place of the answer,
+    // so the second click must replay that save under the same key. The
+    // request itself leaves the browser unchanged -- a network route cannot
+    // resend the browser's fetch-metadata headers, and the access boundary
+    // requires them. One card shows the text exactly as typed, and Control
+    // holds one verbatim row and no message, run or Capture.
+    summaries.push(await runFixture("record-effects", temporaryRoot, capability, secrets, processOutputs));
+    await activePage.addInitScript((problemBody) => {
+      const realFetch = window.fetch.bind(window);
+      let dropped = false;
+      window.fetch = async (input, init) => {
+        const response = await realFetch(input, init);
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.href);
+        const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+        if (dropped || method !== "POST" || url.pathname !== "/api/cortex/fragments") return response;
+        dropped = true;
+        window.__cortexDroppedSaveStatus = response.status;
+        // Read to the end, so the committed answer finishes like any other.
+        await response.arrayBuffer();
+        return new Response(problemBody, { status: 503, headers: { "Content-Type": "application/problem+json" } });
+      };
+    }, JSON.stringify({ category: "control_gateway_unavailable", owner: "cortex-web", retryable: true, status: 503, title: "The local Cortex Control gateway is unavailable", type: "urn:cortex:web-problem:control_gateway_unavailable" }));
+    await activePage.goto(new URL("/?view=inbox", web.origin).href, { waitUntil: "domcontentloaded" });
+    const ideas = activePage.getByRole("region", { name: copy.inbox.ideas, exact: true });
+    await ideas.getByText(copy.inbox.noIdeas, { exact: true }).waitFor();
+    const ideaBox = activePage.getByLabel(copy.inbox.ideaLabel, { exact: true });
+    await ideaBox.fill(ideaText);
+    await activePage.getByLabel(copy.inbox.ideaNoteLabel, { exact: true }).fill(ideaNote);
+    const fragmentsRoute = new URL("/api/cortex/fragments", web.origin).href;
+    await activePage.getByRole("button", { name: copy.inbox.saveIdea, exact: true }).click();
+    await activePage.getByText(copy.errors.unconfirmed, { exact: true }).waitFor();
+    assert.equal(await activePage.evaluate(() => window.__cortexDroppedSaveStatus), 201, "the first save must reach Control and commit");
+    assert.equal(await ideaBox.inputValue(), ideaText, "an unconfirmed save must keep the typed idea");
+    const retriedSave = activePage.waitForResponse((response) => response.request().method() === "POST" && response.url() === fragmentsRoute);
+    await activePage.getByRole("button", { name: copy.inbox.saveIdea, exact: true }).click();
+    const retryAnswer = await retriedSave;
+    assert.equal(retryAnswer.status(), 201);
+    assert.equal(retryAnswer.headers()["idempotency-replayed"], "true", "the retry must replay the committed save");
+    await activePage.getByText(copy.notice.ideaSaved, { exact: true }).waitFor();
+    const ideaCards = ideas.locator(`article[aria-label="${copy.fragment.label}"]`);
+    await ideaCards.first().waitFor();
+    assert.equal(await ideaCards.count(), 1, "a replayed save must show one idea");
+    const shownIdea = ideaCards.first().locator("[data-verbatim]").first();
+    assert.equal(await shownIdea.textContent(), ideaText);
+    assert.equal(await shownIdea.evaluate((node) => getComputedStyle(node).whiteSpace), "pre-wrap", "the idea's spaces and blank line must stay visible");
+    assert.equal(await ideaBox.inputValue(), "", "a confirmed save clears the composer");
+    await assertNoOverflow(activePage);
+    await quiesceResponses(responseRecords);
+    summaries.push(await runFixture("assert-fragment", temporaryRoot, capability, secrets, processOutputs));
+    ideaSaved = true;
+
     const state = await browserState(activePage);
     browserStates.push(state);
     const serviceWorker = await activePage.evaluate(async () => await (await fetch("/sw.js")).text());
@@ -956,7 +1012,7 @@ async function main() {
     }
   }
   if (failure) throw failure;
-  process.stdout.write(`${JSON.stringify({ artifact_leak_probes: artifactLeakProbes, browser_websocket_guard_probes: blockedWebSockets.length, capture_source_opened: captureSourceOpened, network_guard_probes: networkGuardProbes, pids, ports, response_boundary_probes: responseBoundaryProbes, sse_frame_probes: sseFrameProbes, status: "ok" })}\n`);
+  process.stdout.write(`${JSON.stringify({ artifact_leak_probes: artifactLeakProbes, browser_websocket_guard_probes: blockedWebSockets.length, capture_source_opened: captureSourceOpened, idea_saved: ideaSaved, network_guard_probes: networkGuardProbes, pids, ports, response_boundary_probes: responseBoundaryProbes, sse_frame_probes: sseFrameProbes, status: "ok" })}\n`);
 }
 
 await main().catch((error) => {
