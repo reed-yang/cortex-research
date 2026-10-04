@@ -45,3 +45,4 @@ Adding a tracked file to `.gitignore` does not untrack it or remove its history.
 Never force-add the operator directory, logs, research data or deployment archives.
 
 - [Paper index maintenance](runbooks/paper-index-maintenance.md): audit and refresh corpus/index/adoption state while preserving notes and provenance.
+- [Retrieval evaluation](runbooks/retrieval-evaluation.md): measure retrieval and fresh research packets on a frozen, checkpointed snapshot.
