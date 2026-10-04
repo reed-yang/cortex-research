@@ -24,7 +24,23 @@ DRAFT = "Unverified research draft: missing or invalid source citation labels.\n
 #: Lines of context kept around a query match inside an adopted dossier.
 _MATCH_BEFORE = 2
 _MATCH_AFTER = 6
-_TERM = re.compile("[0-9A-Za-z]{2,}|[\\u4e00-\\u9fff]")
+_ASCII_TERM = re.compile("[0-9A-Za-z]{2,}")
+_HAN_RUN = re.compile("[\\u4e00-\\u9fff]{2,}")
+
+
+def _document_terms(query):
+    """Distinct dossier match terms: ASCII words and overlapping Han bigrams.
+
+    Each contiguous run of two or more Han characters contributes every adjacent
+    pair; no pair spans whitespace, punctuation or ASCII, and an isolated Han
+    character contributes nothing. Paper search derives its own terms in
+    sources.search and deliberately does not share this dossier-only rule.
+    """
+    query = query or ""
+    terms = {match.group().lower() for match in _ASCII_TERM.finditer(query)}
+    for run in _HAN_RUN.findall(query):
+        terms.update(run[index:index + 2] for index in range(len(run) - 1))
+    return frozenset(terms)
 
 
 def _clip(text, limit=MAX_EXCERPT_BYTES):
@@ -36,10 +52,14 @@ def _clip(text, limit=MAX_EXCERPT_BYTES):
 
 
 def document_excerpts(text, query):
-    """Bounded, locatable evidence: the document's head plus query-matched windows.
+    """Bounded, locatable evidence: the document's head plus its best query windows.
 
     Never the whole tree and never the whole file -- an excerpt is a byte-bounded
     window of one retained version, addressed by its line range and byte offset.
+    Every matching line after the head proposes a window; windows rank by how
+    many distinct query terms their retained (clipped) text shows, then by start
+    and end line, and the best ones that overlap neither the head nor each other
+    follow the head. This is lexical selection, not semantic relevance.
     """
     original_lines = text.splitlines(keepends=True)
     lines = text.splitlines()
@@ -50,33 +70,41 @@ def document_excerpts(text, query):
         offsets.append(position)
         position += len(line.encode("utf-8"))
 
-    def window(first, last, kind):
+    def window(first, last):
+        """The retained text of lines[first:last] and its 1-based inclusive line span."""
         body = _clip("\n".join(lines[first:last]))
         if not body.strip():
             return None
-        used = len(body.splitlines())
+        return (first + 1, first + max(len(body.splitlines()), 1)), body
+
+    def excerpt(kind, span, body):
         return {"kind": kind, "text": body, "retained_sha256": digest(body),
-                "locator": f"lines:{first + 1}-{first + max(used, 1)}:offset:{offsets[first]}"}
+                "locator": f"lines:{span[0]}-{span[1]}:offset:{offsets[span[0] - 1]}"}
 
     head = 1
     while (head < len(lines)
            and offsets[head] - offsets[0] + len(lines[head].encode("utf-8")) <= MAX_EXCERPT_BYTES):
         head += 1
-    excerpts = [item for item in (window(0, head, "document_prefix"),) if item is not None]
-    terms = {match.group().lower() for match in _TERM.finditer(query or "")}
-    covered = head
+    prefix = window(0, head)
+    chosen = [] if prefix is None else [("document_prefix", *prefix)]
+    terms = _document_terms(query)
+    candidates = {}
     for index in range(head, len(lines)):
-        if len(excerpts) >= MAX_EXCERPTS:
-            break
-        if index < covered or not any(term in lines[index].lower() for term in terms):
+        if not any(term in lines[index].lower() for term in terms):
             continue
-        first = max(covered, index - _MATCH_BEFORE)
-        last = min(len(lines), index + _MATCH_AFTER)
-        match = window(first, last, "document_match")
-        if match is not None:
-            excerpts.append(match)
-        covered = last
-    return excerpts
+        # Windows never start inside the head, and identical retained spans count once.
+        found = window(max(head, index - _MATCH_BEFORE), min(len(lines), index + _MATCH_AFTER))
+        if found is not None and found[0] not in candidates:
+            retained = found[1].lower()
+            candidates[found[0]] = sum(term in retained for term in terms), found[1]
+    ranked = sorted(((score, span, body) for span, (score, body) in candidates.items() if score),
+                    key=lambda item: (-item[0], item[1]))
+    for _, span, body in ranked:
+        if len(chosen) >= MAX_EXCERPTS:
+            break
+        if all(span[1] < other[0] or other[1] < span[0] for _, other, _ in chosen):
+            chosen.append(("document_match", span, body))
+    return [excerpt(*item) for item in chosen]
 
 
 def _dossier_directive(snapshot):

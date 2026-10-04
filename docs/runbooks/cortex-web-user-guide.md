@@ -140,6 +140,16 @@ versions stay. It then selects up to six papers with up to two matching passages
 each. The answer still receives the exact question, and plain follow-ups reuse
 the retained packet without searching again.
 
+Dossier excerpts match the exact question. Each retained dossier version
+contributes its opening section plus up to two nonoverlapping windows of nearby
+lines, ranked by how many distinct question terms each window contains, with
+earlier windows first on ties. English terms are runs of two or more letters or
+digits, matched case-insensitively anywhere in a line, including inside longer
+words: "ai" also matches "chain". Chinese terms are pairs of adjacent
+characters, never across spaces, punctuation or Latin text. A single Chinese
+character is not a term, so a one-character question selects only the opening
+section. This is substring matching, not semantic search.
+
 Use `/research` again when the question changes enough to need new evidence. For
 a follow-up that should reuse the same evidence, plain text is sufficient.
 Selecting Research while already in that mode does not itself refresh evidence.
