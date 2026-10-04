@@ -20,9 +20,11 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 from contextlib import contextmanager
+from json.decoder import scanstring
 from pathlib import Path
 
 from cortex_platform.product.artifacts import materializer as _materializer
@@ -49,6 +51,7 @@ from cortex_platform.product.sources.reader import (
     KINDS,
     MAX_FILE_BYTES,
     MAX_FILE_LINES,
+    MAX_PAGE_BYTES,
     SourceContentUnavailable,
     SourceKnowledgeReader,
     SourceQueryInvalid,
@@ -82,7 +85,35 @@ DEFINITIONS = {
     "packet_recall": ("|packet canonical_ids intersect R| / |R| for the fresh, unselected, "
                       "library-only ResearchService.prepare packet."),
     "language": "zh and mixed cohorts are reported separately; mixed English hits do not prove Chinese retrieval.",
+    "coverage": ("Retained packet bytes that overlap a non-blank target body: notes headings titled exactly "
+                 "'Key Results'/'Limitations' (casefold), grounding JSON string values under key_results, "
+                 "human.key_results_human, open_threads and human.limitations. Indexed flags use the "
+                 "full-text section of the packet's own search hit and may lag files. null means unknown; "
+                 "a share is reported only when every packet source is classifiable. Section-content "
+                 "coverage, not claim support."),
 }
+_LOCATOR = re.compile(r"(?P<kind>notes|grounding|full_text):lines:(?P<first>\d+)-(?P<last>\d+):offset:(?P<offset>\d+)")
+_FRONT_MATTER = re.compile(rb"---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*")
+_NUMBERING = re.compile(r"(?:\d+(?:\.\d+)*|[ivx]+)[.):]?\s+")
+_JSON_ESCAPE = re.compile(r"\\(?:u[0-9a-fA-F]{0,4}|.)?", re.S)
+NOTES_TARGETS = {"key results": "key_results", "limitations": "limitations"}
+GROUNDING_TARGETS = {
+    ("key_results",): "key_results", ("human", "key_results_human"): "key_results_human",
+    ("open_threads",): "open_threads", ("human", "limitations"): "limitations_human",
+}
+COVERAGE_FLAGS = (
+    "notes_key_results", "notes_limitations", "grounding_key_results", "grounding_key_results_human",
+    "grounding_open_threads", "grounding_limitations_human", "indexed_results_section",
+    "indexed_limitations_section", "has_key_results_text", "has_limitations_text",
+)
+_AGGREGATES = {
+    "has_key_results_text": ("notes_key_results", "grounding_key_results", "grounding_key_results_human"),
+    "has_limitations_text": ("notes_limitations", "grounding_open_threads", "grounding_limitations_human"),
+}
+_MAX_JSON_DEPTH = 64
+_MAX_AUDIT_PAGES = 4096
 
 
 class SuiteInvalid(ValueError):
@@ -367,6 +398,319 @@ def retrieval_metrics(results, relevance, must_find=()) -> dict:
     }
 
 
+# -- Section coverage --------------------------------------------------------
+
+
+def _outline(raw: bytes):
+    """ATX headings as (level, title, line start, body start); None when unclassifiable."""
+    start = 0
+    if raw.startswith(b"---"):
+        match = _FRONT_MATTER.match(raw)
+        if match is None:
+            return None
+        start = match.end()
+    headings, fence, position = [], None, start
+    for line in raw[start:].splitlines(keepends=True):
+        line_start, position = position, position + len(line)
+        text = line.decode("utf-8").rstrip("\r\n")
+        marker = _FENCE.match(text)
+        if fence is not None:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) \
+                    and not text[marker.end():].strip():
+                fence = None
+            continue
+        if marker:
+            fence = marker[1]
+            continue
+        heading = _HEADING.fullmatch(text)
+        if heading:
+            headings.append((len(heading[1]), heading[2].strip(), line_start, position))
+    return None if fence is not None else headings
+
+
+def _loose_title(title: str) -> str:
+    value = re.sub(r"[*_`]", "", title).strip().casefold()
+    match = _NUMBERING.match(value)
+    if match:
+        value = value[match.end():]
+    return " ".join(value.rstrip(":").split())
+
+
+def section_ranges(raw: bytes) -> dict:
+    """Byte ranges of non-blank 'Key Results'/'Limitations' heading bodies.
+
+    Titles must equal the names exactly after strip().casefold(), the rule
+    evidence-reads selects by. A body runs to the next heading of the same or
+    higher level. A target that only appears as a numbered or decorated
+    variant, or a file with unclosed front matter or fence, is None (unknown).
+    """
+    outline = _outline(raw)
+    if outline is None:
+        return dict.fromkeys(NOTES_TARGETS.values())
+    found = {name: [] for name in NOTES_TARGETS.values()}
+    uncertain = set()
+    for index, (level, title, _, body_start) in enumerate(outline):
+        name = NOTES_TARGETS.get(title.casefold())
+        if name is None:
+            if _loose_title(title) in NOTES_TARGETS:
+                uncertain.add(NOTES_TARGETS[_loose_title(title)])
+            continue
+        end = next((item[2] for item in outline[index + 1:] if item[0] <= level), len(raw))
+        if raw[body_start:end].decode("utf-8").strip():
+            found[name].append((body_start, end))
+    return {name: None if not ranges and name in uncertain else ranges for name, ranges in found.items()}
+
+
+def _skip(text: str, index: int) -> int:
+    while index < len(text) and text[index] in " \t\r\n":
+        index += 1
+    return index
+
+
+def _no_constant(name):
+    raise ValueError(name)
+
+
+_SCALAR = json.JSONDecoder(parse_constant=_no_constant)
+
+
+def _json_strings(text: str, index: int, path: tuple, out: list, depth: int) -> int:
+    """Strict JSON scan recording (path, start, end, value) for every string value."""
+    if depth > _MAX_JSON_DEPTH:
+        raise ValueError("grounding JSON is too deep")
+    index = _skip(text, index)
+    char = text[index]
+    if char == "{":
+        index, keys = _skip(text, index + 1), set()
+        if text[index] == "}":
+            return index + 1
+        while True:
+            if text[index] != '"':
+                raise ValueError("object key expected")
+            key, index = scanstring(text, index + 1, True)
+            if key in keys:
+                raise ValueError("duplicate object key")
+            keys.add(key)
+            index = _skip(text, index)
+            if text[index] != ":":
+                raise ValueError("colon expected")
+            index = _skip(text, _json_strings(text, index + 1, path + (key,), out, depth + 1))
+            if text[index] == "}":
+                return index + 1
+            if text[index] != ",":
+                raise ValueError("comma expected")
+            index = _skip(text, index + 1)
+    if char == "[":
+        index, position = _skip(text, index + 1), 0
+        if text[index] == "]":
+            return index + 1
+        while True:
+            index = _skip(text, _json_strings(text, index, path + (position,), out, depth + 1))
+            position += 1
+            if text[index] == "]":
+                return index + 1
+            if text[index] != ",":
+                raise ValueError("comma expected")
+            index += 1
+    if char == '"':
+        value, end = scanstring(text, index + 1, True)
+        out.append((path, index + 1, end - 1, value))
+        return end
+    if char in "-0123456789tfn":
+        return _SCALAR.raw_decode(text, index)[1]
+    raise ValueError("JSON value expected")
+
+
+def _byte_offsets(text: str, positions) -> dict[int, int]:
+    offsets, previous, total = {}, 0, 0
+    for position in sorted(set(positions)):
+        total += len(text[previous:position].encode("utf-8"))
+        offsets[position], previous = total, position
+    return offsets
+
+
+def grounding_ranges(raw: bytes) -> dict:
+    """Byte ranges of non-blank grounding JSON string values, by coverage target.
+
+    Supports one JSON object, optionally fenced as ```json, after optional
+    YAML front matter. Property names, punctuation and the trailing Markdown
+    mirror never count. Any other layout is None (unknown) for every target.
+    """
+    unknown = dict.fromkeys(GROUNDING_TARGETS.values())
+    start = 0
+    if raw.startswith(b"---"):
+        match = _FRONT_MATTER.match(raw)
+        if match is None:
+            return unknown
+        start = match.end()
+    try:
+        text = raw.decode("utf-8")
+        index = _skip(text, len(raw[:start].decode("utf-8")))
+    except UnicodeDecodeError:
+        return unknown
+    fenced = text.startswith("```json", index)
+    if fenced:
+        line_end = text.find("\n", index)
+        if line_end < 0 or text[index + 7:line_end].strip():
+            return unknown
+        index = _skip(text, line_end + 1)
+    if not text.startswith("{", index):
+        return unknown
+    strings: list = []
+    try:
+        end = _json_strings(text, index, (), strings, 0)
+    except (ValueError, IndexError, RecursionError):
+        return unknown
+    if fenced and not text.startswith("```", _skip(text, end)):
+        return unknown
+    targets = [(name, first, last) for path, first, last, value in strings if value.strip()
+               for prefix, name in GROUNDING_TARGETS.items() if path[:len(prefix)] == prefix]
+    offsets = _byte_offsets(text, [position for _, first, last in targets for position in (first, last)])
+    found = {name: [] for name in GROUNDING_TARGETS.values()}
+    for name, first, last in targets:
+        found[name].append((offsets[first], offsets[last]))
+    return found
+
+
+def _read_complete(reader, source_id: str, kind: str):
+    """Complete file bytes through bounded reader pages with a stable content hash."""
+    pages, cursor, content = [], None, None
+    for _ in range(_MAX_AUDIT_PAGES):
+        page = reader.read(source_id, kind=kind, cursor=cursor, limit=MAX_PAGE_BYTES)
+        if content is not None and page["content_sha256"] != content:
+            raise EvaluationError("coverage_audit_inconsistent")
+        content, cursor = page["content_sha256"], page["next_cursor"]
+        pages.append(page["text"])
+        if cursor is None:
+            raw = "".join(pages).encode("utf-8")
+            if hashlib.sha256(raw).hexdigest() != content:
+                raise EvaluationError("coverage_audit_inconsistent")
+            return raw, content
+    raise EvaluationError("coverage_audit_unbounded")
+
+
+def _audited(reader, source_id: str, kind: str, cache: dict):
+    key = (source_id, kind)
+    if key not in cache:
+        try:
+            cache[key] = _read_complete(reader, source_id, kind)
+        except (SourceContentUnavailable, SourceQueryInvalid, EvaluationError):
+            cache[key] = None
+    return cache[key]
+
+
+def _located_span(evidence: dict, audited):
+    """The evidence's byte span in the audited file, or None if it cannot be located exactly."""
+    match = _LOCATOR.fullmatch(evidence["locator"])
+    if audited is None or match is None or match["kind"] != evidence["kind"]:
+        return None
+    raw, content = audited
+    text = evidence["text"].encode("utf-8")
+    start = int(match["offset"])
+    if evidence["content_sha256"] != content or raw[start:start + len(text)] != text:
+        return None
+    first = raw[:start].count(b"\n") + 1
+    if (int(match["first"]), int(match["last"])) != (
+            first, first + text.count(b"\n") - int(text.endswith(b"\n"))):
+        return None
+    return start, start + len(text)
+
+
+def _overlaps(raw: bytes, span, ranges, *, literal: bool) -> bool:
+    for first, last in ranges:
+        low, high = max(span[0], first), min(span[1], last)
+        if low < high:
+            fragment = raw[low:high].decode("utf-8", "ignore")
+            if literal:
+                fragment = _JSON_ESCAPE.sub("", fragment)
+            if fragment.strip():
+                return True
+    return False
+
+
+def _any_known(values) -> bool | None:
+    values = list(values)
+    if True in values:
+        return True
+    return None if None in values else False
+
+
+def _indexed_body(text: str, section: str) -> str:
+    if section == "__catalog__" or not text.startswith("Paper: "):
+        return text
+    marker = f" | Section: {section}\n\n"
+    position = text.find(marker)
+    return "" if position < 0 else text[position + len(marker):]
+
+
+def _indexed_coverage(source: dict, hits: dict) -> dict:
+    results, limitations = [], []
+    for item in source["evidence"]:
+        if item["kind"] != "indexed_passage":
+            continue
+        hit = hits.get(item["locator"])
+        if hit is None or hit["content_sha256"] != item["content_sha256"] or hit["excerpt"] != item["text"]:
+            results.append(None)
+            limitations.append(None)
+            continue
+        section = hit["section"].strip().casefold()
+        retained = bool(_indexed_body(item["text"], hit["section"]).strip())
+        results.append(retained and "result" in section)
+        limitations.append(retained and "limitation" in section)
+    return {"indexed_results_section": _any_known(results),
+            "indexed_limitations_section": _any_known(limitations)}
+
+
+_FILE_TARGETS = (
+    ("notes", section_ranges, False,
+     {"notes_key_results": "key_results", "notes_limitations": "limitations"}),
+    ("grounding", grounding_ranges, True,
+     {"grounding_key_results": "key_results", "grounding_key_results_human": "key_results_human",
+      "grounding_open_threads": "open_threads", "grounding_limitations_human": "limitations_human"}),
+)
+
+
+def _source_coverage(reader, source: dict, hits: dict, cache: dict) -> dict:
+    flags = {}
+    for kind, ranges_of, literal, targets in _FILE_TARGETS:
+        evidence = [item for item in source["evidence"] if item["kind"] == kind]
+        if not evidence:
+            flags.update(dict.fromkeys(targets, False))
+            continue
+        audited = _audited(reader, source["source_id"], kind, cache)
+        ranges = None if audited is None else ranges_of(audited[0])
+        spans = [_located_span(item, audited) for item in evidence]
+        for flag, target in targets.items():
+            bounds = None if ranges is None else ranges[target]
+            flags[flag] = _any_known(
+                None if span is None or bounds is None else _overlaps(audited[0], span, bounds, literal=literal)
+                for span in spans)
+    flags.update(_indexed_coverage(source, hits))
+    for name, parts in _AGGREGATES.items():
+        flags[name] = _any_known(flags[part] for part in parts)
+    return {name: flags[name] for name in COVERAGE_FLAGS}
+
+
+def _share(confirmed: int, sources: int, unknown: int) -> dict:
+    """An exact share only when every source is classifiable; always the confirmed lower bound."""
+    return {"confirmed": confirmed, "sources": sources, "unknown": unknown,
+            "share": None if unknown else _ratio(confirmed, sources),
+            "confirmed_lower_bound": _ratio(confirmed, sources)}
+
+
+def _aggregate(values) -> dict:
+    values = list(values)
+    return _share(values.count(True), len(values), sum(value is None for value in values))
+
+
+def packet_coverage(reader, packet: dict, hits: list, cache: dict) -> dict:
+    """Per-source retained section coverage and per-packet aggregates."""
+    by_evidence = {hit["evidence_id"]: hit for hit in hits}
+    sources = [_source_coverage(reader, source, by_evidence, cache) for source in packet["sources"]]
+    return {"sources": sources,
+            "aggregate": {name: _aggregate(flags[name] for flags in sources) for name in COVERAGE_FLAGS}}
+
+
 def _search_outcome(reader, query: str, limit: int, relevance, must_find) -> dict:
     try:
         found = reader.search(query, limit=limit)
@@ -376,18 +720,17 @@ def _search_outcome(reader, query: str, limit: int, relevance, must_find) -> dic
             **retrieval_metrics(found["results"], relevance, must_find)}
 
 
-def _packet_outcome(control, corpus, sources, query, relevance, must_find, six) -> dict:
+def _packet_outcome(control, corpus, sources, query, relevance, must_find, six, cache) -> dict:
     empty = {"schema_version": None, "sha256": None, "bytes": None, "query": None,
              "retrieval_query": None, "retrieval_mode": None, "canonical_ids": [],
              "relevant_papers": 0, "must_find_missing": list(must_find)[:MAX_LISTED],
-             "sources_not_in_search_at_6": [], "sources": []}
+             "sources_not_in_search_at_6": [], "sources": [], "coverage": None}
     reader = CheckpointedEvaluationReader(control, corpus)
     try:
         packet, sha256 = prepare_packet(reader, sources, query)
     except ResearchFailure as failure:
         if failure.category == "research_no_evidence":
-            return empty | {"status": "research_no_evidence", "failure": None,
-                            "recall": 0.0 if relevance else None}
+            return empty | {"status": "research_no_evidence", "failure": None, "recall": 0.0}
         return empty | {"status": "failed", "failure": failure.category, "recall": None,
                         "relevant_papers": None, "must_find_missing": None}
     except EvaluationError as error:
@@ -396,6 +739,8 @@ def _packet_outcome(control, corpus, sources, query, relevance, must_find, six) 
     ids = [source["canonical_id"] for source in packet["sources"]]
     relevant = [identity for identity in ids if identity in set(relevance)]
     searched = set(six.get("identities", ())) if six["status"] == "measured" else None
+    hits = [hit for found in reader.searches for hit in found["results"]]
+    coverage = packet_coverage(reader, packet, hits, cache)
     return {
         "status": "built", "failure": None, "schema_version": packet["schema_version"],
         "sha256": sha256, "bytes": len(canonical(packet).encode("utf-8")),
@@ -411,11 +756,14 @@ def _packet_outcome(control, corpus, sources, query, relevance, must_find, six) 
                           "retained_sha256": item["retained_sha256"],
                           "content_sha256": item["content_sha256"],
                           "bytes": len(item["text"].encode("utf-8"))} for item in source["evidence"]],
-        } for source in packet["sources"]],
+            "coverage": flags,
+        } for source, flags in zip(packet["sources"], coverage["sources"])],
+        "coverage": coverage["aggregate"],
     }
 
 
-def evaluate_query(control: Path, corpus: Path, sources: list[dict], item: dict, relevance) -> dict:
+def evaluate_query(control: Path, corpus: Path, sources: list[dict], item: dict, relevance,
+                   cache: dict | None = None) -> dict:
     """Measure one suite query: two independent searches plus one fresh packet."""
     must_find = item["must_find"]
     reader = CheckpointedEvaluationReader(control, corpus)
@@ -424,7 +772,8 @@ def evaluate_query(control: Path, corpus: Path, sources: list[dict], item: dict,
     six = retrieval["at_6"]
     retrieval["relevant_papers_per_six_slots"] = (
         _ratio(six["relevant_papers_at_k"], 6) if six["status"] == "measured" else None)
-    packet = _packet_outcome(control, corpus, sources, item["query"], relevance, must_find, six)
+    packet = _packet_outcome(control, corpus, sources, item["query"], relevance, must_find, six,
+                             {} if cache is None else cache)
     failures = [f"search_at_{limit}:{retrieval[f'at_{limit}']['failure']}"
                 for limit in LIMITS if retrieval[f"at_{limit}"]["status"] == "failed"]
     if packet["status"] == "failed":
@@ -459,6 +808,9 @@ def _summary(rows: list[dict]) -> dict:
         distinct = search(limit, "distinct_papers_at_k")
         summary[f"distinct_papers_at_{limit}"] = _mean(distinct) | {
             "total": sum(value for value in distinct if value is not None)}
+    summary["coverage"] = {name: _share(*(sum(packet["coverage"][name][key] for packet in built)
+                                           for key in ("confirmed", "sources", "unknown")))
+                           for name in _AGGREGATES}
     return summary
 
 
@@ -637,7 +989,9 @@ def evaluate(control: Path, corpus: Path, index: Path, suite_path: Path) -> tupl
     if before["suite"]["sha256"] != suite["sha256"]:
         raise EvaluationError("input_drift")
     preflight = _preflight(manifest, suite)
-    rows = [evaluate_query(control, corpus, sources, item, suite["relevance_sets"][item["relevance_set"]])
+    cache: dict = {}
+    rows = [evaluate_query(control, corpus, sources, item,
+                           suite["relevance_sets"][item["relevance_set"]], cache)
             for item in suite["queries"]]
     try:
         after = fingerprint_inputs(control, index, suite_path, corpus_manifest(reader))

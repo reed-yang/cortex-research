@@ -41,11 +41,14 @@ from tools.evaluate_retrieval import (
     SuiteInvalid,
     canonical_identity,
     evaluate,
+    grounding_ranges,
     load_suite,
     main,
+    packet_coverage,
     prepare_packet,
     registered_sources,
     retrieval_metrics,
+    section_ranges,
 )
 
 REPOSITORY = Path(__file__).resolve().parents[3]
@@ -621,3 +624,241 @@ def test_input_mutation_during_evaluation_refuses_a_completed_baseline(checkpoin
     assert report["inputs"]["unchanged"] is False
     assert report["inputs"]["changed"] == ["corpus"]
     assert "input_drift" in report["blockers"]
+
+
+# -- Conservative section coverage --------------------------------------------
+
+GROUNDING_FRONT = ("---\npaper_dir: synthetic\narxiv_id: \nfull_text_sha: " + "0" * 64
+                   + "\nschema_version: 2\ndepth: deep\nmodel: synthetic\n"
+                   "created_at: 2026-10-01T00:00:00+00:00\n---\n\n")
+BRIEF = ("mechanism", "bottleneck", "rejects_assumes", "key_results", "open_threads", "anchors")
+
+
+def grounding_sidecar(*, fenced=True, human=None, **fields) -> str:
+    """The grounding v2 sidecar shape: front matter, fenced JSON, Markdown mirror."""
+    payload = {key: fields.get(key, f"{key} text") for key in BRIEF}
+    if human is not None:
+        payload["human"] = human
+        payload["keywords"] = ["synthetic"]
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    mirror = "\n".join(f"## {key}\n\n{payload[key]}\n" for key in BRIEF if isinstance(payload[key], str))
+    return GROUNDING_FRONT + ("```json\n" + body + "\n```\n\n" if fenced else body + "\n\n") + mirror
+
+
+def body(raw: bytes, ranges) -> list[str]:
+    return [raw[start:end].decode() for start, end in ranges]
+
+
+def test_section_ranges_recognize_exact_heading_bodies():
+    raw = ("---\ntitle: synthetic\nnote: |\n  ## Key Results\n---\n"
+           "# Synthetic paper\n\n```\n## Limitations\n```\n~~~~\n## Key Results\n~~~~\n"
+           "## Key Results\n\nResult body.\n\n### Detail\n\nDeeper 结果.\n\n"
+           "## LIMITATIONS ##\r\n\r\nLimit body.\r\n## Keywords\nkestrel\n").encode()
+    ranges = section_ranges(raw)
+    (key,) = body(raw, ranges["key_results"])
+    assert key.strip().startswith("Result body.") and "Deeper 结果." in key and "LIMITATIONS" not in key
+    (limit,) = body(raw, ranges["limitations"])
+    assert limit.strip() == "Limit body." and "Keywords" not in limit
+
+
+@pytest.mark.parametrize(("text", "key_results", "limitations"), [
+    # Numbered or decorated headings are not the evidence-reads names: unknown, not absent.
+    ("## 3. Key Results\n\nBody.\n\n## **Limitations**\n\nBody.\n", None, None),
+    # Heading-only sections and prose mentions are known negatives.
+    ("## Key Results\n\n## Limitations\n\nLimit.\n", [], ["\nLimit.\n"]),
+    ("Our limitations and key results are discussed in prose only.\n", [], []),
+    ("# Key Results\n   \n", [], []),
+    # Unclosed front matter or fence cannot be classified.
+    ("---\ntitle: open\n## Key Results\n\nBody.\n", None, None),
+    ("```\n## Key Results\n\nBody.\n", None, None),
+])
+def test_section_ranges_keep_unknown_and_absent_distinct(text, key_results, limitations):
+    raw = text.encode()
+    ranges = section_ranges(raw)
+    for name, expected in (("key_results", key_results), ("limitations", limitations)):
+        assert (None if ranges[name] is None else body(raw, ranges[name])) == expected
+
+
+def test_grounding_ranges_map_json_values_not_names_or_mirror():
+    human = {"takeaway": "t", "key_results_human": "Human result.", "limitations": ["Human limit.", ""]}
+    raw = grounding_sidecar(key_results="Result 结果.", open_threads="Open thread.", human=human).encode()
+    ranges = grounding_ranges(raw)
+    assert body(raw, ranges["key_results"]) == ["Result 结果."]
+    assert body(raw, ranges["open_threads"]) == ["Open thread."]
+    assert body(raw, ranges["key_results_human"]) == ["Human result."]
+    assert body(raw, ranges["limitations_human"]) == ["Human limit."]
+    bare = grounding_sidecar(fenced=False, key_results=["R1", {"note": "R2"}], open_threads="").encode()
+    ranges = grounding_ranges(bare)
+    assert body(bare, ranges["key_results"]) == ["R1", "R2"]
+    assert ranges["open_threads"] == [] and ranges["limitations_human"] == []
+    # Only the JSON object counts; the trailing Markdown mirror is presentation.
+    mirrored = (GROUNDING_FRONT + '```json\n{"mechanism": "m"}\n```\n\n## open_threads\n\nMirror only.\n').encode()
+    assert grounding_ranges(mirrored)["open_threads"] == []
+
+
+@pytest.mark.parametrize("text", [
+    GROUNDING_FRONT + "## key_results\n\nMarkdown only.\n",
+    GROUNDING_FRONT + '```json\n{"key_results": "x",}\n```\n',
+    GROUNDING_FRONT + '```json\n["key_results"]\n```\n',
+    GROUNDING_FRONT + '```json\n{"key_results": "a", "key_results": "b"}\n```\n',
+    GROUNDING_FRONT + '```json\n{"key_results": "x"}\n',
+    "---\nunclosed front matter\n```json\n{}\n```\n",
+])
+def test_unsupported_grounding_layouts_are_unknown(text):
+    assert set(grounding_ranges(text.encode()).values()) == {None}
+
+
+def _notes(title: str, sections: str, *, pad: int = 0) -> str:
+    filler = "".join(f"Background sentence {index} about {title}.\n" for index in range(pad))
+    return f"---\ntitle: {title}\n---\n\n# {title}\n\n## Summary\n\n{filler}\n{sections}"
+
+
+SECTIONS = "## Key Results\n\n{0} result.\n\n## Limitations\n\n{0} limitation.\n\n## Keywords\n\nk\n"
+
+
+@pytest.fixture
+def covered(checkpointed_suite):
+    corpus = checkpointed_suite.corpus
+    alpha, beta = corpus / "20261001-Alpha", corpus / "20261001-Beta"
+    (alpha / "notes.md").write_text(_notes("Kestrel Alpha", SECTIONS.format("Alpha"), pad=150), encoding="utf-8")
+    (beta / "notes.md").write_text(_notes("Kestrel Beta", SECTIONS.format("Beta")), encoding="utf-8")
+    (alpha / "grounding.md").write_text(grounding_sidecar(
+        mechanism="m" * 4500, key_results="Alpha grounded result.",
+        human={"key_results_human": "Alpha human result.", "limitations": "Alpha human limit."}),
+        encoding="utf-8")
+    (beta / "grounding.md").write_text(grounding_sidecar(
+        key_results="Beta grounded result.", open_threads="Beta thread.",
+        human={"key_results_human": "", "limitations": "Beta human limit."}), encoding="utf-8")
+    assert (alpha / "notes.md").read_bytes().index(b"## Key Results") > 4000
+    return checkpointed_suite
+
+
+def test_prefix_packet_counts_only_retained_section_bodies(covered):
+    report, code = run(covered)
+    assert code == 0
+    packet = by_id(report)["en-birds"]["packet"]
+    alpha, beta = packet["sources"]
+    assert [item["kind"] for item in alpha["evidence"]] == ["indexed_passage", "grounding", "notes", "full_text"]
+    assert alpha["coverage"] == {
+        "notes_key_results": False, "notes_limitations": False,
+        "grounding_key_results": False, "grounding_key_results_human": False,
+        "grounding_open_threads": False, "grounding_limitations_human": False,
+        "indexed_results_section": False, "indexed_limitations_section": False,
+        "has_key_results_text": False, "has_limitations_text": False,
+    }
+    assert beta["coverage"] == {
+        "notes_key_results": True, "notes_limitations": True,
+        "grounding_key_results": True, "grounding_key_results_human": False,
+        "grounding_open_threads": True, "grounding_limitations_human": True,
+        "indexed_results_section": False, "indexed_limitations_section": False,
+        "has_key_results_text": True, "has_limitations_text": True,
+    }
+    assert packet["coverage"]["has_key_results_text"] == {
+        "confirmed": 1, "sources": 2, "unknown": 0, "share": 0.5, "confirmed_lower_bound": 0.5}
+    empty = by_id(report)["en-empty"]["packet"]
+    assert empty["coverage"] is None
+    pooled = report["summary"]["overall"]["coverage"]["has_limitations_text"]
+    assert pooled["sources"] >= 2 and pooled["unknown"] == 0
+
+
+def _source(snapshot, paper_dir):
+    reader = CheckpointedEvaluationReader(snapshot.control, snapshot.corpus)
+    (row,) = [row for row in registered_sources(reader) if row["paper_dir"] == paper_dir]
+    return reader, row
+
+
+def _window(raw: bytes, kind: str, start: int, size: int, *, shift: int = 0, content=None) -> dict:
+    text = raw[start:start + size].decode()
+    first = raw[:start].count(b"\n") + 1
+    last = first + text.count("\n") - int(text.endswith("\n"))
+    return {"kind": kind, "text": text, "retained_sha256": digest(text),
+            "content_sha256": content or hashlib.sha256(raw).hexdigest(),
+            "locator": f"{kind}:lines:{first}-{last}:offset:{start + shift}"}
+
+
+def _coverage(reader, row, evidence, hits=()):
+    packet = {"sources": [{"label": "S1", "source_id": row["id"], "canonical_id": row["canonical_id"],
+                           "engine_ref": row["engine_ref"], "evidence": evidence}]}
+    return packet_coverage(reader, packet, list(hits), {})
+
+
+def test_located_windows_count_and_mislocated_windows_stay_unknown(covered):
+    reader, row = _source(covered, "20261001-Alpha")
+    raw = (covered.corpus / "20261001-Alpha" / "notes.md").read_bytes()
+    start = raw.index(b"## Key Results")
+    located = _coverage(reader, row, [_window(raw, "notes", start, 120)])
+    assert located["sources"][0]["notes_key_results"] is True
+    assert located["sources"][0]["notes_limitations"] is True
+    heading = _coverage(reader, row, [_window(raw, "notes", start, len(b"## Key Results\n"))])
+    assert heading["sources"][0]["notes_key_results"] is False
+    shifted = _coverage(reader, row, [_window(raw, "notes", start, 120, shift=1)])
+    assert shifted["sources"][0]["notes_key_results"] is None
+    stale = _coverage(reader, row, [_window(raw, "notes", start, 120, content="0" * 64)])
+    assert stale["sources"][0]["notes_key_results"] is None
+    assert stale["sources"][0]["has_key_results_text"] is None
+    assert stale["aggregate"]["has_key_results_text"] == {
+        "confirmed": 0, "sources": 1, "unknown": 1, "share": None, "confirmed_lower_bound": 0.0}
+
+
+def test_missing_and_unsupported_grounding_audits_are_unknown(covered):
+    reader, row = _source(covered, "20261001-Gamma")
+    grounding = grounding_sidecar(key_results="Gamma result.").encode()
+    evidence = [_window(grounding, "grounding", 0, 600)]
+    missing = _coverage(reader, row, evidence)["sources"][0]
+    assert missing["grounding_key_results"] is None and missing["has_key_results_text"] is None
+    (covered.corpus / "20261001-Gamma" / "grounding.md").write_bytes(grounding)
+    assert _coverage(reader, row, evidence)["sources"][0]["grounding_key_results"] is True
+    markdown = (GROUNDING_FRONT + "## key_results\n\nGamma result.\n").encode()
+    (covered.corpus / "20261001-Gamma" / "grounding.md").write_bytes(markdown)
+    unsupported = _coverage(reader, row, [_window(markdown, "grounding", 0, len(markdown))])["sources"][0]
+    assert unsupported["grounding_key_results"] is None
+    assert unsupported["notes_key_results"] is False
+
+
+def test_utf8_cursor_pages_are_reassembled_for_late_sections(covered, monkeypatch):
+    directory = covered.corpus / "20261001-Gamma"
+    text = "---\ntitle: g\n---\n" + "中文段落用于填充。\n" * 1300 + "## Key Results\n\n迟到的结果。\n"
+    (directory / "notes.md").write_text(text, encoding="utf-8")
+    raw = text.encode()
+    assert raw.index("## Key Results".encode()) > 30_000
+    reader, row = _source(covered, "20261001-Gamma")
+    calls = []
+    original = CheckpointedEvaluationReader.read
+
+    def spy(self, source_id, kind="notes", cursor=None, limit=20000):
+        calls.append(cursor)
+        return original(self, source_id, kind=kind, cursor=cursor, limit=limit)
+
+    monkeypatch.setattr(CheckpointedEvaluationReader, "read", spy)
+    start = raw.index("## Key Results".encode())
+    result = _coverage(reader, row, [_window(raw, "notes", start, len(raw) - start)])
+    assert result["sources"][0]["notes_key_results"] is True
+    assert len(calls) >= 2 and calls[0] is None and all(calls[1:])
+
+
+def test_indexed_section_flags_use_the_hit_section_and_retained_body(covered):
+    rows = [
+        ("20261001-Delta", "5 Limitations", "Paper: Delta Study | Section: 5 Limitations\n\nzebrafinch limit body"),
+        ("20261001-Gamma", "Limitations", "Paper: Gamma zebrafinch | Section: Limitations\n\n"),
+        ("20261001-Alpha", "__catalog__", "Kestrel Alpha | zebrafinch | limitations summary"),
+        ("20261001-中文", "Results", "Paper: 机器人推测解码方法 | Section: Results\n\nzebrafinch results"),
+    ]
+    for paper_dir, section, text in rows:
+        _write(covered.index, "INSERT INTO chunks (paper_dir, section, chunk_idx, text) VALUES (?, ?, ?, ?)",
+               (paper_dir, section, 9, text))
+    write_suite(covered.suite, queries=[
+        {"id": "indexed", "query": "zebrafinch", "language": "en", "relevance_set": "birds"}])
+    report, code = run(covered)
+    flags = {source["canonical_id"]: source["coverage"] for source in report["queries"][0]["packet"]["sources"]}
+    assert flags[D]["indexed_limitations_section"] is True
+    assert flags[C]["indexed_limitations_section"] is False
+    assert flags[A]["indexed_limitations_section"] is False
+    assert flags[E]["indexed_results_section"] is True and flags[E]["indexed_limitations_section"] is False
+    # Indexed full-text sections never stand in for notes or grounding coverage.
+    assert flags[D]["has_limitations_text"] is False
+    reader, row = _source(covered, "20261001-Delta")
+    unmatched = _coverage(reader, row, [{"kind": "indexed_passage", "text": "zebrafinch limit body",
+                                         "retained_sha256": digest("zebrafinch limit body"),
+                                         "content_sha256": "1" * 64,
+                                         "locator": "source:x:chunk:1:sha256:" + "1" * 64}])
+    assert unmatched["sources"][0]["indexed_limitations_section"] is None
