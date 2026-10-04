@@ -50,6 +50,11 @@ def verify_no_delete(root: Path) -> None:
     # Query the actual running policy without attempting a destructive probe.
     library = ctypes.CDLL('/usr/lib/libsandbox.dylib')
     check = library.sandbox_check
+    # sandbox_check(pid, operation, filter_type, ...) is variadic. Declaring
+    # only the fixed parameters makes ctypes pass the path with the variadic
+    # convention; Apple arm64 reads variadic arguments from the stack, so an
+    # undeclared call queries an arbitrary value instead of the path.
+    check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     check.restype = ctypes.c_int
     for path in (root, *root.parents):
         result = check(os.getpid(), ctypes.c_char_p(b'file-write-unlink'), 1,
