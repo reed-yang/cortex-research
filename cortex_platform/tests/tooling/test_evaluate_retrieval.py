@@ -792,30 +792,32 @@ def covered(checkpointed_suite):
     return checkpointed_suite
 
 
-def test_prefix_packet_counts_only_retained_section_bodies(covered):
+def test_section_packet_counts_only_retained_section_bodies(covered):
     report, code = run(covered)
     assert code == 0
     packet = by_id(report)["en-birds"]["packet"]
     alpha, beta, gamma = packet["sources"]
-    assert [item["kind"] for item in alpha["evidence"]] == ["indexed_passage", "grounding", "notes", "full_text"]
+    assert [item["kind"] for item in alpha["evidence"]] == ["indexed_passage", "notes", "full_text", "grounding"]
+    # The notes window starts at its section headings, past the old 4,000-byte prefix.
+    # The grounding window spans the Markdown mirror, which grounding targets never count.
     assert alpha["coverage"] == {
-        "notes_key_results": False, "notes_limitations": False,
+        "notes_key_results": True, "notes_limitations": True,
         "grounding_key_results": False, "grounding_key_results_human": False,
         "grounding_open_threads": False, "grounding_limitations_human": False,
         "indexed_results_section": False, "indexed_limitations_section": False,
-        "has_key_results_text": False, "has_limitations_text": False,
+        "has_key_results_text": True, "has_limitations_text": True,
     }
     assert beta["coverage"] == {
         "notes_key_results": True, "notes_limitations": True,
-        "grounding_key_results": True, "grounding_key_results_human": False,
-        "grounding_open_threads": True, "grounding_limitations_human": True,
+        "grounding_key_results": False, "grounding_key_results_human": False,
+        "grounding_open_threads": False, "grounding_limitations_human": False,
         "indexed_results_section": False, "indexed_limitations_section": False,
         "has_key_results_text": True, "has_limitations_text": True,
     }
     assert gamma["canonical_id"] == C and not any(gamma["coverage"].values())
     assert packet["coverage"]["has_key_results_text"] == {
-        "confirmed": 1, "sources": 3, "unknown": 0, "share": round(1 / 3, 6),
-        "confirmed_lower_bound": round(1 / 3, 6)}
+        "confirmed": 2, "sources": 3, "unknown": 0, "share": round(2 / 3, 6),
+        "confirmed_lower_bound": round(2 / 3, 6)}
     empty = by_id(report)["en-empty"]["packet"]
     assert empty["coverage"] is None
     pooled = report["summary"]["overall"]["coverage"]["has_limitations_text"]

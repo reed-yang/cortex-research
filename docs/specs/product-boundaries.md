@@ -28,6 +28,10 @@ Paths abbreviated `product/` are relative to `cortex_platform/`.
   identity replacement. Source records and raw captures are different resources.
 - Evidence labels distinguish retained documents from papers. Successful label
   validation does not prove the model's scientific claims.
+- Each paper evidence entry is a bounded window of one indexed chunk or one
+  retained file version (its prefix or a section window), and its kind, locator
+  and content hash identify that source. notes and grounding may hold
+  model-written summaries. Stored v1/v2 packets keep validating unchanged.
 - An Output is committed under its producing attempt. Preview and Source are
   views of the same stored bytes; UI rendering does not rewrite provenance.
 - Catalog states and human pauses are preserved. No autonomous idea/exploration

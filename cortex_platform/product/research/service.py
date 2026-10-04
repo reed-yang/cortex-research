@@ -10,14 +10,15 @@ from ..control import InvalidTransition, NotFound
 from ..sources.reader import SourceKnowledgeReader, SourceContentUnavailable, SourceQueryInvalid
 from .context import (
     ACTOR, COMMAND, MAX_DOCUMENTS, MAX_EXCERPT_BYTES, MAX_EXCERPTS, MAX_PACKET_SOURCES,
-    MAX_SNAPSHOT_BYTES, MAX_SOURCE_EVIDENCE, ResearchFailure, canonical, citation_labels, cited_labels,
+    MAX_SNAPSHOT_BYTES, ResearchFailure, canonical, citation_labels, cited_labels,
     digest, mode_for, selection_identity,
 )
 from .documents import ResearchDocumentReader, ResearchDocumentUnavailable
+from .evidence import paper_evidence
 from .query import retrieval_query
 
 ROOT_ID = "research-artifacts"
-#: Indexed passages a fresh selection keeps per paper; file prefixes fill the rest.
+#: Indexed passages a fresh selection keeps per paper; file windows fill the rest.
 MAX_INDEXED_PASSAGES = 2
 RESULT_LIMIT = 8 * 1024 * 1024
 DRAFT = "Unverified research draft: missing or invalid source citation labels.\n\n"
@@ -169,22 +170,7 @@ class ResearchService:
                     hits.setdefault(hit["source_id"], []).append(hit)
                 for source_id, group in hits.items():
                     source = self.store.get_source(source_id)
-                    evidence = [
-                        self._evidence("indexed_passage", hit["excerpt"], hit["content_sha256"],
-                                       hit["evidence_id"])
-                        for hit in group if hit["section"] != "__title__" and hit["excerpt"].strip()
-                    ][:MAX_INDEXED_PASSAGES]
-                    for kind in ("grounding", "notes", "full_text"):
-                        if len(evidence) >= MAX_SOURCE_EVIDENCE:
-                            break
-                        try:
-                            page = self.reader.read(source["id"], kind=kind, limit=4000)
-                        except SourceContentUnavailable:
-                            continue
-                        if page["text"].strip():
-                            evidence.append(self._evidence(
-                                kind, page["text"], page["content_sha256"],
-                                f"{kind}:lines:{page['start_line']}-{page['end_line']}:offset:0"))
+                    evidence = paper_evidence(self.reader, source, group)
                     if evidence:
                         sources.append({"label": f"S{len(sources) + 1}", "source_id": source["id"],
                                         "canonical_id": source["canonical_id"], "engine_ref": source["engine_ref"],
@@ -255,11 +241,6 @@ class ResearchService:
         return documents
 
     @staticmethod
-    def _evidence(kind, text, content_hash, locator):
-        return {"kind": kind, "text": text, "retained_sha256": digest(text),
-                "content_sha256": content_hash, "locator": locator}
-
-    @staticmethod
     def system_message(context):
         directive = (
             "Current Cortex turn directive: supersede only earlier Cortex research-mode "
@@ -283,7 +264,12 @@ class ResearchService:
             "a paper source can carry more than one indexed passage. "
             "unicode_title_fallback only matches titles; its attached document excerpts are not semantic multilingual matches. "
             "Mixed retrieval has the same limitation. Missing matches do not prove absence of relevant work. "
-            "Indexed passages may lag current documents; file pages are bounded prefixes, not complete deep reads. "
+            "Indexed passages may lag current documents. Each notes, grounding or full_text entry is one "
+            "bounded window of a retained file version: its locator gives the line range and byte offset, "
+            "and the window is either the file's prefix or starts at a section heading. It is not a complete "
+            "deep read, and a section absent from a window does not show that the paper lacks it. "
+            "notes and grounding may contain earlier model-written summaries such as Key Results, "
+            "Limitations or open_threads; they are reading notes about a paper, not quotations of it. "
             "No embedding provider, external search, new-paper ingestion or scheduling was performed. "
             "Use the complete conversation to interpret the question, and make retrieval limits explicit.\n"
             "Filesystem location questions may use available file tools to verify paths; "

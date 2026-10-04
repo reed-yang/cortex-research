@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import re
 import sqlite3
 
 import pytest
@@ -235,7 +236,14 @@ def test_real_evidence_and_complete_cited_artifact(knowledge, question):
     assert result["state"] == "completed", store.list_run_events(run["id"])
     context = store.get_research_context(run["id"])
     assert all(e["kind"] != "title" for s in context["snapshot"]["sources"] for e in s["evidence"])
+    for source in context["snapshot"]["sources"]:
+        assert len(source["evidence"]) <= 4
+        for entry in source["evidence"]:
+            assert entry["kind"] == "indexed_passage" or re.fullmatch(
+                r"(notes|grounding|full_text):lines:\d+-\d+:offset:\d+", entry["locator"])
     assert "untrusted source DATA" in backend.requests[0].system_message
+    assert "model-written summaries" in backend.requests[0].system_message
+    assert "file pages are bounded prefixes" not in backend.requests[0].system_message
     assert backend.requests[0].user_message == question
     version = store.get_research_result(run["id"], run["active_attempt_id"])
     action = version["materialization_action"]
@@ -622,7 +630,7 @@ def test_labels_length_requirements_and_format_words_do_not_reach_search(knowled
     assert context["snapshot"]["retrieval_mode"] == "fts5_or"
 
 
-def test_a_paper_carries_two_passages_before_file_prefixes(knowledge):
+def test_a_paper_carries_two_passages_in_the_approved_slot_order(knowledge):
     store, root, database, _ = knowledge
     add_chunks(database, ENGLISH, [f"decoding decoding decoding passage {name}"
                                    for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta")])
@@ -632,8 +640,8 @@ def test_a_paper_carries_two_passages_before_file_prefixes(knowledge):
     sources = context["snapshot"]["sources"]
     assert [source["label"] for source in sources] == ["S1", "S2"]
     english, chinese = sources
-    assert [e["kind"] for e in english["evidence"]] == ["indexed_passage", "indexed_passage", "grounding", "notes"]
-    assert [e["text"] for e in english["evidence"][:2]] == [
+    assert [e["kind"] for e in english["evidence"]] == ["indexed_passage", "notes", "full_text", "indexed_passage"]
+    assert [english["evidence"][0]["text"], english["evidence"][3]["text"]] == [
         "decoding decoding decoding passage alpha", "decoding decoding decoding passage beta"]
     assert [e["kind"] for e in chinese["evidence"]] == ["indexed_passage", "notes", "full_text"]
     assert validate_snapshot(context["snapshot"], context["sha256"])
@@ -743,6 +751,6 @@ def test_six_large_sources_are_trimmed_within_packet_bounds(knowledge):
     assert len(canonical(snapshot).encode("utf-8")) <= MAX_SNAPSHOT_BYTES
     kinds = [[e["kind"] for e in source["evidence"]] for source in snapshot["sources"]]
     assert all(1 <= len(found) <= 4 and found.count("indexed_passage") <= 2 for found in kinds)
-    assert kinds[0] == ["indexed_passage", "indexed_passage", "grounding", "notes"]
+    assert kinds[0] == ["indexed_passage", "notes", "full_text", "indexed_passage"]
     assert sum(map(len, kinds)) < 24
     assert store.get_research_context(earlier["id"]) == stored
