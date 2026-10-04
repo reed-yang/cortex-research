@@ -348,6 +348,11 @@ def test_dossier_labels_are_accepted_and_unknown_labels_stay_drafts(dossier, ans
     ("Evidence [D1] beside [Self Forcing](https://example.test/paper).", False),
     ("[S99](https://example.test/paper) [S1]", False),
     ("[S1](https://example.test/paper)", True),
+    # Labels inside a link destination, title or text are part of the link.
+    ("See [Data](https://example.test/[S1]).", True),
+    ('See [Data](https://example.test/paper "[S1]").', True),
+    ("Evidence [S1]; see [Data](https://example.test/[S99]).", False),
+    ("Evidence [S1]; see [notes [S99]](https://example.test/paper).", False),
     ("Only prose brackets [sic] and 【S1】.", True),
     # Unknown, lowercase, zero and leading-zero tokens are never authorized.
     ("Unknown [S99].", True),
@@ -394,6 +399,15 @@ def test_v2_mixed_citation_groups_and_markdown(dossier, answer, drafted):
     ("[S1] (with a parenthetical aside)", {"S1"}),
     ("[sic], [Supplementary], [Data] and [Self Forcing]", set()),
     ("[Self Forcing](https://example.org) and [S9](https://example.org)", set()),
+    ("[Data](https://example.test/[S1])", set()),
+    ('[Data](https://example.test/paper "[S1]")', set()),
+    ("[Data](https://example.test/paper '[S9]') [S1]", {"S1"}),
+    ("[Data](https://example.test/paper ([S9])) [S1]", {"S1"}),
+    ("[Data](<https://example.test/a b/[S9]>) [S1]", {"S1"}),
+    ("[Data](https://example.test/(x)/[S1-S3]) [S2]", {"S2"}),
+    ("[notes [S9]](https://example.test/paper) [S1]", {"S1"}),
+    # Only an immediate ]( opens a link; a later parenthetical is still scanned.
+    ("[S1] (see https://example.test/[S2])", {"S1", "S2"}),
     ("【S1】", set()),
     ("[S1-S3]", None),
     ("[S2; S9]", None),
