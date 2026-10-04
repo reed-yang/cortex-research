@@ -3,6 +3,7 @@
 import hashlib
 
 import pytest
+from cortex_research.paper_ingest import _html_to_markdown
 
 from cortex_platform.product.control import ControlStore
 from cortex_platform.product.research import evidence as module
@@ -253,22 +254,50 @@ def test_full_text_prefers_the_papers_own_limitations_then_conclusion(text, expe
     assert span("full_text", text) == expected
 
 
-def test_incomplete_scans_never_treat_unscanned_bytes_as_absent():
-    filler = "f" * 99 + "\n"
-    # A Limitations section may follow beyond the scan, so Conclusion is not chosen.
-    unscanned = "# P\n## Conclusion\nc\n## Method\n" + filler * 80 + "## Lim"
-    assert span("full_text", unscanned, complete=False) == ("# P\n## Conclusion\nc\n## Method\n" + filler * 59)
-    # References was scanned, so the candidate list is complete.
-    closed = "# P\n## Conclusion\nc\n## References\n" + filler * 80
-    assert span("full_text", closed, complete=False) == "## Conclusion\nc\n"
-    # A determined Limitations window is used; one running into the boundary is not.
-    assert span("full_text", "# P\n## Limitations\nl\n## Next\n" + filler * 80, complete=False) == (
-        "## Limitations\nl\n")
-    assert span("full_text", "# P\n## Limitations\nl\n", complete=False) == "# P\n## Limitations\nl\n"
-    # A heading split at the scan boundary is not parsed; Key Results alone is not enough.
-    split = "# N\n## Key Results\nr\n## Other\n" + filler * 70 + "## Limi"
-    assert span("notes", split, complete=False).startswith("# N\n## Key Results\nr\n## Other\n")
-    assert span("notes", split, complete=True) == "## Key Results\nr\n"
+@pytest.mark.parametrize("text, expected", [
+    ("# P\n## 2 Learned Preferences\np\n## 6 Limitations\nl\n## References\nr\n", "## 6 Limitations\nl\n"),
+    ("# P\n## 2 Coreferences in Dialogue\np\n## 6 Limitations\nl\n## 7 Bibliography\nb\n",
+     "## 6 Limitations\nl\n"),
+    ("# P\n## 5 Conclusion\nc\n## 8 References and Notes\nr\n## Limitations\nlate\n", "## 5 Conclusion\nc\n"),
+], ids=["preferences", "coreferences", "numbered-references"])
+def test_reference_boundaries_match_whole_words(text, expected):
+    assert span("full_text", text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("# Study of Limitations\nauthors\n## 1 Intro\ni\n## 6 Limitations\nl\n", "## 6 Limitations\nl\n"),
+    ("# Study of Limitations\n\n# Study of Limitations\n\n## 1 Intro\ni\n## 7 Conclusion\nc\n",
+     "## 7 Conclusion\nc\n"),
+    ("# References for Synthetic Decoding\n## 6 Limitations\nl\n## References\nr\n", "## 6 Limitations\nl\n"),
+    ("# Study of Limitations\na\n# 1 Introduction\ni\n# 6 Limitations\nl\n# References\nr\n",
+     "# 6 Limitations\nl\n"),
+    ("# Study of Limitations\nOnly a title and text.\n", "# Study of Limitations\nOnly a title and text.\n"),
+], ids=["title-limitations", "repeated-title-conclusion", "title-references", "level-1-sections", "title-only"])
+def test_the_document_title_is_not_an_author_section(text, expected):
+    assert span("full_text", text) == expected
+
+
+def test_a_heading_before_one_oversized_line_keeps_part_of_that_line():
+    long_body = "# P\n## 6 Limitations\n\n" + "c" * 7_000 + "\n## 7 Conclusion\nc\n## References\nr\n"
+    assert span("full_text", long_body) == "## 6 Limitations\n\n" + "c" * 5_982
+    notes = "# N\n## Key Results\n\n" + "r" * 7_000 + "\n## Limitations\nl\n"
+    assert span("notes", notes) == "## Key Results\n\n" + "r" * 5_984
+
+
+FILLER = "f" * 99 + "\n"
+
+
+@pytest.mark.parametrize("kind, text", [
+    ("full_text", "# P\n## Limitations\nl\n## Next\n" + FILLER * 80),
+    ("full_text", "# P\n## Conclusion\nc\n## References\n" + FILLER * 80),
+    ("full_text", "# P\n## 6 Limitations\n" + FILLER * 80),
+    ("notes", "# N\n## Key Results\nr\n## Limitations\nl\n## Other\n" + FILLER * 70 + "## Limi"),
+], ids=["closed-limitations", "closed-conclusion", "open-limitations", "split-heading"])
+def test_an_incomplete_scan_uses_the_prefix(kind, text):
+    raw = text.encode()
+    prefix = raw[slice(*_prefix_window(raw))].decode()
+    assert span(kind, text, complete=True) != prefix
+    assert span(kind, text, complete=False) == prefix
 
 
 # Paging.
@@ -445,6 +474,70 @@ def test_distant_results_are_found_across_reader_pages(knowledge, monkeypatch):
     notes = next(e for e in source["evidence"] if e["kind"] == "notes")
     assert notes["locator"].endswith(f":offset:{text.encode().index(b'## Method')}")
     assert located(notes, root, ENGLISH)
+
+
+def full_text_entry(store):
+    run = queued(store)
+    context = ResearchService(store).prepare(run, store.list_messages(run["thread_id"]))
+    assert validate_snapshot(context["snapshot"], context["sha256"])
+    source = next(s for s in context["snapshot"]["sources"] if s["canonical_id"] == "arxiv:2609.00001")
+    return next(e for e in source["evidence"] if e["kind"] == "full_text")
+
+
+INTRO = "## 1 Introduction\n" + "Synthetic introduction line.\n" * 300
+CAVEAT = "## 6 Limitations\nSynthetic author caveat.\n"
+
+
+@pytest.mark.parametrize("full_text, expected", [
+    ("# Synthetic Preferences Study\n\n" + INTRO + CAVEAT + "## References\n[1] Ref.\n", CAVEAT),
+    ("# Synthetic decoding\n\n" + INTRO + "## 2 Preferences\np\n" + CAVEAT + "## References\n[1] Ref.\n",
+     CAVEAT),
+    ("# Synthetic Study of Limitations\n\n" + INTRO + CAVEAT + "## 7 Conclusion\nc\n", CAVEAT),
+    # paper_ingest writes the metadata title before the converted page, which repeats it.
+    ("# Synthetic Study of Limitations\n\n# Synthetic Study of Limitations\n\n" + INTRO
+     + "## 7 Conclusion\nSynthetic conclusion.\n", "## 7 Conclusion\nSynthetic conclusion.\n"),
+], ids=["preferences-title", "preferences-section", "limitations-title", "repeated-title-conclusion"])
+def test_research_packet_carries_the_authors_section_past_title_and_preference_headings(
+        knowledge, full_text, expected):
+    store, root, *_ = knowledge
+    write_files(root, ENGLISH, full_text=full_text)
+    entry = full_text_entry(store)
+    assert entry["text"] == expected and located(entry, root, ENGLISH)
+
+
+def test_a_long_converted_paragraph_keeps_its_limitations_section(knowledge):
+    store, root, *_ = knowledge
+    caveat = "Synthetic caveat sentence about one benchmark. " * 200
+    html = ("<html><body><article><h1>Synthetic Robust Decoding</h1>"
+            "<h2>1 Introduction</h2><p>" + "Synthetic introduction sentence. " * 250 + "</p>"
+            f"<h2>6 Limitations</h2><p>{caveat}</p>"
+            "<h2>7 Conclusion</h2><p>Synthetic conclusion.</p>"
+            "<h2>References</h2><p>[1] Synthetic reference.</p></article></body></html>")
+    markdown, _ = _html_to_markdown(html)
+    write_files(root, ENGLISH, full_text=f"# Synthetic Robust Decoding\n\n{markdown}\n")
+    entry = full_text_entry(store)
+    assert entry["text"].startswith("## 6 Limitations\n\nSynthetic caveat sentence about one benchmark.")
+    assert len(entry["text"].encode()) == 6_000 and located(entry, root, ENGLISH)
+
+
+@pytest.mark.parametrize("tail", [
+    "## 6 Limitations\n" + "Synthetic caveat line in a long limitations section.\n" * 4_000,
+    "## 6 Limitations\nShort caveat.\n## 7 Appendix\n" + "Synthetic appendix line of filler text.\n" * 5_500,
+], ids=["long-limitations", "closed-limitations"])
+def test_a_file_longer_than_the_scan_contributes_its_prefix(knowledge, monkeypatch, tail):
+    store, root, _, reader = knowledge
+    text = "# Synthetic long paper\n\n## 1 Introduction\nintro\n" + tail + "## References\nr\n"
+    raw = text.encode()
+    assert len(raw) > module.SCAN_PAGES * reader_module.MAX_PAGE_BYTES
+    write_files(root, ENGLISH, notes=None, full_text=text, grounding=None)
+    spy = Spy(monkeypatch)
+    source = english(store)
+    evidence = paper_evidence(reader, source, [hit(source["id"], 1, "decoding passage")])
+    assert [e["kind"] for e in evidence] == ["indexed_passage", "full_text"]
+    assert spy.kinds().count("full_text") == module.SCAN_PAGES
+    entry = evidence[1]
+    assert entry["text"] == raw[slice(*_prefix_window(raw))].decode()
+    assert entry["locator"].endswith(":offset:0") and located(entry, root, ENGLISH)
 
 
 def test_a_version_change_between_pages_omits_only_that_file(knowledge, monkeypatch):

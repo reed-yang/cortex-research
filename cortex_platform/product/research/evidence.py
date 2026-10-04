@@ -3,8 +3,9 @@
 Each file entry is one byte window of one retained file version. Its locator gives
 the window's line range and byte offset in that version, and its content hash is
 the whole file's sha256. A window is either the file's prefix or starts at a
-section heading; it is never a complete deep read, and a scan that did not reach
-a heading is not evidence that the paper lacks that section.
+section heading; it is never a complete deep read. Only a completely read file is
+outlined: a longer file contributes its prefix, because a scan that stopped early
+is not evidence about the sections it did not reach.
 """
 
 import hashlib
@@ -13,12 +14,14 @@ import re
 from ..sources.reader import MAX_PAGE_BYTES, SourceContentUnavailable
 from .context import MAX_EXCERPT_BYTES, MAX_SOURCE_EVIDENCE, digest
 
-#: Reader pages scanned per file (8 x 20,000 bytes) before falling back to the prefix.
+#: Reader pages scanned per file (8 x 20,000 bytes); a longer file contributes its prefix.
 SCAN_PAGES = 8
 _FENCE = re.compile(rb" {0,3}(`{3,}|~{3,})(.*)")
 _ATX = re.compile(rb" {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*")
 #: Exact heading titles whose span forms the notes and grounding windows.
 _TITLES = {"notes": ("key results", "limitations"), "grounding": ("key_results", "open_threads")}
+#: Whole words, so a title such as "Learned Preferences" is not a reference list.
+_REFERENCES = re.compile(r"\b(?:references|bibliography)\b")
 
 
 def _read_file(reader, source_id, kind):
@@ -80,16 +83,25 @@ def _headings(raw):
 
 
 def _bounded_end(raw, start, end):
-    """Cap a window at MAX_EXCERPT_BYTES on a line boundary, else a UTF-8 boundary."""
+    """Cap a window at MAX_EXCERPT_BYTES on a line boundary, else a UTF-8 boundary.
+
+    A line cut must keep text after the window's first line; a heading followed
+    by one oversized paragraph line is cut inside that line instead.
+    """
     if end - start <= MAX_EXCERPT_BYTES:
         return end
-    cut = raw.rfind(b"\n", start, start + MAX_EXCERPT_BYTES)
-    if cut >= 0:
-        return cut + 1
     end = start + MAX_EXCERPT_BYTES
+    cut = raw.rfind(b"\n", start, end) + 1
+    if cut and raw[start:cut].partition(b"\n")[2].strip():
+        return cut
     while (raw[end] & 0xC0) == 0x80:
         end -= 1
     return end
+
+
+def _section_end(raw, heads, j):
+    """The offset of the first heading after j at its level or higher, else the file end."""
+    return next((offset for depth, _, offset in heads[j + 1:] if depth <= heads[j][0]), len(raw))
 
 
 def _section_window(raw, heads, i, j, extend):
@@ -98,8 +110,7 @@ def _section_window(raw, heads, i, j, extend):
     With extend, whole preceding sections at heading i's level (with their
     subsections) are added while the window stays within the byte cap.
     """
-    level = heads[j][0]
-    end = next((offset for depth, _, offset in heads[j + 1:] if depth <= level), len(raw))
+    end = _section_end(raw, heads, j)
     start, index = heads[i][2], i
     while extend:
         index = next((k for k in range(index - 1, -1, -1) if heads[k][0] <= heads[i][0]), None)
@@ -123,40 +134,40 @@ def _entry(kind, raw, sha, start, end):
             "locator": f"{kind}:lines:{first}-{last}:offset:{start}"}
 
 
-def _named(raw, heads, complete, titles):
+def _named(raw, heads, titles):
     """The span from the first of two named headings through the later one."""
     found = sorted(next((n for n, head in enumerate(heads) if head[1] == title), -1) for title in titles)
     found = [n for n in found if n >= 0]
-    if not found or (len(found) < 2 and not complete):
-        return None
-    return _section_window(raw, heads, found[0], found[-1], extend=True)
+    return _section_window(raw, heads, found[0], found[-1], extend=True) if found else None
 
 
-def _author_section(raw, heads, complete):
-    """The paper's first Limitations section before References, else its Conclusion."""
-    stop = next((n for n, (_, title, _) in enumerate(heads)
-                 if "references" in title or "bibliography" in title), len(heads))
+def _author_section(raw, heads):
+    """The paper's first Limitations section before References, else its Conclusion.
+
+    The first heading is taken as the document title (paper ingestion writes
+    one, and the converted page may repeat it at the same level). Its span can
+    be the whole paper, so neither it nor a same-level repeat is a candidate
+    section or a reference boundary.
+    """
+    sections = [n for n, (level, title, _) in enumerate(heads)
+                if n and (level, title) != heads[0][:2]]
+    stop = next((k for k, n in enumerate(sections) if _REFERENCES.search(heads[n][1])), len(sections))
     for word in ("limitation", "conclusion"):
-        for n in range(stop):
-            if word in heads[n][1]:
-                start, end = _section_window(raw, heads, n, n, extend=False)
-                if raw[start:end].partition(b"\n")[2].strip():
-                    return start, end
-        if stop == len(heads) and not complete:
-            # An unscanned tail may still hold a Limitations heading.
-            return None
+        for n in sections[:stop]:
+            # Judge the body on the whole section, not on its clipped window.
+            if word in heads[n][1] and raw[heads[n][2]:_section_end(raw, heads, n)].partition(b"\n")[2].strip():
+                return _section_window(raw, heads, n, n, extend=False)
     return None
 
 
 def _window(kind, raw, complete):
-    """The kind's section window, or the prefix when selection depends on unscanned bytes."""
-    known = raw if complete else raw[:raw.rfind(b"\n") + 1]
-    heads = _headings(known)
-    span = (_author_section(known, heads, complete) if kind == "full_text"
-            else _named(known, heads, complete, _TITLES[kind]))
-    if span is None or (not complete and span[1] == len(known)):
-        return _prefix_window(raw)
-    return span
+    """The kind's section window; the prefix when the scan was incomplete or no section applies."""
+    if complete:
+        heads = _headings(raw)
+        span = _author_section(raw, heads) if kind == "full_text" else _named(raw, heads, _TITLES[kind])
+        if span is not None:
+            return span
+    return _prefix_window(raw)
 
 
 def _file_entry(reader, source_id, kind):
