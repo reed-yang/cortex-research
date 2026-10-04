@@ -369,6 +369,9 @@ def test_dossier_labels_are_accepted_and_unknown_labels_stay_drafts(dossier, ans
     ("Valid [S1] and malformed [S 2].", True),
     ("Valid [S1] and suffix [S99a].", True),
     ("Valid [S1] and prose [S1, S2, and S99].", True),
+    # A parenthetical that does not complete a link leaves the bracket a citation.
+    ("Valid [S1] and range [S1-S99](see dossier).", True),
+    ("Valid [S1] and unknown [S99](see dossier).", True),
     # Code spans are not excluded by this grammar.
     ("Quoted `[S99]` beside [S1].", True),
     # Valid labels do not verify the claim they accompany.
@@ -416,6 +419,12 @@ def test_v2_mixed_citation_groups_and_markdown(dossier, answer, drafted):
     ("[S1, S2, and S9]", None),
     ("[S1,, S2]", None),
     ("[S1] [S1-S3]", None),
+    # A label-led bracket whose ( does not complete an inline link is not a link.
+    ("[S1-S3](see dossier)", None),
+    ("[S2; S9](not a url) [S1]", None),
+    ("[S1-S3](unclosed", None),
+    ("[S9](see dossier) [S1]", {"S9", "S1"}),
+    ("[S1-S3](notes.md) [S1]", {"S1"}),
 ])
 def test_v2_citation_group_syntax(text, cited):
     """Grammar only: tokens are kept verbatim and authorization happens later."""

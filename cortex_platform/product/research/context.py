@@ -168,8 +168,9 @@ _INLINE_LINK = (
     r"\(\s*(?:<[^<>\n]*>|(?:[^\s()]|\([^\s()]*\))*)"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
 )
-#: A non-link ASCII bracket whose body starts like a label; it must be a group.
-_LABEL_BRACKET = r"\[(\s*[sSdD]\s*[0-9][^\]]*)\](?!\()"
+#: An ASCII bracket whose body starts like a label; it must be a group. A
+#: following "(" that does not complete an inline link does not exempt it.
+_LABEL_BRACKET = r"\[(\s*[sSdD]\s*[0-9][^\]]*)\]"
 #: Links are tried first, so labels in their text, destination or title are skipped.
 _CITATION_SCAN = re.compile(rf"{_INLINE_LINK}|{_LABEL_BRACKET}")
 #: Label tokens separated by one comma (ASCII, ， or 、) or by whitespace alone.
