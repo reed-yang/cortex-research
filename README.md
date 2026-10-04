@@ -51,8 +51,9 @@ Hermes gen9 runtime is supplied separately. See
   A paper capture names one arXiv paper as one whitespace-separated token (a
   modern ID, `arXiv:<id>`, or an http, https or scheme-less arxiv.org abs, pdf
   or html link); only its canonical ID reaches ingestion, and the surrounding
-  text is shown as a separate derived note. Two different papers, or a link on
-  another host, are refused as `invalid_source`
+  text is shown as a separate derived note. Two different papers (including
+  another paper's ID-shaped number in that text), or a link on another host,
+  are refused as `invalid_source`
   ([user guide](docs/runbooks/cortex-web-user-guide.md#retry-a-failed-paper-capture)).
 - **External readings publication.** Opt-in macOS publication to an existing
   readings directory, with automatic additions, generated-file updates and

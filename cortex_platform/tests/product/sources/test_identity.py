@@ -334,12 +334,28 @@ def test_the_same_paper_named_twice_is_one_paper() -> None:
     assert parsed.note == "compare with"
 
 
+def test_the_same_paper_inside_the_note_is_still_one_paper() -> None:
+    parsed = parse_arxiv_capture_payload(
+        f"论文{_WORK} https://arxiv.org/abs/{_WORK}"
+    )
+
+    assert parsed.work_id == _WORK
+    assert parsed.note == f"论文{_WORK}"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         f"{_WORK} versus 2602.00001",
         f"https://arxiv.org/abs/{_WORK} 对比 arXiv:2602.00001",
         f"这篇 https://arxiv.org/pdf/{_WORK} 和 https://arxiv.org/abs/2602.00001",
+        # An ID-shaped number for another paper in the note is a second paper
+        # even when it touches other text: the ingest child once took the
+        # first such number as the paper, so accepting it would let a reread
+        # of an older dispatch name a different paper than the one it wrote.
+        f"论文2602.00001 https://arxiv.org/abs/{_WORK}",
+        f"https://arxiv.org/abs/{_WORK} 对比(2602.00001)",
+        f"{_WORK} 和论文2602.00001v2比较",
     ],
 )
 def test_two_different_papers_are_refused(payload: str) -> None:
@@ -388,6 +404,14 @@ def test_two_different_papers_are_refused(payload: str) -> None:
         f"({_WORK})",
         f"{_WORK},",
         f"https://arxiv.org/abs/{_WORK}。",
+        # Control characters a URL parser would silently delete.
+        f"\x01https://arxiv.org/abs/{_WORK}",
+        f"\x00https://arxiv.org/abs/{_WORK}",
+        f"\x1bhttps://arxiv.org/abs/{_WORK}",
+        f"https://arxiv.org/abs/{_WORK}\x01",
+        f"\x01arxiv.org/abs/{_WORK}",
+        f"https://arxiv.org/abs/{_WORK}?ref=\x01",
+        f"\x01{_WORK}",
     ],
 )
 def test_capture_payload_refuses_everything_but_a_clean_arxiv_token(

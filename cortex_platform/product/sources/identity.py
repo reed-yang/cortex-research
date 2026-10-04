@@ -27,6 +27,14 @@ _CAPTURE_PATH_RE = re.compile(
 )
 _CAPTURE_HOSTS = frozenset({"arxiv.org", "www.arxiv.org"})
 _CAPTURE_TOKEN_RE = re.compile(r"\S+")
+# urlsplit silently deletes leading C0 controls, so a token holding one is
+# never an exact locator.
+_CAPTURE_CONTROLS = frozenset(chr(code) for code in range(0x20))
+# The number the ingest child takes as the paper from raw text
+# (`cortex_research.arxiv_client._strip_version`). A Capture dispatched before
+# this parser handed the child its raw payload, so any such number in the note
+# must name the token's paper for a reread of that dispatch to agree with it.
+_CAPTURE_ID_SHAPE_RE = re.compile(r"\d{4}\.\d{4,5}")
 
 
 @dataclass(frozen=True)
@@ -109,8 +117,9 @@ def parse_arxiv_capture_payload(payload: str) -> ArxivCapturePayload:
     or an http, https or scheme-less arxiv.org/www.arxiv.org abs, pdf or
     html path with an optional version. A URL query or fragment never names
     the paper and is ignored. Nothing is fetched. The same paper may appear
-    more than once; two different papers are refused. Every other character
-    of the payload is the note, trimmed only at its two ends.
+    more than once; two different papers are refused, including an ID-shaped
+    number for another paper anywhere in the note. Every other character of
+    the payload is the note, trimmed only at its two ends.
     """
 
     if not isinstance(payload, str):
@@ -126,13 +135,18 @@ def parse_arxiv_capture_payload(payload: str) -> ArxivCapturePayload:
         raise ValueError("capture payload names no arXiv paper")
     if len(works) > 1:
         raise ValueError("capture payload names more than one arXiv paper")
+    work = works.pop()
     pieces: list[str] = []
     cursor = 0
     for start, end in spans:
         pieces.append(payload[cursor:start])
         cursor = end
     pieces.append(payload[cursor:])
-    return ArxivCapturePayload(work_id=works.pop(), note="".join(pieces).strip())
+    for piece in pieces:
+        for shape in _CAPTURE_ID_SHAPE_RE.finditer(piece):
+            if shape.group() != work:
+                raise ValueError("capture payload names more than one arXiv paper")
+    return ArxivCapturePayload(work_id=work, note="".join(pieces).strip())
 
 
 def _capture_token_work(token: str) -> str | None:
@@ -141,6 +155,8 @@ def _capture_token_work(token: str) -> str | None:
     try:
         token.encode("ascii")
     except UnicodeEncodeError:
+        return None
+    if not _CAPTURE_CONTROLS.isdisjoint(token):
         return None
     try:
         return canonicalize_arxiv_id(token).authority_id

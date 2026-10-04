@@ -172,9 +172,11 @@ that token is shown on the card as "Note from submitted text", separately from
 the note you typed; neither the submission nor your note is rewritten, and the
 derived note has no length limit of its own. Only the canonical paper ID is sent
 to ingestion. A capture is not imported, and fails as `invalid_source`, when it
-names two different papers, when the ID or link touches other text without a
-space (for example `论文2601.00042` or a link followed by `。`), or when the link
-uses another host, a port, user information or an encoded path.
+names two different papers (an ID-shaped number for another paper anywhere in
+the surrounding text counts, with or without a space, for example
+`对比2602.00001`), when the ID or link touches other text without a space (for
+example `论文2601.00042` or a link followed by `。`), or when the link uses
+another host, a port, user information or an encoded path.
 
 When the same paper is later adopted into the Library, for example by a new
 capture of it, refreshing the Inbox shows "This paper is now in your library; this

@@ -362,17 +362,46 @@ def test_text_around_one_arxiv_token_imports_only_that_paper(
     assert capture["capture_key"] == created["capture_key"]
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        f"{HTML_PAPER} 对比 {PDF_ONLY_PAPER}",
+        f"论文{HTML_PAPER} https://arxiv.org/abs/{PDF_ONLY_PAPER}",
+    ],
+)
 def test_two_different_papers_are_an_invalid_source_and_nothing_runs(
     consumer: CaptureConsumer,
     store: ControlStore,
     roots: EngineRoots,
     monkeypatch: pytest.MonkeyPatch,
+    payload: str,
 ) -> None:
     seen = _child_identifiers(consumer, monkeypatch)
-    _approved_capture(store, f"{HTML_PAPER} 对比 {PDF_ONLY_PAPER}")
+    _approved_capture(store, payload)
 
     outcome = consumer.run_once()
 
+    assert outcome.state == "failed"
+    assert outcome.failure_category == "invalid_source"
+    assert seen == []
+    assert list(roots.corpus_root.iterdir()) == []
+
+
+def test_a_control_character_in_a_link_keeps_it_text_and_nothing_runs(
+    consumer: CaptureConsumer,
+    store: ControlStore,
+    roots: EngineRoots,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL parser deletes a leading control character; the parser may not
+    accept the link it would leave behind."""
+
+    seen = _child_identifiers(consumer, monkeypatch)
+    capture_id = _approved_capture(store, f"\x01https://arxiv.org/abs/{HTML_PAPER}")
+
+    outcome = consumer.run_once()
+
+    assert store.get_capture(capture_id)["kind"] == "text"
     assert outcome.state == "failed"
     assert outcome.failure_category == "invalid_source"
     assert seen == []
@@ -443,6 +472,56 @@ def test_an_uncertain_capture_dispatched_under_the_old_predicate_still_reconcile
     assert [operation for operation, _ in seen] == ["reconcile_arxiv"]
     assert sorted(path.name for path in roots.corpus_root.iterdir()) == papers
     assert len(store.list_sources()) == 1
+    assert store.get_capture(capture_id)["payload"] == payload
+
+
+def test_a_legacy_dispatch_reconciles_the_paper_its_child_wrote_not_another(
+    consumer: CaptureConsumer,
+    store: ControlStore,
+    roots: EngineRoots,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old consumer handed the child the raw payload and the child took
+    its first ID-shaped number. When that child wrote the paper and the result
+    was lost before adoption, the reread must look for that same paper; it may
+    not name the link's paper instead and import a different one."""
+
+    from cortex_platform.product.engine.port import EnginePayload
+
+    payload = f"论文{HTML_PAPER} https://arxiv.org/abs/{PDF_ONLY_PAPER}"
+    capture_id = _approved_capture(store, payload)
+
+    def legacy_payload(source_id: str) -> EnginePayload:
+        return EnginePayload(kind="arxiv", identifier=payload.strip())
+
+    def lose_before_adoption(request, execution):
+        raise EffectOutcomeUnknown("result lost before adoption")
+
+    monkeypatch.setattr(consumer, "payload_for", legacy_payload)
+    monkeypatch.setattr(consumer._engine, "_adopt", lose_before_adoption)
+    assert consumer.run_once().state == "uncertain"
+    monkeypatch.undo()
+    papers = sorted(path.name for path in roots.corpus_root.iterdir())
+    assert len(papers) == 1
+    assert store.list_sources() == []
+
+    capture = store.get_capture(capture_id)
+    store.reopen_capture(
+        capture_id=capture_id,
+        expected_revision=int(capture["revision"]),
+        acknowledged=True,
+        actor_id="local-operator",
+        idempotency_key="capture-reopen-legacy02",
+    )
+    seen = _child_identifiers(consumer, monkeypatch)
+    outcome = consumer.run_once()
+
+    assert [operation for operation, _ in seen] == ["reconcile_arxiv"]
+    assert outcome.state == "consumed"
+    assert sorted(path.name for path in roots.corpus_root.iterdir()) == papers
+    assert [source["canonical_id"] for source in store.list_sources()] == [
+        f"arxiv:{HTML_PAPER}"
+    ]
     assert store.get_capture(capture_id)["payload"] == payload
 
 
