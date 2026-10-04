@@ -148,3 +148,39 @@ def test_unicode_title_and_section_are_classified_before_truncation(public):
     assert result.status == 200
     hit = next(h for h in result.payload["results"] if h["source_id"] == source_id)
     assert hit["section"] == "[redacted]"
+
+
+def _redacting(store):
+    from cortex_platform.product.api.events import _SENSITIVE_TEXT_PATTERNS
+    from cortex_platform.product.sources.reader import SourceKnowledgeReader
+
+    return SourceKnowledgeReader(
+        store, redact_line=lambda line: any(p.search(line) for p in _SENSITIVE_TEXT_PATTERNS))
+
+
+@pytest.mark.parametrize("text", [
+    "decoding REVIEW_SYNTHETIC_VALUE " + "a" * 2_000 + " api_key=hidden\nSafe evidence",
+    "decoding " + "a" * 1_987 + " api_key=REVIEW_SYNTHETIC_VALUE\nSafe evidence",
+])
+def test_paper_level_search_classifies_complete_chunk_before_truncation(knowledge, text):
+    store, _, database, _ = knowledge
+    source_id = store.list_sources()[0]["id"]
+    _write(database, "UPDATE chunks SET text = ? WHERE paper_dir = ?", (text, "20260906-English"))
+    hits = [h for h in _redacting(store).search("decoding", limit=6, per_source=2)["results"]
+            if h["source_id"] == source_id]
+    assert [h["excerpt"] for h in hits] == ["[redacted]\nSafe evidence"]
+    assert hits[0]["content_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_paper_level_search_classifies_title_and_section_before_truncation(knowledge):
+    store, _, database, _ = knowledge
+    source_id = store.list_sources()[0]["id"]
+    title = "机器人 REVIEW_SYNTHETIC_VALUE " + "x" * 2_000 + " secret=hidden"
+    section = "REVIEW_SYNTHETIC_SECTION " + "x" * 1_000 + " api_key=hidden"
+    _write(database, "UPDATE papers SET title = ? WHERE paper_dir = ?", (title, "20260906-English"))
+    _write(database, "UPDATE chunks SET section = ? WHERE paper_dir = ?", (section, "20260906-English"))
+    hits = [h for h in _redacting(store).search("机器人 decoding", limit=6, per_source=2)["results"]
+            if h["source_id"] == source_id]
+    assert [(h["section"], h["excerpt"]) for h in hits][0] == ("__title__", "[redacted]")
+    assert hits[0]["content_sha256"] == hashlib.sha256(title.encode()).hexdigest()
+    assert [h["section"] for h in hits[1:]] == ["[redacted]"]

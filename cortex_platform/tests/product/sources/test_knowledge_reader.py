@@ -330,3 +330,59 @@ def test_document_kinds_and_hardlinks(knowledge):
     os.link(path, root.parent / "hardlink")
     with pytest.raises(SourceContentUnavailable):
         reader.read(source_id, kind="grounding")
+
+
+def test_paper_level_search_does_not_mutate_and_uses_query_only_connections(knowledge, tmp_path, monkeypatch):
+    store, _, _, reader = knowledge
+    def snapshot():
+        return {str(p.relative_to(tmp_path)): (p.read_bytes(), p.stat().st_mtime_ns)
+                for p in tmp_path.rglob("*") if p.is_file()
+                and p.name not in {"control.db-wal", "control.db-shm"}}
+    before = snapshot()
+    original = sqlite3.connect
+    observed = []
+    class Checked(sqlite3.Connection):
+        def close(self):
+            assert self.execute("PRAGMA query_only").fetchone()[0] == 1
+            super().close()
+    def connect(path, **kwargs):
+        assert "mode=ro" in path and kwargs["uri"] is True
+        observed.append(path)
+        return original(path, factory=Checked, **kwargs)
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    for query in ("speculative decoding", "推测解码", "推测解码 decoding"):
+        assert reader.search(query, limit=6, per_source=2)["results"]
+    assert len(observed) == 6 and all("immutable=1" in path for path in observed[1::2])
+    assert snapshot() == before
+    wal = tmp_path / "control.db-wal"
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
+def test_paper_level_search_keeps_root_byte_limit(knowledge):
+    store, _, _, reader = knowledge
+    root = store.get_asset_root("research-corpus")
+    store.update_asset_root(root_id=root.root_id, private_path=root.private_path,
+                            max_bytes=2, enabled=True, expected_revision=root.revision,
+                            actor_id="operator", idempotency_key="root-byte-limit-002")
+    with pytest.raises(SourceContentUnavailable):
+        reader.search("decoding", limit=6, per_source=2)
+
+
+def test_paper_level_search_rechecks_authorization_after_selection(knowledge, monkeypatch):
+    from cortex_platform.product.sources import search as module
+
+    store, _, _, reader = knowledge
+    original = module._result
+    def revoke(*args, **kwargs):
+        result = original(*args, **kwargs)
+        root = store.get_asset_root("research-corpus")
+        if root.enabled:
+            store.update_asset_root(root_id=root.root_id, private_path=root.private_path,
+                                    max_bytes=root.max_bytes, enabled=False,
+                                    expected_revision=root.revision, actor_id="operator",
+                                    idempotency_key="revoke-during-paper-search")
+        return result
+    monkeypatch.setattr(module, "_result", revoke)
+    with pytest.raises(SourceContentUnavailable):
+        reader.search("decoding", limit=6, per_source=2)
+    assert not store.get_asset_root("research-corpus").enabled
