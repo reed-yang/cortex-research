@@ -69,6 +69,8 @@ jobs:
           for module in (cortex_platform, cortex_research):
               assert pathlib.Path(module.__file__).resolve().is_relative_to(root)
           PYTHON
+      - name: Run source, research, API and tooling contracts
+        run: .venv/bin/python -m pytest cortex_platform/tests/product/sources cortex_platform/tests/product/research cortex_platform/tests/product/api cortex_platform/tests/tooling -q
       - name: Run offline engine and research contracts
         run: .venv/bin/python -m pytest cortex_platform/tests/product/engine cortex_platform/tests/product/readings profiles/research/tests -q
 
