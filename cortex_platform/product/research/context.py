@@ -160,6 +160,34 @@ def citation_labels(packet):
     return labels, re.compile(rf"\[([{prefixes}][^\]]*)\]")
 
 
+#: A non-link ASCII bracket whose body starts like a label; it must be a group.
+_LABEL_BRACKET = re.compile(r"\[(\s*[sSdD]\s*[0-9][^\]]*)\](?!\()")
+#: Label tokens separated by one comma (ASCII, ， or 、) or by whitespace alone.
+_LABEL_GROUP = re.compile(r"\s*([sSdD][0-9]+(?:(?:\s*[,，、]\s*|\s+)[sSdD][0-9]+)*)\s*")
+_LABEL_SEPARATOR = re.compile(r"[\s,，、]+")
+
+
+def cited_labels(packet, text):
+    """The labels a response cites under its packet's grammar; None if malformed.
+
+    A v1 packet keeps its original scanner: every S-led bracket body is one
+    indivisible label. Every later version reads complete groups such as
+    ``[S1, D2]`` and ``[S1][D2]``. Brackets that do not start with a label and
+    inline links ``[text](url)`` are not citations, while a label-led bracket
+    outside the group grammar makes the response malformed. Tokens are kept
+    verbatim, so authorization stays an exact match against citation_labels.
+    """
+    if packet["schema_version"] == 1:
+        return frozenset(citation_labels(packet)[1].findall(text))
+    cited = set()
+    for body in _LABEL_BRACKET.findall(text):
+        group = _LABEL_GROUP.fullmatch(body)
+        if group is None:
+            return None
+        cited.update(_LABEL_SEPARATOR.split(group.group(1)))
+    return frozenset(cited)
+
+
 def selection_identity(packet):
     """Which item revision a packet was selected under, or None for paper-only."""
     item = packet.get("item")
