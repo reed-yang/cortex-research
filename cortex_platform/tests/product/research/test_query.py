@@ -2,6 +2,7 @@
 
 import pytest
 
+from cortex_platform.product.research.context import cited_labels
 from cortex_platform.product.research.query import FORMAT_TERMS, retrieval_query
 from cortex_platform.product.sources.reader import SourceQueryInvalid
 from cortex_platform.product.sources.search import (
@@ -30,9 +31,26 @@ def test_controls_and_whitespace_become_single_spaces(question, expected):
 @pytest.mark.parametrize("label", [
     "[S1]", "[D1]", "[S1, S2]", "[S1 S2]", "[S1，S2]", "[S1、S2]", "[S1][D2]", "[D1][S2]",
     "[S1-S3]", "[S2; S9]", "[S 2]", "[ s3 ]", "[S9a]", "[S99a]", "[S1a, S2b]",
+    # Every label-led bracket the answer grammar reads, malformed ones included (CL4).
+    "[S1-S99]", "[S2; S99]", "[S1, S2, and S99]", "[S1；S2]", "[S1000]", "[S1,, S2]", "[D2 notes]",
 ])
 def test_citation_label_groups_are_removed(label):
     assert retrieval_query(f"cache {label} replacement") == "cache replacement"
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("[S1]", ""), ("[S1, S2]", ""), ("[S1 S2]", ""), ("[S1，S2]", ""), ("[S1、S2]", ""),
+    ("[S1][D2]", ""), ("[S1-S3]", ""), ("[S2; S9]", ""), ("[S 2]", ""), ("[S9a]", ""),
+    ("[S1, S2, and S99]", ""), ("[S1；S2]", ""), ("[S1000]", ""),
+    ("[sic]", "sic"), ("[Supplementary]", "Supplementary"), ("【S1】", "S1"),
+    ("[Self Forcing](https://example.org)", "Self Forcing"), ("[S1-S3](notes.md)", "S1 S3"),
+    ("[notes [S9]](https://example.test/x)", "notes"), ("[Data](https://example.test/[S1])", "Data"),
+])
+def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept):
+    """One table (CL6/RS3): a bracket is dropped whole exactly when an answer cites with it."""
+    cited = cited_labels({"schema_version": 2, "sources": [], "documents": []}, text)
+    assert (kept == "") == (cited is None or bool(cited))
+    assert retrieval_query(f"cache {text} replacement") == " ".join(["cache", *kept.split(), "replacement"])
 
 
 @pytest.mark.parametrize("question,expected", [
@@ -42,13 +60,19 @@ def test_citation_label_groups_are_removed(label):
     ("see [S1](https://example.org/s1) cache", "see S1 cache"),
     ('[Data](https://example.org/(nested)/x "Title") memory', "Data memory"),
     ("[cache](https://example.org/paper 'Retained document') memory", "cache memory"),
-    ("[cache](https://example.org/library(papers(cache))) memory", "cache memory"),
+    # Link text may hold one nested bracket; labels inside it are removed too.
+    ("[notes [S9]](https://example.test/x) cache", "notes cache"),
+    ("[see [sic]](https://example.test/x) cache", "see sic cache"),
+    ("[S1-S3](notes.md) cache", "S1 S3 cache"),
     ("[cache](https://example.org/paper (Retained document)) memory", "cache memory"),
     ("[cache](<https://example.org/retained paper>) memory", "cache memory"),
     ("[cache]() memory", "cache memory"),
     # Not inline links: the parenthesized prose stays searchable.
     ("[Self Forcing](a streaming method) memory", "Self Forcing streaming method memory"),
     ("[cache](https://example.org/open( memory", "cache https example org open memory"),
+    # The answer grammar reads one level of nested parentheses in a destination.
+    ("[cache](https://example.org/library(papers(cache))) memory",
+     "cache https example org library papers memory"),
 ])
 def test_ordinary_brackets_stay_and_links_keep_only_their_text(question, expected):
     assert retrieval_query(question) == expected
@@ -66,10 +90,24 @@ def test_numbers_versions_and_years_stay_while_length_requirements_go():
     "in 200 words", "under 3 paragraphs", "within 50 sentences", "no more than 5 bullets",
     "at most 100 tokens", "in 300 characters", "20 chars", "8 points", "不超过300字",
     "少于 5 条", "控制在800字左右", "控制在500字以内", "3个段", "IN 200 WORDS",
-    "3个段落", "3句话", "控制在500字内，",
+    "3个段落", "3句话", "控制在500字内，", "不超过500字符", "500个字符以内", "字数控制在500以内",
+    "字数不超过500字", "在300字以内", "300字的", "300-500字", "300到500字", "in 800-1000 words",
+    "800–1000 words", "2 to 3 sentences", "300-word", "in 300-character",
 ])
 def test_length_requirements_are_removed(requirement):
     assert retrieval_query(f"cache memory {requirement} replacement") == "cache memory replacement"
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("用300字总结推测解码", "用 总结推测解码"),
+    ("写一段200字的介绍", "写一段 介绍"),
+    ("请在300字内回答", "请 回答"),
+    ("300字内说明推测解码", "说明推测解码"),
+    ("a 300-word summary of cache memory", "summary of cache memory"),
+    ("an 800-1000-word essay on cache memory", "an essay on cache memory"),
+])
+def test_length_requirements_inside_a_sentence_are_removed(question, expected):
+    assert retrieval_query(question) == expected
 
 
 def test_length_words_do_not_cut_into_neighbouring_terms():
@@ -78,7 +116,7 @@ def test_length_words_do_not_cut_into_neighbouring_terms():
 
 @pytest.mark.parametrize("term", [
     "1024字节缓存", "2段式检测", "3词汇表", "5句式变换", "4条件生成", "8字符串", "64字节对齐",
-    "500字内存", "第2段",
+    "500字内存", "第2段", "8字符串匹配", "2段式说明", "3条件介绍", "1024字节的方案",
 ])
 def test_counts_inside_cjk_compound_terms_are_not_length_requirements(term):
     assert retrieval_query(f"cache {term} memory") == f"cache {term} memory"

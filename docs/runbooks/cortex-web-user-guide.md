@@ -136,7 +136,10 @@ Paper search does not use the question text verbatim. It joins lines, drops
 citation labels such as `[S1]` or `[D1]`, explicit length requirements such as
 "in 200 words" or "控制在500字内" and output-format words such as "summarize" or
 "markdown", and puts the selected item's title first. Other numbers, years and
-versions stay. It then selects up to six papers with up to two matching passages
+versions stay. If nothing searchable remains and no selected item's title adds
+search words, paper search falls back to the question with its spacing normalized,
+within the same limits, so those labels, length requirements and format words are
+searched. It then selects up to six papers with up to two matching passages
 each. The answer still receives the exact question, and plain follow-ups reuse
 the retained packet without searching again.
 
