@@ -41,7 +41,13 @@ from .bindings import (
     operation_secret_scope,
     research_effect_environment,
 )
-from .protocol import EffectRequest, read_result
+from .protocol import (
+    PROVIDER_FAILURE_CATEGORIES,
+    PROVIDER_OPERATIONS,
+    PROVIDER_WRITE_ROOTS,
+    EffectRequest,
+    read_result,
+)
 
 CHILD_MODULE = "cortex_platform.product.engine.child"
 # What a detached engine descendant looks like in `ps` output. `detached_run.py`
@@ -224,7 +230,22 @@ class ResearchEffectSupervisor:
         payload: Mapping[str, Any] | None = None,
         *,
         watch_roots: Mapping[str, Path] | None = None,
+        write_roots: Sequence[Path] | None = None,
     ) -> EffectExecution:
+        """Run one operation in a fresh child.
+
+        `write_roots` is for the writing provider operations only
+        (`PROVIDER_WRITE_ROOTS`): the caller binds exactly that operation's
+        asset root. Every other provider operation may write nothing outside
+        its own effect directory, and an arXiv operation keeps the engine
+        roots.
+        """
+
+        if operation in PROVIDER_WRITE_ROOTS:
+            if not write_roots:
+                raise ValueError(f"{operation} needs its asset root as its write root")
+        elif write_roots:
+            raise ValueError(f"{operation} takes no caller write roots")
         self.require_activation()
         marker = _secrets.token_hex(16)
         capabilities = self._capabilities()
@@ -240,6 +261,12 @@ class ResearchEffectSupervisor:
         run_root = self._roots.state / "effects" / marker
         run_root.mkdir(parents=True, exist_ok=True)
         result_path = run_root / "result.json"
+        if operation in PROVIDER_WRITE_ROOTS:
+            bound_roots = tuple(Path(root) for root in write_roots or ())
+        elif operation in PROVIDER_OPERATIONS:
+            bound_roots = (run_root,)
+        else:
+            bound_roots = tuple(self._roots.write_roots)
         request = EffectRequest(
             operation=operation,
             payload=dict(payload or {}),
@@ -247,7 +274,7 @@ class ResearchEffectSupervisor:
             result_path=str(result_path),
             research_db=str(self._roots.research_db),
             state_dir=str(self._roots.state),
-            write_roots=tuple(str(root) for root in self._roots.write_roots),
+            write_roots=tuple(str(root) for root in bound_roots),
             watch_roots={
                 name: str(root)
                 for name, root in {**self._watch_roots, **(watch_roots or {})}.items()
@@ -368,6 +395,14 @@ class ResearchEffectSupervisor:
             # V3: a survivor is never a success path -- the refusal arrives
             # after the write, so the outcome is unknown rather than failed.
             ok, category = False, "outcome_unknown"
+        if (
+            not ok
+            and request.operation in PROVIDER_OPERATIONS
+            and category not in PROVIDER_FAILURE_CATEGORIES
+        ):
+            # The XHS task store accepts only its own categories; anything
+            # else from a provider child is a result nobody can vouch for.
+            category = "outcome_unknown"
         child_report = raw.get("survivors") or {}
         merged = {
             "child": child_report,

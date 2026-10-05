@@ -21,7 +21,7 @@ from cortex_platform.product.engine.bindings import (
     operation_secret_scope,
     research_effect_environment,
 )
-from cortex_platform.product.engine.protocol import OPERATIONS
+from cortex_platform.product.engine.protocol import ARXIV_OPERATIONS, OPERATIONS
 from cortex_platform.product.engine.service import _secret_provider, unusable_secret_aliases
 from cortex_platform.product.engine.supervisor import ResearchEffectSupervisor
 from cortex_platform.product.secrets import SecretNotFound, SecretValue
@@ -57,7 +57,7 @@ def stored(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def test_every_operation_has_a_scope_and_arxiv_keeps_its_credentials() -> None:
     assert OPERATIONS <= set(OPERATION_SECRET_SCOPES)
-    for operation in OPERATIONS:
+    for operation in ARXIV_OPERATIONS:
         assert operation_secret_scope(operation).aliases == ENGINE_ALIASES
         assert not operation_secret_scope(operation).aliases & set(PROVIDER_SECRET_BINDINGS)
     expected = {
@@ -98,7 +98,7 @@ def test_a_provider_credential_lands_in_exactly_one_variable(roots: EngineRoots)
 def test_a_missing_xhs_credential_never_reaches_an_arxiv_operation(stored: list[str]) -> None:
     provider, dropped = _secret_provider(CONFIG, keychain_only=True)
     assert dropped == ()
-    for operation in OPERATIONS:
+    for operation in ARXIV_OPERATIONS:
         stored.clear()
         assert set(provider(operation)) == {"glm", "openrouter"}
         assert set(stored) == {"GLM_API_KEY", "OPENROUTER_API_KEY"}
