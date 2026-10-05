@@ -844,6 +844,11 @@ class XhsStore:
                            WHERE id = ?""",
                         (now, row["id"]),
                     )
+                    # The rows the task was working on learn of it as they
+                    # would from a recorded failure.
+                    self._xhs_apply_failure(
+                        conn, self._xhs_task(conn, str(row["id"])), "outcome_unknown"
+                    )
                     continue
                 lease_until = self._format_registry_time(
                     now_value + timedelta(seconds=lease_seconds)
@@ -1063,6 +1068,480 @@ class XhsStore:
         value["result"] = json.loads(result) if result is not None else None
         return value
 
+    # -- the drain's records ----------------------------------------------------
+
+    def start_xhs_scans(
+        self,
+        *,
+        max_pages: int,
+        user_ids: Collection[str] | None = None,
+        scan_id: str | None = None,
+        full: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Create page 1 of one scan per followed blogger, or per named one.
+
+        A blogger whose previous scan still has a page to run gets no second
+        scan, so a repeated pull never doubles the calls. A `full` scan is a
+        backfill: it reads on past seen pages, up to `max_pages`.
+        """
+
+        _optional_int(max_pages, "max_pages", minimum=1, maximum=1_000)
+        if max_pages is None or type(full) is not bool:
+            raise ValueError("scan bounds are invalid")
+        with self._transaction() as conn:
+            scan_id = scan_id or self._utc_now().strftime("%Y%m%dT%H%M%SZ")
+            if (
+                not isinstance(scan_id, str)
+                or re.fullmatch(r"[0-9A-Za-z_-]{1,40}", scan_id) is None
+            ):
+                raise ValueError("scan_id is invalid")
+            if user_ids is None:
+                selected = [
+                    str(row["user_id"])
+                    for row in conn.execute(
+                        """SELECT user_id FROM xhs_bloggers WHERE followed = 1
+                           ORDER BY created_at, user_id"""
+                    )
+                ]
+            else:
+                selected = [normalize_xhs_id(user_id, "user_id") for user_id in user_ids]
+            created: list[dict[str, Any]] = []
+            for user_id in selected:
+                if not self._xhs_blogger(conn, user_id)["followed"]:
+                    continue
+                if conn.execute(
+                    """SELECT 1 FROM xhs_tasks
+                       WHERE kind = 'list_page' AND subject_key GLOB ?
+                         AND state IN ('pending', 'running')""",
+                    (f"scan:{user_id}:*",),
+                ).fetchone() is not None:
+                    continue
+                task, fresh = self._xhs_create_task(
+                    conn,
+                    kind="list_page",
+                    subject_key=f"scan:{user_id}:{scan_id}:1",
+                    payload={
+                        "user_id": user_id,
+                        "scan": scan_id,
+                        "page": 1,
+                        "cursor": "",
+                        "max_pages": max_pages,
+                        "full": full,
+                    },
+                )
+                if fresh:
+                    created.append(task)
+            return created
+
+    def xhs_awaiting_refresh(self, note_id: str) -> list[int]:
+        """Ordinals whose signed URL expired and wait for a fresh detail."""
+
+        with self._connect() as conn:
+            return [
+                int(task["payload"]["ordinal"])
+                for task in self._xhs_awaiting_refresh(conn, normalize_xhs_id(note_id, "note_id"))
+            ]
+
+    def record_xhs_task_result(
+        self, task_id: str, *, expected_revision: int, result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Apply one checked child answer and complete its task, atomically.
+
+        The answer may hold signed URLs for the next tasks' private payloads;
+        the task's own result keeps only a summary.
+        """
+
+        if not isinstance(result, Mapping):
+            raise ValueError("xhs task result is invalid")
+        with self._transaction() as conn:
+            task = self._xhs_running_task(conn, task_id, expected_revision, "done")
+            apply = {
+                "list_page": self._xhs_apply_list_page,
+                "detail": self._xhs_apply_detail,
+                "download": self._xhs_apply_download,
+                "ocr": self._xhs_apply_ocr,
+            }.get(str(task["kind"]))
+            if apply is None:
+                raise ValueError("xhs task kind records no result")
+            summary = apply(conn, task, result)
+            return self._xhs_complete_task(
+                conn, task_id, expected_revision=expected_revision, result=summary
+            )
+
+    def record_xhs_task_failure(
+        self,
+        task_id: str,
+        *,
+        expected_revision: int,
+        category: str,
+        refund: str | None = None,
+    ) -> dict[str, Any]:
+        """Fail or back off one task, and tell the rows it was working on.
+
+        `refund` names the provider whose reserved call was not billed.
+        """
+
+        with self._transaction() as conn:
+            task = self._xhs_fail_task(
+                conn, task_id, expected_revision=expected_revision, category=category
+            )
+            self._xhs_apply_failure(conn, task, category)
+            if refund is not None:
+                self._xhs_refund_usage(conn, provider=refund)
+            return task
+
+    def _xhs_apply_list_page(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Record unseen notes, the next page if the stop rule allows it, and
+        the blogger's scan outcome.
+
+        A page continues only when it is under the scan's page limit, the
+        provider has more, and at least one unseen note on it is not sticky:
+        a pinned note is old news on every page. A full scan drops the last
+        condition.
+        """
+
+        payload = task["payload"]
+        user_id = normalize_xhs_id(payload["user_id"], "user_id")
+        page = int(payload["page"])
+        unseen = unseen_regular = 0
+        for note in result["notes"]:
+            supported = note["note_type"] == "normal"
+            inserted = self._xhs_insert_note(
+                conn,
+                note_id=note["note_id"],
+                user_id=user_id,
+                note_type=note["note_type"],
+                title=note["title"],
+                caption=note["caption"],
+                caption_complete=False,
+                published_at=note["published_at"],
+                state="discovered" if supported else "unsupported",
+            )
+            if not inserted:
+                continue
+            unseen += 1
+            if not note["sticky"]:
+                unseen_regular += 1
+            if supported:
+                self._xhs_create_task(
+                    conn,
+                    kind="detail",
+                    subject_key=f"detail:{note['note_id']}",
+                    payload={"note_id": note["note_id"]},
+                )
+        next_cursor = result["next_cursor"]
+        continues = bool(
+            result["has_more"]
+            and next_cursor
+            and page < int(payload["max_pages"])
+            and (unseen_regular or payload.get("full") is True)
+        )
+        if continues:
+            self._xhs_create_task(
+                conn,
+                kind="list_page",
+                subject_key=f"scan:{user_id}:{payload['scan']}:{page + 1}",
+                payload={**payload, "page": page + 1, "cursor": next_cursor},
+            )
+        # Only a first page can say "nothing new": a later page exists because
+        # the one before it found new notes.
+        self._xhs_record_scan(
+            conn,
+            user_id=user_id,
+            outcome="ok" if unseen or page > 1 else "no_new_notes",
+            new_note_at=self._registry_now() if unseen else None,
+        )
+        return {
+            "page": page,
+            "notes": len(result["notes"]),
+            "unseen": unseen,
+            "next_page": continues,
+        }
+
+    def _xhs_apply_detail(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """A first detail stores the whole note and queues its downloads; a
+        later one only refreshes expired URLs, matching each image by fileid."""
+
+        note_id = normalize_xhs_id(task["payload"]["note_id"], "note_id")
+        detail = result["note"]
+        if detail["note_id"] != note_id:
+            raise ValueError("detail answers another note")
+        note = self._xhs_note(conn, note_id)
+        if note["state"] != "discovered":
+            refreshed = missing = 0
+            by_fileid = {image["fileid"]: image for image in result["images"] if image["url"]}
+            for waiting in self._xhs_awaiting_refresh(conn, note_id):
+                image = by_fileid.get(waiting["payload"]["fileid"])
+                if image is None:
+                    missing += 1
+                    self._xhs_fail_image_download(
+                        conn, note_id, int(waiting["payload"]["ordinal"]), "not_found"
+                    )
+                    continue
+                refreshed += 1
+                self._xhs_reset_task(
+                    conn,
+                    str(waiting["subject_key"]),
+                    payload={**waiting["payload"], "url": image["url"], "refreshed": True},
+                )
+            self._xhs_advance_note(conn, note_id)
+            return {"refreshed": refreshed, "missing": missing}
+        fields: dict[str, Any] = {
+            "title": detail["title"],
+            "caption": detail["caption"],
+            "caption_complete": True,
+            "published_at": detail["published_at"] or note["published_at"],
+        }
+        if detail["note_type"] != "normal":
+            self._xhs_update_note(
+                conn, note_id, expected_revision=note["revision"], state="unsupported",
+                note_type=detail["note_type"], **fields,
+            )
+            return {"images": 0, "unsupported": True}
+        self._xhs_update_note(
+            conn, note_id, expected_revision=note["revision"], state="detail_ok", **fields
+        )
+        blogger = self._xhs_blogger(conn, str(note["user_id"]))
+        if (
+            detail["user_name"]
+            and detail["user_id"] == note["user_id"]
+            and blogger["display_name"] is None
+        ):
+            conn.execute(
+                """UPDATE xhs_bloggers
+                   SET display_name = ?, revision = revision + 1, updated_at = ?
+                   WHERE user_id = ?""",
+                (
+                    self._required_text(detail["user_name"], "display_name", maximum=200),
+                    self._registry_now(),
+                    note["user_id"],
+                ),
+            )
+        for image in result["images"]:
+            ordinal = image["ordinal"]
+            self._xhs_upsert_image(
+                conn,
+                note_id=note_id,
+                ordinal=ordinal,
+                fileid=image["fileid"],
+                upstream_width=image["width"],
+                upstream_height=image["height"],
+            )
+            if not image["url"]:
+                # Nothing to fetch: the image is shown failed rather than
+                # silently dropped, and keeps its ordinal.
+                self._xhs_fail_image_download(conn, note_id, ordinal, "invalid_response")
+                continue
+            self._xhs_create_task(
+                conn,
+                kind="download",
+                subject_key=f"download:{note_id}:{ordinal}",
+                payload={
+                    "note_id": note_id,
+                    "ordinal": ordinal,
+                    "fileid": image["fileid"],
+                    "url": image["url"],
+                    "refreshed": False,
+                },
+            )
+        self._xhs_advance_note(conn, note_id)
+        return {"images": len(result["images"])}
+
+    def _xhs_apply_download(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        note_id = normalize_xhs_id(task["payload"]["note_id"], "note_id")
+        ordinal = int(task["payload"]["ordinal"])
+        image = result["image"]
+        current = self._xhs_image(conn, note_id, ordinal)
+        fields: dict[str, Any] = {
+            "download_state": "ok",
+            "download_error": None,
+            "sha256": image["sha256"],
+            "byte_size": image["byte_size"],
+            "media_type": image["media_type"],
+            "width": image["width"],
+            "height": image["height"],
+            "asset_name": f"{ordinal}-{image['sha256'][:12]}.{image['extension']}",
+        }
+        if current["sha256"] != image["sha256"]:
+            # Other bytes: an earlier transcription no longer describes them.
+            fields.update(
+                ocr_state="pending", ocr_error=None, ocr_engine=None,
+                ocr_flags=(), ocr_text_sha256=None,
+            )
+        self._xhs_update_image(
+            conn, note_id, ordinal, expected_revision=current["revision"], **fields
+        )
+        self._xhs_create_task(
+            conn,
+            kind="ocr",
+            subject_key=f"ocr:{note_id}:{ordinal}:{image['sha256']}",
+            payload={
+                "note_id": note_id,
+                "ordinal": ordinal,
+                "sha256": image["sha256"],
+                "name": f"{image['sha256']}.{image['extension']}",
+            },
+        )
+        self._xhs_advance_note(conn, note_id)
+        return {"ordinal": ordinal, "sha256": image["sha256"]}
+
+    def _xhs_apply_ocr(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        note_id = normalize_xhs_id(task["payload"]["note_id"], "note_id")
+        ordinal = int(task["payload"]["ordinal"])
+        current = self._xhs_image(conn, note_id, ordinal)
+        if current["sha256"] != task["payload"]["sha256"] or current["ocr_state"] != "pending":
+            # The image was fetched again meanwhile; its own task transcribes it.
+            return {"ordinal": ordinal, "stale": True}
+        self._xhs_update_image(
+            conn,
+            note_id,
+            ordinal,
+            expected_revision=current["revision"],
+            ocr_state="ok",
+            ocr_error=None,
+            ocr_engine=result["engine"],
+            ocr_flags=tuple(result["flags"]),
+            ocr_text_sha256=result["text_sha256"],
+        )
+        self._xhs_advance_note(conn, note_id)
+        return {"ordinal": ordinal, "engine": result["engine"], "flags": sorted(result["flags"])}
+
+    def _xhs_apply_failure(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], category: str
+    ) -> None:
+        """What a failed task means for its blogger, note or image.
+
+        A list page failure is the scan's answer at once, even while a retry
+        waits. Everything else changes only once the task is final, so a
+        retry in flight is never shown as a failure. A task that names no
+        subject has nothing to update.
+        """
+
+        payload = task["payload"]
+        final = task["state"] == "failed"
+        if task["kind"] == "list_page":
+            user_id = payload.get("user_id")
+            if user_id and conn.execute(
+                "SELECT 1 FROM xhs_bloggers WHERE user_id = ?", (user_id,)
+            ).fetchone() is not None:
+                self._xhs_record_scan(conn, user_id=user_id, outcome="failed", error=category)
+            return
+        note_id = payload.get("note_id")
+        if not final or not note_id or conn.execute(
+            "SELECT 1 FROM xhs_notes WHERE note_id = ?", (note_id,)
+        ).fetchone() is None:
+            return
+        if task["kind"] == "detail":
+            note = self._xhs_note(conn, note_id)
+            if note["state"] == "discovered":
+                self._xhs_update_note(
+                    conn, note_id, expected_revision=note["revision"],
+                    state="failed", last_error=category,
+                )
+                return
+            for waiting in self._xhs_awaiting_refresh(conn, note_id):
+                self._xhs_fail_image_download(
+                    conn, note_id, int(waiting["payload"]["ordinal"]), "url_expired"
+                )
+            self._xhs_advance_note(conn, note_id)
+        elif task["kind"] == "download":
+            ordinal = int(payload["ordinal"])
+            if self._xhs_image(conn, note_id, ordinal)["download_state"] != "pending":
+                return
+            if (
+                category == "url_expired"
+                and not payload.get("refreshed")
+                and self._xhs_request_refresh(conn, note_id)
+            ):
+                # The image waits, still pending, for one fresh detail.
+                return
+            self._xhs_fail_image_download(conn, note_id, ordinal, category)
+            self._xhs_advance_note(conn, note_id)
+        elif task["kind"] == "ocr":
+            ordinal = int(payload["ordinal"])
+            image = self._xhs_image(conn, note_id, ordinal)
+            if image["sha256"] != payload.get("sha256") or image["ocr_state"] != "pending":
+                return
+            self._xhs_update_image(
+                conn, note_id, ordinal, expected_revision=image["revision"],
+                ocr_state="failed", ocr_error=category,
+            )
+            self._xhs_advance_note(conn, note_id)
+
+    def _xhs_request_refresh(self, conn: sqlite3.Connection, note_id: str) -> bool:
+        """Make the note's detail due once more, unless it cannot run again."""
+
+        try:
+            self._xhs_reset_task(conn, f"detail:{note_id}")
+        except (NotFound, InvalidTransition):
+            return False
+        return True
+
+    def _xhs_awaiting_refresh(
+        self, conn: sqlite3.Connection, note_id: str
+    ) -> list[dict[str, Any]]:
+        """Download tasks that found their URL expired and have not yet had
+        their one refresh, for images still pending."""
+
+        rows = conn.execute(
+            """SELECT id FROM xhs_tasks
+               WHERE kind = 'download' AND subject_key GLOB ?
+                 AND state = 'failed' AND last_error = 'url_expired'
+               ORDER BY subject_key""",
+            (f"download:{note_id}:*",),
+        ).fetchall()
+        waiting = []
+        for row in rows:
+            task = self._xhs_task(conn, str(row["id"]))
+            if task["payload"].get("refreshed"):
+                continue
+            image = self._xhs_image(conn, note_id, int(task["payload"]["ordinal"]))
+            if image["download_state"] == "pending":
+                waiting.append(task)
+        return waiting
+
+    def _xhs_fail_image_download(
+        self, conn: sqlite3.Connection, note_id: str, ordinal: int, category: str
+    ) -> None:
+        image = self._xhs_image(conn, note_id, ordinal)
+        self._xhs_update_image(
+            conn, note_id, ordinal, expected_revision=image["revision"],
+            download_state="failed", download_error=category,
+        )
+
+    def _xhs_advance_note(self, conn: sqlite3.Connection, note_id: str) -> dict[str, Any]:
+        """Move a note on once every image is final for the current stage.
+
+        Downloads come first: `assets_done` needs every image downloaded or
+        failed. Then `ocr_done` needs every downloaded image transcribed or
+        failed; an image whose download failed has nothing to transcribe.
+        """
+
+        note = self._xhs_note(conn, note_id)
+        images = self._xhs_images(conn, note_id)
+        if note["state"] == "detail_ok" and all(
+            image["download_state"] != "pending" for image in images
+        ):
+            note = self._xhs_update_note(
+                conn, note_id, expected_revision=note["revision"], state="assets_done"
+            )
+        if note["state"] == "assets_done" and all(
+            image["download_state"] == "failed" or image["ocr_state"] != "pending"
+            for image in images
+        ):
+            note = self._xhs_update_note(
+                conn, note_id, expected_revision=note["revision"], state="ocr_done"
+            )
+        return note
+
     # -- usage ----------------------------------------------------------------
 
     def reserve_xhs_usage(self, provider: str, *, cap: int, calls: int = 1) -> bool:
@@ -1091,6 +1570,36 @@ class XhsStore:
             (day, provider, calls),
         )
         return True
+
+    def refund_xhs_usage(self, provider: str, *, calls: int = 1) -> None:
+        with self._transaction() as conn:
+            self._xhs_refund_usage(conn, provider=provider, calls=calls)
+
+    def _xhs_refund_usage(
+        self, conn: sqlite3.Connection, *, provider: str, calls: int = 1
+    ) -> None:
+        """Return reserved calls the provider did not bill, never below zero."""
+
+        if provider not in XHS_USAGE_PROVIDERS:
+            raise ValueError("usage provider is unsupported")
+        conn.execute(
+            """UPDATE xhs_usage SET calls = MAX(0, calls - ?)
+               WHERE day = ? AND provider = ?""",
+            (calls, self._utc_now().date().isoformat(), provider),
+        )
+
+    def xhs_exhausted_providers(self, caps: Mapping[str, int]) -> frozenset[str]:
+        """Providers whose calls today have reached their cap.
+
+        Their tasks are not claimed until the UTC day changes.
+        """
+
+        usage = self.xhs_usage()
+        return frozenset(
+            provider
+            for provider, used in usage.items()
+            if used >= int(caps.get(provider, 0))
+        )
 
     def xhs_usage(self, day: str | None = None) -> dict[str, int]:
         """Calls counted per provider on one UTC day, today by default."""
