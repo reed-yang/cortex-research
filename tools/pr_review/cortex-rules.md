@@ -25,10 +25,11 @@ code and public contracts take precedence over historical design documents.
   to make a failing workflow pass without confirming the actual contract.
 - Hosted fast-checks cover provider-free Control/artifact contracts, Web test:fast
   and review consumer configuration. Passing them does not prove installed, browser,
-  macOS, real-provider or production behavior. This review tool executes no tests.
-- Report introduced, demonstrable P1/P2 bugs with triggers and packet evidence.
-  Avoid formatting, speculative refactors and generic test requests. Identify
-  missing caller context instead of inventing it. Preserve independent findings.
+  macOS, real-provider or production behavior. Reviewers read the repository and do
+  not run the product, its services or networked tests.
+- Report introduced, demonstrable P1/P2 bugs with triggers and repository evidence.
+  Avoid formatting, speculative refactors and generic test requests. Read callers
+  and the merge-base behavior instead of assuming them. Preserve independent findings.
 
 References: README.md, CLAUDE.md, docs/architecture.md,
 docs/specs/product-boundaries.md, docs/runbooks/web-verification.md,

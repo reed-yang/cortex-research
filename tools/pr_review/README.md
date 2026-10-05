@@ -1,18 +1,20 @@
 # Cortex independent PR review
 
-The reusable engine is now hosted in
+The reusable engine is hosted in
 [reed-yang/independent-pr-review](https://github.com/reed-yang/independent-pr-review).
-Cortex keeps its project rules, configuration and protected credentials; generic
-Python adapters, tests, OAuth utilities and orchestration live in that repository.
+Cortex keeps its project rules, configuration and protected credentials; the engine,
+its tests and orchestration live in that repository.
 
 ## Consumer files
 
 - `.github/workflows/auto-review.yml`: immutable reusable workflow pin, automatic
-  PR events, maintainer commands and manual dry-run/review/full modes.
-- `.github/review.json`: bounded context, per-PR run/token limits and rules paths.
+  PR events (including `labeled`), maintainer commands and manual
+  dry-run/review/full modes.
+- `.github/review.json`: brief limits, per-PR run/token limits, rules paths and the
+  GPT generation policy.
 - `tools/pr_review/cortex-rules.md`: Cortex invariants; not generic product policy.
-- `.github/workflows/agy-oauth-check.yml`: two fresh hosted native OAuth sessions
-  using the pinned standalone composite Action.
+- `.github/workflows/agy-oauth-check.yml`: manual check of the native agy OAuth
+  session, kept for re-enabling the retired Gemini lane; still pinned to v0.3.0.
 - `.github/workflows/fast-checks.yml`: validates this consumer's configuration;
   provider-free engine tests run in the standalone repository's CI.
 
@@ -21,188 +23,74 @@ production state, or a new background service on the mini.
 
 ## Deployed behavior
 
-The pipeline keeps Grok `grok-4.6` on the explicitly selected gateway and Gemini
-`gemini-3.8-flash-medium` on the official agy release pinned by the engine (1.2.14
-in v0.3.0) with personal Google OAuth. It obtains independent opinions and performs
-an extra cross-family verification pass when candidates or unresolved issues need
-examination. It fetches bounded related source through GitHub; it never executes PR
-code or follows PR-supplied instructions.
+Engine v0.4.0 runs two independent reviewers. Each reads the repository itself
+from an immutable snapshot of the PR head and merge base; the engine sends only
+policy, PR metadata, the description (treated as author claims) and bounded patches.
 
-One English summary shows actual coverage, reviewed SHA, status and budget. Verified
+| Lane | Model and effort | Repository access |
+| --- | --- | --- |
+| Grok | `grok-4.7`, xhigh, 500k window | Engine read-only tools over git objects; no execution |
+| GPT | `gpt-6.1-sol`, ultra (verification xhigh) | Official Codex CLI in its read-only, no-network sandbox |
+
+Both go through the configured sub2api gateway. Grok reviews every eligible run.
+GPT generates opinions only when a PR changes at least 300 lines or 8 files, is
+marked ready for review, carries the `deep-review` label, or receives `/review full`
+or `/review verify`; otherwise it is shown as skipped but still verifies Grok's
+candidates. Each family verifies the other's candidates before anything is
+published. GPT ultra on a 200 to 2,000-line PR took 3 to 9 minutes and 0.7M to
+3.2M tokens (mostly cached input) in local replays; Grok took 10 to 12 minutes.
+
+One English summary shows the reviewed SHA, each reviewer's model, effort, scope
+and repository reads, verified findings, dismissed candidates, reviewer
+observations and budget, followed by a machine-readable result block. Verified
 P1/P2 findings with exact diff anchors can receive inline comments. Uncertain or
 ambiguous evidence stays in the summary. Only owned threads with demonstrated fixes
 are resolved. Reviews never approve, request changes, merge or write product code.
 
 An identical successful snapshot reuses the result. Incremental work uses separate
-successful model baselines and falls back to full review on changed base/config or
+per-lane baselines and falls back to full review on changed base/config or
 non-ancestor history. `/review`, `/review full`, `/review pause`, `/review resume`
 and `/review verify <finding-id>` require current repository write access. Commands
 cannot bypass fork/draft/default-branch restrictions or configured budgets.
 
-## Effort and context
-
-| Reviewer | Explicit effort | Configured model window |
-| --- | --- | --- |
-| Grok 4.6 | xhigh | 500,000 tokens |
-| Gemini 3.8 Flash through agy | medium, its next-to-highest level | 1,048,576 tokens |
-
-The operator explicitly accepted Grok 4.6's 500k ceiling. Setting a client field
-to 1M cannot enlarge that provider limit. Variables `GROK_EFFORT`,
-`GROK_CONTEXT_WINDOW`, `GEMINI_EFFORT`, and `GEMINI_CONTEXT_WINDOW` control these
-settings; the selected native model slug must agree with its effort variant.
-
-Ordinary collection allows 400k serialized characters, 300k source characters,
-20 related files and 300 API reads. Changed-file text is admitted largest change
-first, then sources of open findings and configured includes, then base versions,
-then related source. Every requested file that does not fit is recorded as
-omitted. Each model receives its own projection of the collected packet, so
-Grok's smaller window does not restrict Gemini's input. Whole diffs and requested
-verification evidence are preserved; lane omissions are recorded. Token estimates
-use UTF-8 bytes/3 with a ten-percent window reserve, not an exact provider
-tokenizer. These settings are capacities and budgets, not a full-window accuracy
-benchmark.
-
-Native agy has its own input limit. From 1.2.2 through at least 1.2.14, it keeps
-only a prefix of any single user message above 64,000 estimated tokens (UTF-8
-bytes/3) and still finishes successfully. That is how the Gemini opinion on
-PR #13 came to report truncated input. Since engine v0.3.0, the agy lane is
-limited to 60,000 estimated tokens and drops optional text with recorded lane
-omissions; the 1M figure remains the model window. Every model prompt ends with
-a per-call nonce that the reply must repeat. A lane that does not repeat it is
-partial and never becomes a successful baseline.
-
-The other PR #13 failure was the Grok lane's former 600-second non-streaming
-deadline. The engine now streams Grok responses with a 3,600-second total
-deadline. Larger changes can still report omissions and must not be represented
-as complete reviews.
-
-agy versions follow engine releases. The engine's daily watch opens a pin PR for
-each new official agy release after checksum and step-cap checks. Here, Dependabot
-proposes new engine release tags and Action updates weekly. Automatic review
-skips Dependabot PRs because runs triggered by Dependabot do not receive Actions
-Secrets.
-
-The per-PR token accounting ceiling is 8M to allow a large-context review and its
-verification. The hard run cap remains eight. Small PRs use only relevant context;
-the harness never pads input to fill a window. Model/effort/window changes invalidate
-cached baselines. Reports display actual model selection and requested settings.
+The per-PR accounting ceiling is 60M tokens: one two-lane run reserves 17M (Grok
+4M + 2M, GPT 8M + 3M) and reconciles to actual usage. The hard run cap is eight.
 
 ## Credentials and activation
 
-The `pr-review` Environment allows only `main`. It stores `GROK_API_KEY`, native
-`AGY_OAUTH_JSON`, and the unique state-signing `REVIEW_STATE_KEY`. No credential is
-stored in the public engine repository. Preserve the caller's explicit secret name
-mappings and the reusable workflow declarations: Environment binding alone did
-not expose Secrets in hosted acceptance. Values still come from the protected
-consumer Environment, with no blanket inheritance or repository-level copies.
-Repository Variables select models and
-routes; `AUTO_REVIEW_ENABLED=true` and `AUTO_REVIEW_PUBLISH=true` activate automatic
-review and persistent state/comments. A manual `dry-run` performs no provider calls
-or PR writes. Normal reviews require publication because they reserve durable budget
-before inference.
+The `pr-review` Environment allows only `main`. It stores `GROK_API_KEY`,
+`GPT_API_KEY` (a dedicated gateway key) and the unique state-signing
+`REVIEW_STATE_KEY`; `AGY_OAUTH_JSON` remains only for the manual agy check. No
+credential is stored in the public engine repository. Preserve the caller's
+explicit secret name mappings: Environment binding alone did not expose Secrets in
+hosted acceptance. Repository Variables select models and routes (`GROK_*`,
+`GPT_BASE_URL`, `GPT_MODEL`, `GPT_EFFORT`); `AUTO_REVIEW_ENABLED=true` and
+`AUTO_REVIEW_PUBLISH=true` activate automatic review and persistent state/comments.
+A manual `dry-run` performs no provider calls or PR writes.
 
-The mini is needed for initial interactive Google consent or later reauthorization,
-not as a continuously running review server. Native agy refreshes a disposable copy
-of the encrypted OAuth document on GitHub-hosted Ubuntu. Revocation/rotation still
-requires reprovisioning; repeated refresh success does not guarantee permanent login.
-
-For OAuth provisioning commands, key storage and recovery, use the standalone
-[authentication guide](https://github.com/reed-yang/independent-pr-review/blob/main/docs/authentication.md)
+For credential handling and recovery, use the standalone
+[credentials guide](https://github.com/reed-yang/independent-pr-review/blob/main/docs/authentication.md)
 and [operations guide](https://github.com/reed-yang/independent-pr-review/blob/main/docs/operations.md).
-Run OAuth utilities from a reviewed checkout of that repository. The old local
-`tools/pr_review/*.py` commands have been removed to avoid maintaining two engines.
 
 ## Boundaries and evidence
 
-Preparation, inference and publication have separate job/process credentials. The
-provider process receives no GitHub write token or state-signing key. Code-only job
-handoff artifacts last one day; normalized reports last three days. OAuth state,
-conversation databases and raw CLI diagnostics are never artifacts. The HMAC state
-is authenticated, not encrypted and not an administrator-proof audit log.
+Preparation, each reviewer lane and publication run in separate jobs. A reviewer
+job receives only its own provider key, no GitHub token and no state-signing key.
+The GPT key stays in a loopback proxy in the engine process; Codex holds only a
+per-run proxy token that sandboxed commands cannot see, and the action qualifies
+the sandbox (no writes, no network, no visible secrets) before any model call.
+PR content may execute only inside that sandbox. The HMAC state is authenticated,
+not encrypted and not an administrator-proof audit log.
 
 Run caps are hard per PR; tokens use actual or estimated accounting and are a soft
-guard. Account concurrency is repository-scoped; connecting several repositories
-with the same Google account does not create a global lock or shared quota service.
-Provider or verification failure is partial/failed, never a clean review. Review
-coverage does not establish full product CI, installed runtime or browser acceptance.
+guard. Provider or verification failure is partial/failed, never a clean review.
+Review coverage does not establish full product CI, installed runtime or browser
+acceptance.
 
-The [mature review study](../../docs/plans/pr-review-quality.md) and
-[English summary preview](../../docs/examples/pr-review-summary.md) explain the
-adopted design. The original [OAuth study](../../docs/plans/pr-review-workflow.md)
-is historical context; the standalone engine docs describe current operations.
-
-The Flash model's native OAuth setup was qualified on two fresh hosted runners in
-[run 34922741592](https://github.com/reed-yang/cortex-research/actions/runs/34922741592).
-The v0.2 engine has 71 provider-free tests covering explicit effort requests,
-independent context projection and budget reservations. Its larger windows are
-configured capacities; this qualification does not claim that a full-window
-accuracy benchmark was run. Current immutable pins are in the workflow files.
-
-
-## Runtime and provider diagnostics
-
-The engine uses native Grok Responses with bounded connect/idle/total deadlines, reconstructs
-literal source quotes from diff hunks, and keeps valid candidates when a sibling
-is rejected. Rejected output stays partial. Context collection skips downloads
-that cannot fit, and native installation overlaps Grok on the same runner.
-Models, effort and context capacities remain unchanged.
-
-Standard hosted runner compute is free for this public repository; private
-consumers use their included allowance. See [GitHub billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
-Artifact storage is separate. Normal review retains separate preparation,
-inference and publication jobs and never installs the product environment.
-
-Maintainers can manually dispatch `review-diagnostics.yml` on the default branch
-with a previous review run ID, run attempt and the exact `bundle_id` from its
-normalized result. While that code-only input artifact is retained, the workflow
-checks the bundle digest/repository and replays one Grok call using the pinned
-adapter and current repository model variables. It cannot publish to the PR,
-change review baselines or run verification; it holds no state key or OAuth.
-Provider credentials enter only the inference step. Diagnostic calls are manual
-and separate from the per-PR automatic reservation ledger; each dispatch permits
-one call bounded to 3600 seconds, with a 62-minute job limit and no automatic retry.
-The one-day artifact contains normalized, redacted diagnostics, never raw network
-responses or credentials.
-
-Run a single diagnostic from an authenticated maintainer terminal:
-
-```bash
-gh workflow run review-diagnostics.yml --ref main \
-  -f run_id=REVIEW_RUN_ID -f run_attempt=1 \
-  -f bundle_id=BUNDLE_ID_FROM_RESULT_JSON
-```
-
-Use the original report's bundle identity, not a newly edited packet. If the
-one-day input artifact has expired, collect a fresh eligible review rather than
-weakening artifact identity checks or retrieving provider Secrets locally.
-
-
-## Runtime regression evidence
-
-Replaying PR #13's immutable 31-file packet reduced source collection from
-234 GitHub API reads to 13 while preserving exactly the same supplied files and
-related context. The local collection check took 5.77 seconds; that timing is not
-a hosted-runner benchmark or a model-latency guarantee.
-
-Native OAuth replay also recovered a literal three-line quote from one diff hunk
-that the former raw-diff string check rejected. Quote validation establishes source
-provenance only: the proposed bug still needs independent verification, and a
-rejected sibling keeps the review partial instead of advancing its baseline.
-
-
-## Long reasoning and evidence failures
-
-Grok 4.6/xhigh can spend many minutes reasoning before final review text. The
-unchanged original PR #13 packet completed through the configured gateway in
-1,414 seconds, with 81,669 reasoning tokens; native OAuth completed in 1,774 seconds.
-The earlier 600-second budget expired before valid reasoning finished. Each Grok
-phase now has a 3,600-second ceiling, with no automatic retry. Small reviews return
-as soon as they finish. The hosted diagnostic spent about five seconds preparing
-before inference; changing login methods did not eliminate the model latency.
-
-A verification quote must preserve source whitespace and line breaks. Joining a
-wrapped sentence caused a real agy verification failure. Invalid decisions now
-remain uncertain while valid siblings are retained; the overall result remains
-partial and cannot advance a successful baseline. Reports and PR summaries are in
-English. Model confirmation still requires maintainer judgment about reachability
-and intended behavior; a matching quote alone does not prove a defect.
+Before release, the v0.4 engine replayed five of this repository's PRs locally with
+the real models. It found and cross-verified the PR #22 reread race (lost by the
+v0.3 verifier) and the PR #30 nested-destination citation bypass (missed by v0.3),
+and reported no finding on PR #31, where v0.3 had produced a false positive. The
+[mature review study](../../docs/plans/pr-review-quality.md) and the original
+[OAuth study](../../docs/plans/pr-review-workflow.md) are historical context for the
+v0.2/v0.3 design.

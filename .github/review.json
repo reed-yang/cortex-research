@@ -4,22 +4,25 @@
     "tools/pr_review/cortex-rules.md"
   ],
   "policies": [],
-  "context": {
-    "include": [
-      "CLAUDE.md",
-      "pyproject.toml",
-      "apps/web/package.json"
-    ],
-    "source_roots": []
-  },
   "limits": {
     "max_runs_per_pr": 8,
-    "max_tokens_per_pr": 8000000,
+    "max_tokens_per_pr": 60000000,
     "max_inline_comments": 5,
-    "packet_chars": 400000,
-    "context_chars": 300000,
-    "max_context_files": 20,
+    "brief_chars": 400000,
+    "description_chars": 60000,
     "max_api_reads": 300
+  },
+  "generation": {
+    "GPT": {
+      "min_changed_lines": 300,
+      "min_changed_files": 8,
+      "labels": [
+        "deep-review"
+      ],
+      "events": [
+        "ready_for_review"
+      ]
+    }
   },
   "inline_comments": true,
   "verification": true
