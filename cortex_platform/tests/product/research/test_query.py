@@ -132,6 +132,8 @@ def test_length_requirements_are_removed(requirement):
     ("请把字数控制在500以内总结推测解码", "请把 总结推测解码"),
     ("请将字数控制在500以内总结推测解码", "请将 总结推测解码"),
     ("回答控制在200个words以内 缓存", "回答控制在 缓存"),
+    # 写作文 is 写 with its object, not the compound noun 写作.
+    ("请用300字写作文介绍推测解码", "请 写作文介绍推测解码"), ("300字写作文介绍缓存", "写作文介绍缓存"),
 ])
 def test_length_requirements_inside_a_sentence_are_removed(question, expected):
     assert retrieval_query(question) == expected
@@ -154,6 +156,15 @@ def test_hyphenated_sizes_that_are_not_answer_lengths_stay(question, expected):
     assert retrieval_query(question) == expected
 
 
+@pytest.mark.parametrize("question,expected", [
+    ("2个Token-Merging 方法", "2个Token Merging 方法"),
+    ("2 Token-Merging 方法", "Token Merging 方法"),
+    ("16 points-to-voxel 映射", "16 points to voxel 映射"),
+])
+def test_a_unit_word_that_starts_a_hyphenated_name_stays(question, expected):
+    assert retrieval_query(question) == expected
+
+
 def test_length_words_do_not_cut_into_neighbouring_terms():
     assert retrieval_query("plugin 200 words Net2.1 characters") == "plugin Net2.1"
 
@@ -163,7 +174,7 @@ def test_length_words_do_not_cut_into_neighbouring_terms():
     "500字内存", "第2段", "8字符串匹配", "2段式说明", "3条件介绍", "1024字节的方案",
     # Compound nouns that start with an answer verb, counted topics and spaced ordinals.
     "2段分析法", "3段写作技巧", "常用汉字数3500的统计方法", "统计汉字数3000的语料",
-    "论文第 20段的比较", "第 12条解释",
+    "论文第 20段的比较", "第 12条解释", "8段描述符", "4段描述子", "300字说明书",
 ])
 def test_counts_inside_cjk_compound_terms_are_not_length_requirements(term):
     assert retrieval_query(f"cache {term} memory") == f"cache {term} memory"

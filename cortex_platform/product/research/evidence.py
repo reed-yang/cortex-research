@@ -151,7 +151,9 @@ def _converted_title(raw, heads):
     the next heading, at most at the title's level, after only those wrapped
     title lines and blank lines. Its text can differ (a footnote mark, rendered
     math), but it repeats more than half of the metadata title's words, which
-    a first section heading such as "6 Limitations" does not.
+    a first section heading such as "6 Limitations" does not. Small capitals
+    can split a capital from the rest of its word ("t ask- a ware g ating"), so
+    a heading that contains all of the title's letters in order also repeats it.
     """
     if len(heads) < 2 or heads[1][0] > heads[0][0]:
         return False
@@ -160,8 +162,12 @@ def _converted_title(raw, heads):
     wrapped = list(itertools.takewhile(str.strip, lines))
     if any(line.strip() for line in lines[len(wrapped):]):
         return False
-    words = set(_WORDS.findall(" ".join([heads[0][1], *wrapped]).casefold()))
-    return 2 * len(words & set(_WORDS.findall(heads[1][1]))) > len(words)
+    title = " ".join([heads[0][1], *wrapped]).casefold()
+    words = set(_WORDS.findall(title))
+    if 2 * len(words & set(_WORDS.findall(heads[1][1]))) > len(words):
+        return True
+    letters = "".join(_WORDS.findall(title))
+    return bool(letters) and letters in "".join(_WORDS.findall(heads[1][1].casefold()))
 
 
 def _author_section(raw, heads):

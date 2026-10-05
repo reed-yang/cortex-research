@@ -31,18 +31,20 @@ _PARENTHESIS = re.compile(r"[()]")
 # must end at a length suffix, 的, punctuation, a space, the end of the text or an
 # answer verb (300字总结, 300字内回答). So a count inside a compound term such as
 # 1024字节, 2段式, 8字符串 or 500字内存 is kept, and so is an ordinal such as 第2段
-# or 第 2段. A verb that starts a compound noun (分析法, 解释器, 写作) is not an
-# answer verb, so 2段分析法 and 3段写作技巧 keep their counts after 用 as well.
+# or 第 2段. A verb that starts a compound noun (分析法, 解释器, 写作, 描述符,
+# 描述子, 说明书) is not an answer verb, so 2段分析法, 3段写作技巧 and 8段描述符
+# keep their counts after 用 as well; 写作文 is still 写 with its object.
 # After a strong prefix the suffix 内 always ends the span, and 字数 may be
 # followed by a bare count (字数控制在500以内). 在, 用 and 字数 start a requirement
 # only at the start of a word or after 请, 把 or 将 (请把字数控制在500以内), so 现在,
 # 使用 and 汉字数 keep their characters. A hyphenated English size is a
 # requirement only for words, sentences, paragraphs and bullets (a 300-word
-# summary), not for model or scale sizes such as a 128-token context.
+# summary), not for model or scale sizes such as a 128-token context, and a unit
+# word that starts a hyphenated name (2 Token-Merging) is not a unit.
 _NUMBER = r"(?<![0-9A-Za-z.第])(?<!第 )\d{1,5}(?:\s*(?:[-–~～到至]|to(?=\s))\s*\d{1,5})?"
 _COUNT = rf"{_NUMBER}\s*(?:个\s*)?"
 _CJK_UNIT = r"(?:段落|句话|字符(?!串)|字|词|句|段|条)"
-_ANSWER_VERB = r"(?:(?:总结|概括|概述|回答|介绍|说明|描述|解释|阐述|分析|论述|讲解|写)(?![法器作]))"
+_ANSWER_VERB = r"(?:(?:总结|概括|概述|回答|介绍|说明|描述|解释|阐述|分析|论述|讲解|写)(?![法器作符子书])|写(?=作文))"
 _CJK_CLOSE = rf"(?:以内|之内|左右|的|内?(?!\w)|内?(?={_ANSWER_VERB}))"
 _CJK_PREFIX = r"(?:控制在|不超过|不多于|少于)"
 _WORD_START = r"(?:(?<![^\W\d_])|(?<=[请把将]))"
@@ -54,8 +56,9 @@ _LENGTH = re.compile(
     rf"|{_ENGLISH_PREFIX}{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
     rf"|{_ENGLISH_PREFIX}{_NUMBER}"
     r"(?:\s*(?:个\s*)?(?:words?|characters?|chars?|sentences?|paragraphs?|bullets?|points?|tokens?)"
-    r"|-(?:words?|sentences?|paragraphs?|bullets?))"
-    r"(?![A-Za-z])(?:以内|之内|内|左右)?",
+    r"(?![A-Za-z]|-[A-Za-z])"
+    r"|-(?:words?|sentences?|paragraphs?|bullets?)(?![A-Za-z]))"
+    r"(?:以内|之内|内|左右)?",
     re.IGNORECASE,
 )
 _PIECE = re.compile(r"[^\W_]+(?:\.[0-9]+)*")

@@ -308,12 +308,20 @@ def test_reference_boundaries_match_whole_words(text, expected):
      "## 6 Limitations\nOur own limitation: one benchmark.\n"),
     ("# Learning from\n  References\n\n# Learning from References † Equal contribution.\n\n"
      "## 1 Introduction\ni\n## 6 Limitations\nl\n## References\nr\n", "## 6 Limitations\nl\n"),
+    # Small capitals can split a capital from the rest of its word; the letters still repeat the title.
+    ("# Benchmarks Hide the limitations of Small Decoders\n\n"
+     "# b enchmarks h ide the limitations of s mall d ecoders\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nOur own limitation: one benchmark.\n",
+     "## 6 Limitations\nOur own limitation: one benchmark.\n"),
+    ("# Learning from references of Small Decoders\n\n# l earning from references of s mall d ecoders\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nl\n## References\nr\n", "## 6 Limitations\nl\n"),
 ], ids=["title-limitations", "repeated-title-conclusion", "title-references", "level-1-sections", "title-only",
         "converted-title-thanks", "converted-title-math", "converted-title-references",
         "converted-title-before-appendix", "converted-references-title-before-appendix", "level-1-last-section",
         "level-1-references-with-subsections", "level-1-last-section-with-subsections",
         "level-1-limitations-after-title", "level-1-conclusion-after-title",
-        "wrapped-title-thanks", "wrapped-title-references"])
+        "wrapped-title-thanks", "wrapped-title-references",
+        "small-caps-title-limitations", "small-caps-title-references"])
 def test_the_document_title_is_not_an_author_section(text, expected):
     assert span("full_text", text) == expected
 
