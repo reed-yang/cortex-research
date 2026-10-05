@@ -110,6 +110,7 @@ def test_numbers_versions_and_years_stay_while_length_requirements_go():
     "3个段落", "3句话", "控制在500字内，", "不超过500字符", "500个字符以内", "字数控制在500以内",
     "字数不超过500字", "在300字以内", "300字的", "300-500字", "300到500字", "in 800-1000 words",
     "800–1000 words", "2 to 3 sentences", "300-word", "2-paragraph", "3-sentence",
+    "500个tokens", "200 个 words", "3个sentences以内",
 ])
 def test_length_requirements_are_removed(requirement):
     assert retrieval_query(f"cache memory {requirement} replacement") == "cache memory replacement"
@@ -123,6 +124,14 @@ def test_length_requirements_are_removed(requirement):
     ("300字内说明推测解码", "说明推测解码"),
     ("a 300-word summary of cache memory", "summary of cache memory"),
     ("an 800-1000-word essay on cache memory", "an essay on cache memory"),
+    # A unit may run straight into an answer verb without a prefix.
+    ("300字总结推测解码", "总结推测解码"), ("200字符介绍缓存", "介绍缓存"),
+    ("3句话概括缓存机制", "概括缓存机制"), ("2段总结推测解码", "总结推测解码"),
+    ("100词解释缓存", "解释缓存"), ("用3段总结推测解码", "总结推测解码"),
+    # 字数 after 请把 or 请将 still starts a requirement.
+    ("请把字数控制在500以内总结推测解码", "请把 总结推测解码"),
+    ("请将字数控制在500以内总结推测解码", "请将 总结推测解码"),
+    ("回答控制在200个words以内 缓存", "回答控制在 缓存"),
 ])
 def test_length_requirements_inside_a_sentence_are_removed(question, expected):
     assert retrieval_query(question) == expected
@@ -158,7 +167,15 @@ def test_length_words_do_not_cut_into_neighbouring_terms():
 ])
 def test_counts_inside_cjk_compound_terms_are_not_length_requirements(term):
     assert retrieval_query(f"cache {term} memory") == f"cache {term} memory"
+    assert retrieval_query(f"cache 用{term} memory") == f"cache 用{term} memory"
     assert retrieval_query("1024字节缓存 2段式检测") == "1024字节缓存 2段式检测"
+
+
+@pytest.mark.parametrize("question", [
+    "用2段分析法研究缓存", "用3段写作技巧提高摘要质量", "请用2段分析法研究缓存", "300字解释器设计",
+])
+def test_a_compound_term_that_starts_with_an_answer_verb_keeps_its_count(question):
+    assert retrieval_query(question) == question
 
 
 def test_a_prefixed_cjk_requirement_may_run_into_the_next_clause():
