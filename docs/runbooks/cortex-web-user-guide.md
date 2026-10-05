@@ -233,6 +233,25 @@ ready on this installation; the card says so, `cortex skills status` names the
 reason, and the paper can be captured again once OCR is ready
 ([operator skills](operator-skills.md)).
 
+## Read a Library source
+
+Each content tab (Notes, Full text, Grounding) opens in Preview, which renders
+the whole stored document with headings, tables, math and the paper's own
+figures. Source is the paged, line-numbered view with the line range and
+`sha256` of the stored file; use it when citing. This browser remembers the
+choice for the Library only. Copy source copies the whole document as shown,
+with any redacted lines still redacted, in either view; it is available once
+that document has loaded and is not empty. Reopen document reads it again.
+
+Figures load only from the selected source's own stored `assets/` directory,
+including references written with the older `papers/<dir>/assets/` prefix for
+that same paper. A referenced figure that is not in the stored copy shows "Figure
+not in the stored copy" with its path. Remote images are not loaded and appear as
+the text "Image on <host>", not a link; `data:`, `file:` and protocol-relative images show
+"Image not loaded from this reference". The stored Markdown is never rewritten.
+A document larger than 2 MiB opens as paged Source only, with a one-line notice,
+and Copy source is unavailable for it.
+
 ## Read and manage results
 
 Preview is the readable Markdown and math view. Source shows the Markdown and

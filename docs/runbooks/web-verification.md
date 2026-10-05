@@ -13,7 +13,7 @@ Browser-free and the only tier hosted CI runs. Roughly 8-10 s warm.
 and `verify:shell-screenshots` (committed PNG digests and geometry, decoded
 without a browser), `test:screenshots`, `verify:pwa` (icons and manifest
 contract), `test:selection` (suite selection and the browser-verifier roster),
-`test:access-identity`, `test:ui` (25 vitest/jsdom files, 412 tests).
+`test:access-identity`, `test:ui` (26 vitest/jsdom files, 511 tests).
 
 Needs: Node 22.13+ (26.0.0 here) and `npm ci` in `apps/web`. Nothing else.
 
@@ -53,6 +53,12 @@ place to look and the place to change. Current entries:
 | `capture-screenshots.mjs` | baseline-capture | `capture:screenshots`, checked by `verify:screenshots` |
 | `capture-shell-screenshots.mjs` | baseline-capture | `capture:shell`, checked by `verify:shell-screenshots` |
 | `verify-research-composer.mjs` | superseded | nothing |
+
+`verify-control-workflow.mjs` opens an adopted source in the Library against a
+real Control process and checks that Preview renders its stored notes, that the
+stored figure loads through the gateway with its image headers and that a
+missing figure shows its placeholder. `verify-markdown-math.mjs` checks Library
+Preview math, figure sizing and Copy source against the mock Control.
 
 A capture script rewrites committed evidence, so it stays out of the release
 chain by design and the roster guard enforces that. Never run one to make a

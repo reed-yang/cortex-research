@@ -34,6 +34,10 @@ Paths abbreviated `product/` are relative to `cortex_platform/`.
   model-written summaries. Stored v1/v2 packets keep validating unchanged.
 - An Output is committed under its producing attempt. Preview and Source are
   views of the same stored bytes; UI rendering does not rewrite provenance.
+- The source asset route reads only the authorized source's own `assets/`
+  directory, with the binding taken from Control, and serves PNG, JPEG, GIF or
+  WebP decided by signature with `Cache-Control: no-store`. Library rendering
+  never rewrites stored Markdown.
 - Catalog states and human pauses are preserved. No autonomous idea/exploration
   advancement or hidden model escalation is part of the current command scope.
 - The engine runs out-of-tree code only through a capability slot served by an
