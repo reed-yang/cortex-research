@@ -38,6 +38,7 @@ from .bindings import (
     EFFECT_MARKER_VARIABLE,
     CorpusBindingError,
     EngineRoots,
+    operation_secret_scope,
     research_effect_environment,
 )
 from .protocol import EffectRequest, read_result
@@ -102,7 +103,7 @@ class ResearchEffectSupervisor:
         store: Any,
         roots: EngineRoots,
         python_executable: Path | None = None,
-        secret_provider: Callable[[], Mapping[str, SecretValue]] | None = None,
+        secret_provider: Callable[[str], Mapping[str, SecretValue]] | None = None,
         skip_embed: bool = False,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         watch_roots: Mapping[str, Path] | None = None,
@@ -186,14 +187,25 @@ class ResearchEffectSupervisor:
             return {}
 
     def _environment(
-        self, marker: str, capabilities: Mapping[str, CapabilityStatus] | None = None
+        self,
+        marker: str,
+        capabilities: Mapping[str, CapabilityStatus] | None = None,
+        operation: str = "",
     ) -> dict[str, str]:
         try:
-            resolved = self._secret_provider() if self._secret_provider else {}
+            # The provider is asked for this operation's credentials only, so
+            # a reference this operation does not use is never even resolved.
+            resolved = self._secret_provider(operation) if self._secret_provider else {}
         except SecretResolutionError as error:
             # The reference was well formed and nothing stood behind it, or the
             # keychain refused. Never carries the value.
             raise EffectPermanentlyRejected("adapter_unavailable") from error
+        scope = operation_secret_scope(operation)
+        resolved = {
+            alias: value
+            for alias, value in resolved.items()
+            if alias in scope.aliases | scope.optional
+        }
         slots: dict[str, str] = {}
         for status in (capabilities or {}).values():
             slots.update(status.binding_values())
@@ -216,7 +228,7 @@ class ResearchEffectSupervisor:
         self.require_activation()
         marker = _secrets.token_hex(16)
         capabilities = self._capabilities()
-        environment = self._environment(marker, capabilities)
+        environment = self._environment(marker, capabilities, operation)
         try:
             self._roots.prepare()
         except CorpusBindingError as error:

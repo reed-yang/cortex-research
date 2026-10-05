@@ -115,7 +115,7 @@ def test_the_write_boundary_fires_on_an_unbound_path(
 def test_a_missing_secret_reference_is_adapter_unavailable(
     roots: EngineRoots, research_db: Path
 ) -> None:
-    def provider():
+    def provider(_operation):
         raise SecretNotFound("openrouter", "nothing is stored behind it")
 
     supervisor = ResearchEffectSupervisor(
@@ -138,7 +138,7 @@ def test_a_resolved_secret_reaches_the_child_and_nothing_else(
         store=ActivationGate(True),
         roots=roots,
         python_executable=Path(sys.executable),
-        secret_provider=lambda: {
+        secret_provider=lambda _operation: {
             "openrouter": SecretValue("openrouter", "fake-secret-value-42")
         },
     )

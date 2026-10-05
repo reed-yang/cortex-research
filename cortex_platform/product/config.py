@@ -7,7 +7,7 @@ import os
 import re
 import tempfile
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 from urllib.parse import urlsplit
@@ -27,7 +27,24 @@ _TOP_LEVEL_KEYS = {
     "web",
     "readings",
     "skills",
+    "xhs",
 }
+# The first-party XHS plugin. Every value is public: endpoints, a model name
+# and bounds. The TikHub and GPT keys come from `secret_refs` (`tikhub`,
+# `sub2api-gpt`), never from here. `enabled` alone arms nothing; the operator
+# also enables both schedule rows.
+_XHS_KEYS = {
+    "enabled",
+    "tikhub_base",
+    "gpt_base",
+    "gpt_model",
+    "gpt_effort",
+    "max_list_pages",
+    "drain_units_per_tick",
+    "daily_calls",
+}
+_XHS_DAILY_CALL_KEYS = ("tikhub", "ocr", "gpt")
+_XHS_EFFORT_PATTERN = re.compile(r"^[a-z]{1,16}$")
 # ⟦P7⟧ The web section is the Web front door's shape and nothing else: a fixed
 # loopback port so a tunnel ingress has a stable target, and the ONE public
 # origin the boundary may trust, with the identity check that origin must pass
@@ -344,6 +361,124 @@ def web_settings(config: Mapping[str, object]) -> WebSettings:
     )
 
 
+@dataclass(frozen=True)
+class XhsSettings:
+    """The XHS plugin's shape with every default applied.
+
+    A blank `gpt_base` is not a default endpoint: identification and link
+    search fail closed until the operator names one.
+    """
+
+    enabled: bool = False
+    tikhub_base: str = "https://api.tikhub.io"
+    gpt_base: str = ""
+    gpt_model: str = "gpt-6-luna"
+    gpt_effort: str = "xhigh"
+    max_list_pages: int = 3
+    drain_units_per_tick: int = 10
+    daily_calls: Mapping[str, int] = field(
+        default_factory=lambda: {"tikhub": 100, "ocr": 1000, "gpt": 300}
+    )
+
+
+def _validate_xhs_base(value: object, name: str, *, blank: bool) -> str:
+    """An https endpoint without credentials, query or fragment.
+
+    Plain http is accepted for a loopback host only, for a fake provider in an
+    acceptance; any other plaintext endpoint would put the key on the wire.
+    """
+
+    if not isinstance(value, str):
+        raise ConfigError(f"xhs.{name} must be an https:// endpoint")
+    if blank and value == "":
+        return value
+    try:
+        parsed = urlsplit(value)
+        parsed.port  # noqa: B018 - raises for a malformed port
+    except ValueError as exc:
+        raise ConfigError(f"xhs.{name} must be an https:// endpoint") from exc
+    host = parsed.hostname
+    if (
+        parsed.scheme not in {"https", "http"}
+        or not host
+        or not _HOSTNAME_PATTERN.fullmatch(host)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (parsed.scheme == "http" and host not in _LOOPBACK_HOSTS)
+    ):
+        raise ConfigError(f"xhs.{name} must be an https:// endpoint without credentials")
+    return value
+
+
+def _xhs_bounded_int(value: object, name: str, minimum: int, maximum: int) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ConfigError(f"xhs.{name} must be an integer from {minimum} to {maximum}")
+    return value
+
+
+def _validate_xhs(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ConfigError("xhs must be a TOML table")
+    unknown = set(value) - _XHS_KEYS
+    if unknown:
+        raise ConfigError(f"unsupported xhs fields: {sorted(unknown)}")
+    xhs: dict[str, object] = {}
+    for key, item in value.items():
+        if key == "enabled":
+            if type(item) is not bool:
+                raise ConfigError("xhs.enabled must be true or false")
+        elif key in {"tikhub_base", "gpt_base"}:
+            item = _validate_xhs_base(item, key, blank=key == "gpt_base")
+        elif key == "gpt_model":
+            if not isinstance(item, str) or not _MODEL_PATTERN.fullmatch(item):
+                raise ConfigError("xhs.gpt_model must be a plain model identifier")
+        elif key == "gpt_effort":
+            if not isinstance(item, str) or not _XHS_EFFORT_PATTERN.fullmatch(item):
+                raise ConfigError("xhs.gpt_effort must be a plain effort name")
+        elif key == "max_list_pages":
+            item = _xhs_bounded_int(item, key, 1, 100)
+        elif key == "drain_units_per_tick":
+            item = _xhs_bounded_int(item, key, 1, 100)
+        else:
+            if not isinstance(item, dict) or not set(item) <= set(_XHS_DAILY_CALL_KEYS):
+                raise ConfigError(
+                    f"xhs.daily_calls takes only {list(_XHS_DAILY_CALL_KEYS)}"
+                )
+            item = {
+                name: _xhs_bounded_int(calls, f"daily_calls.{name}", 0, 1_000_000)
+                for name, calls in item.items()
+            }
+        xhs[key] = item
+    return xhs
+
+
+def xhs_settings(config: Mapping[str, object]) -> XhsSettings:
+    """The XHS plugin's settings from a validated configuration, with defaults."""
+
+    xhs = config.get("xhs")
+    if not isinstance(xhs, Mapping):
+        return XhsSettings()
+    defaults = XhsSettings()
+    values = {key: item for key, item in xhs.items() if key != "daily_calls"}
+    daily_calls = dict(defaults.daily_calls)
+    daily_calls.update(xhs.get("daily_calls") or {})
+    return replace(defaults, daily_calls=daily_calls, **values)
+
+
+def xhs_asset_root_paths(paths: PathRegistry) -> dict[str, Path]:
+    """Where the two plugin roots live by default: product data, beside the
+    research engine's directory and never inside the paper corpus."""
+
+    from .sources.models import CONTENT_SOURCE_KINDS
+
+    return {
+        kind.root_id: paths.data_dir / "sources" / kind.root_id
+        for kind in CONTENT_SOURCE_KINDS.values()
+    }
+
+
 def _validate_transports(value: object) -> dict[str, str]:
     transports = _string_mapping(value, section="transports")
     unknown = set(transports) - _TRANSPORT_KEYS
@@ -488,6 +623,8 @@ def validate_config(raw: object) -> dict[str, object]:
         if not root.is_absolute() or root == Path(root.anchor) or "\0" in str(root) or ".." in root.parts:
             raise ConfigError("skills.root must be an absolute non-root path")
         validated["skills"] = skills
+    if "xhs" in raw:
+        validated["xhs"] = _validate_xhs(raw["xhs"])
     return validated
 
 
@@ -505,10 +642,18 @@ def _toml_string(value: str) -> str:
 
 
 def _toml_value(value: object) -> str:
-    # `[web] port` is the one integer the schema carries; everything else is a
+    # `[web] port` and the `[xhs]` bounds are integers, `xhs.enabled` is the one
+    # boolean and `xhs.daily_calls` the one inline table; everything else is a
     # string, and a validated config holds nothing else.
+    if type(value) is bool:
+        return "true" if value else "false"
     if type(value) is int:
         return str(value)
+    if isinstance(value, dict):
+        entries = ", ".join(
+            f"{_toml_string(key)} = {_toml_value(value[key])}" for key in sorted(value)
+        )
+        return "{ " + entries + " }" if entries else "{}"
     assert isinstance(value, str)
     return _toml_string(value)
 
@@ -516,7 +661,7 @@ def _toml_value(value: object) -> str:
 def _render_config(config: Mapping[str, object]) -> str:
     validated = validate_config(dict(config))
     lines = [f"config_version = {CONFIG_VERSION}"]
-    for section in ("paths", "asset_roots", "secret_refs", "transports", "runtime", "web", "readings", "skills"):
+    for section in ("paths", "asset_roots", "secret_refs", "transports", "runtime", "web", "readings", "skills", "xhs"):
         entries = validated.get(section)
         if not entries:
             continue

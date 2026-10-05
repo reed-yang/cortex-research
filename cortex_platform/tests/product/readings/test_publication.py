@@ -45,7 +45,8 @@ def add_paper(service, store, name='paper-one', source_id='source-one'):
     (paper / 'notes.md').write_text('source: arxiv:2601.00042\noriginal notes')
     (paper / 'assets').mkdir()
     (paper / 'assets' / 'figure.svg').write_text('<svg/>')
-    source = {'id': source_id, 'canonical_id': 'arxiv:2601.00042', 'engine_ref': encode_engine_ref(name), 'import_state': 'imported'}
+    source = {'id': source_id, 'canonical_id': 'arxiv:2601.00042', 'source_kind': 'paper',
+              'engine_ref': encode_engine_ref(name), 'import_state': 'imported'}
     store.sources.append(source)
     return paper
 
@@ -379,3 +380,29 @@ def test_content_identified_existing_paper_requires_exact_primary_digest(library
     with service.connect() as db:
         owned = json.loads(db.execute('SELECT owned FROM publications').fetchone()[0])
     assert 'full_text.md' not in owned
+
+
+@pytest.mark.parametrize('kind', ['blog', 'xhs_note'])
+def test_only_papers_are_discovered_retried_or_run(library, kind):
+    service, store = library
+    # A `paper:` engine_ref alone does not make a source a paper.
+    source = add_paper(service, store, name='not-a-paper', source_id='source-other')
+    store.sources[0]['source_kind'] = kind
+    service.tick()
+    assert service.status()['items'] == []
+    with pytest.raises(PublicationConflict, match='source_not_paper'):
+        service.retry('source-other')
+    assert service.status()['items'] == []
+    # A row already queued for a non-paper source is never run.
+    with service.connect() as db:
+        db.execute('INSERT INTO publications (source_id,canonical_id,paper_dir) VALUES (?,?,?)',
+                   ('source-other', 'arxiv:2601.00042', source.name))
+    service.tick()
+    assert status(service)['state'] == 'pending'
+    assert status(service)['attempts'] == 0
+    assert not (service.root / source.name).exists()
+    paper = add_paper(service, store)
+    service.tick()
+    states = {item['source_id']: item['state'] for item in service.status()['items']}
+    assert states == {'source-one': 'published', 'source-other': 'pending'}
+    assert (service.root / paper.name / 'full_text.md').exists()
