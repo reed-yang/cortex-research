@@ -366,7 +366,7 @@ class InboundTurnBridge:
         #: deliberate and it is the price of ADJ-2: `waiting_for_decision` is
         #: one operator action away from `resuming` or `cancel_requested`, the
         #: resolve route writes `resuming` and returns with no turn queued
-        #: behind it (api/app.py:954-966), and this sweep is then the only
+        #: behind it (api/app.py:988-1000), and this sweep is then the only
         #: writer that would converge the run. Dropping a candidate for being
         #: "not stalled" therefore un-fixes ADJ-2 rather than bounding the
         #: sweep -- applied literally it fails both live-loop ADJ-2 tests, so
@@ -1467,19 +1467,19 @@ class InboundTurnBridge:
         # for a BOUND attempt, so `_undriven` answered None for it there too.
         # The second producer is `ControlStore.resume_run`, which is reachable
         # only from `paused` (its `source_state="paused"`,
-        # control/store.py:6507), and
+        # control/store.py:6548), and
         # a conversation turn can never be `paused`: the transition into it
-        # refuses an attempt with no `checkpoint_uri` (control/store.py:5434-5437)
+        # refuses an attempt with no `checkpoint_uri` (control/store.py:5475-5478)
         # and the resume out of it refuses the same shape
-        # (control/store.py:6661-6662), both raising
+        # (control/store.py:6702-6703), both raising
         # `InvalidTransition("checkpoint_missing", ...)`.
         #
         # ⟦P9-3 FV-3⟧ And the load-bearing clause, "a Hermes turn writes none",
         # is checkable rather than asserted: `attempts.checkpoint_uri` has one
         # writer in the whole store, the `UPDATE attempts SET checkpoint_uri`
-        # inside `ControlStore.commit_checkpoint` (control/store.py:6534, the
-        # write at control/store.py:6604) -- the attempt INSERTs set only
-        # `source_checkpoint_uri` (control/store.py:6663-6666) -- and that
+        # inside `ControlStore.commit_checkpoint` (control/store.py:6575, the
+        # write at control/store.py:6645) -- the attempt INSERTs set only
+        # `source_checkpoint_uri` (control/store.py:6704-6707) -- and that
         # method is defined once and called
         # from tests only, never from a turn. Which is also why
         # `pause_requested` converges to `canceled` rather than to `paused` at

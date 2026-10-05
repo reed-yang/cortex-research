@@ -174,7 +174,7 @@ class ResearchEffectSupervisor:
     def require_activation(self) -> None:
         """D6's choke point, re-evaluated per effect.
 
-        A bounded window expires as a stored fact on read (`control/store.py:1973`), so a
+        A bounded window expires as a stored fact on read (`control/store.py:2014`), so a
         batch can straddle its own expiry; the answer has to be asked again for
         every child rather than once for the batch.
         """

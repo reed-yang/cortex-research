@@ -375,7 +375,7 @@ def _receipt_subject_id(response_column: str) -> str:
     `_MACHINE_THREAD_PREDICATE` each OR that receipt half with a workflow
     half -- a run owning a workflow instance (control/store.py:533), a
     thread any run of which ever carried one
-    (control/store.py:11335-11337). So a gen-13 carrier that owns its
+    (control/store.py:11380-11382). So a gen-13 carrier that owns its
     workflow still answers "the engine's" at both doors, and only its
     creator changes. "Not the engine's at every door" is the answer for a
     subject whose receipt is its ONLY machine signal: a workflow-less
@@ -393,7 +393,7 @@ def _receipt_subject_id(response_column: str) -> str:
     ⟦batchS ADJ-1⟧ And the write the corruption permits is not only an
     operator's. A capture thread that stops matching
     `_MACHINE_THREAD_PREDICATE` makes a workflow-less carrier run on it
-    match `_CONVERSATION_RUN_PREDICATE` (control/store.py:10949-10955) as soon
+    match `_CONVERSATION_RUN_PREDICATE` (control/store.py:10994-11000) as soon
     as the thread is drivable at all -- an operator message the API stored,
     or a transport binding -- and the turn bridge's start sweep projects
     exactly those runs (transports/bridge.py:2044). So a restarted daemon
@@ -439,22 +439,22 @@ def _receipt_subject_id(response_column: str) -> str:
 
     ⟦batchS ADJ-3⟧ Over SQL, and only there. Three PYTHON readers parse a
     `response_json` column with a bare `json.loads` and carry no guard at
-    all: `_receipt` (control/store.py:12801-12825) over these same
+    all: `_receipt` (control/store.py:12846-12870) over these same
     `idempotency_receipts` rows, `_runtime_event_replay`
-    (control/store.py:11748-11815) over `runtime_event_inbox`, and
-    `_transport_command_row` (control/store.py:14542-14569) over
+    (control/store.py:11793-11860) over `runtime_event_inbox`, and
+    `_transport_command_row` (control/store.py:14587-14614) over
     `transport_command_receipts`. Each raises `json.JSONDecodeError` on a
     corrupt row, and ⟦batchT ADJ-A2⟧ the door that error reaches is not the
     same for all three. `_receipt` sits behind the control API's command
     routes, where `ControlAPI.handle` answers its decode error as 400
-    `invalid_request` (api/app.py:314-315) -- so a replayed command whose
+    `invalid_request` (api/app.py:319-320) -- so a replayed command whose
     own stored receipt is unreadable blames the caller for a row the caller
     did not write. `_runtime_event_replay` never reaches that door:
     `adapter_event_id` is supplied only by the daemon's runtime delivery
     path (orchestration/service.py:733) through `apply_runtime_transition`
-    (control/store.py:5990-6025); every control-API caller leaves it None,
+    (control/store.py:6031-6066); every control-API caller leaves it None,
     and the reader returns at its `adapter_event_id` guard
-    (control/store.py:11757-11758) before it parses anything -- so its
+    (control/store.py:11802-11803) before it parses anything -- so its
     corrupt row fails a daemon-side runtime event, not an operator's
     request. The third is the Telegram adapter's command replay
     (`transports/ports.py:244-255`). Left as they are: each is a single-row
@@ -930,41 +930,82 @@ class ControlStore(
             # precedent: only an OPEN capture blocks. A consumed, dismissed
             # or failed row is history, so the same payload may be captured
             # again deliberately.
-            open_row = conn.execute(
-                """SELECT id FROM captures
-                   WHERE capture_key = ?
-                     AND state IN ('pending', 'approved', 'claimed', 'uncertain')
-                   ORDER BY created_at, id LIMIT 1""",
-                (capture_key,),
-            ).fetchone()
-            if open_row is not None:
-                raise CaptureConflict(self._capture(conn, str(open_row["id"])))
-            now = self._now()
-            capture_id = self._id_factory("capture")
-            conn.execute(
-                """INSERT INTO captures
-                   (id, capture_key, payload, kind, note, state, claim_epoch,
-                    known_source_id, revision, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 0, ?, ?)""",
-                (
-                    capture_id,
-                    capture_key,
-                    payload,
-                    kind,
-                    note,
-                    self._known_capture_source(conn, capture_key),
-                    now,
-                    now,
-                ),
+            open_capture = self._open_capture(conn, capture_key)
+            if open_capture is not None:
+                raise CaptureConflict(open_capture)
+            value = self._insert_capture(
+                conn, payload=payload, note=note, kind=kind, capture_key=capture_key
             )
-            # The payload never enters the audit trail: only the shape does.
-            self._audit(
-                conn, "capture", capture_id, "capture.created", {"kind": kind}
-            )
-            value = self._capture(conn, capture_id)
             return self._save_receipt(
                 conn, actor_id, operation, idempotency_key, request, value, 201
             )
+
+    def _stage_capture(
+        self, conn: sqlite3.Connection, *, payload: str, note: str
+    ) -> tuple[JsonObject, bool]:
+        """Reuse the open capture of this payload's key, or insert a pending one.
+
+        For a command that stages a capture inside its own transaction and
+        receipt, such as an XHS recommendation import. `create_capture`
+        refuses an open capture instead. Returns the capture and whether it
+        was reused.
+        """
+
+        self._required_text(payload, "payload", maximum=_CAPTURE_PAYLOAD_MAX)
+        note = self._capture_note(note)
+        kind, capture_key = _capture_shape(payload.strip())
+        open_capture = self._open_capture(conn, capture_key)
+        if open_capture is not None:
+            return open_capture, True
+        return (
+            self._insert_capture(
+                conn, payload=payload, note=note, kind=kind, capture_key=capture_key
+            ),
+            False,
+        )
+
+    def _open_capture(
+        self, conn: sqlite3.Connection, capture_key: str
+    ) -> JsonObject | None:
+        row = conn.execute(
+            """SELECT id FROM captures
+               WHERE capture_key = ?
+                 AND state IN ('pending', 'approved', 'claimed', 'uncertain')
+               ORDER BY created_at, id LIMIT 1""",
+            (capture_key,),
+        ).fetchone()
+        return None if row is None else self._capture(conn, str(row["id"]))
+
+    def _insert_capture(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        payload: str,
+        note: str,
+        kind: str,
+        capture_key: str,
+    ) -> JsonObject:
+        now = self._now()
+        capture_id = self._id_factory("capture")
+        conn.execute(
+            """INSERT INTO captures
+               (id, capture_key, payload, kind, note, state, claim_epoch,
+                known_source_id, revision, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 0, ?, ?)""",
+            (
+                capture_id,
+                capture_key,
+                payload,
+                kind,
+                note,
+                self._known_capture_source(conn, capture_key),
+                now,
+                now,
+            ),
+        )
+        # The payload never enters the audit trail: only the shape does.
+        self._audit(conn, "capture", capture_id, "capture.created", {"kind": kind})
+        return self._capture(conn, capture_id)
 
     def capture_blocked_by(self, capture_ids: Sequence[str]) -> dict[str, str]:
         """What each capture's newest uncertain audit row said was blocking it.
@@ -9309,10 +9350,14 @@ class ControlStore(
         with self._connect() as conn:
             return self._source(conn, source_id)
 
-    def list_sources(self) -> list[JsonObject]:
+    def list_sources(self, *, kind: str | None = None) -> list[JsonObject]:
+        """Every source, or only those of one `source_kind`."""
+
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id FROM sources ORDER BY canonical_id, id"
+                """SELECT id FROM sources WHERE (? IS NULL OR source_kind = ?)
+                   ORDER BY canonical_id, id""",
+                (kind, kind),
             ).fetchall()
             return [self._source(conn, str(row["id"])) for row in rows]
 

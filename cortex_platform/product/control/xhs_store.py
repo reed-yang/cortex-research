@@ -13,10 +13,11 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..sources.identity import canonicalize_arxiv_id, normalize_url
 from ..sources.models import (
@@ -56,6 +57,8 @@ XHS_URL_STATES = frozenset(
 _URL_BEARING_STATES = frozenset({"from_text", "auto_matched", "unverified", "operator_set"})
 XHS_RECOMMENDATION_ORIGINS = frozenset({"rule", "model", "rule+model"})
 XHS_IMPORT_STATES = frozenset({"none", "staged", "importing", "imported", "failed"})
+#: The most recommendations one import command takes.
+XHS_IMPORT_BATCH_MAX = 100
 #: Every failure a child operation may report, as a category and never as text.
 XHS_FAILURE_CATEGORIES = frozenset(
     {
@@ -489,6 +492,68 @@ class XhsStore:
         value["caption_complete"] = bool(value["caption_complete"])
         return value
 
+    def xhs_note_id_for_source(self, source_id: str) -> str:
+        with self._connect() as conn:
+            return str(self._xhs_note_by_source(conn, source_id)["note_id"])
+
+    def _xhs_note_by_source(self, conn: sqlite3.Connection, source_id: str) -> dict[str, Any]:
+        """The saved note behind one `xhs_note` source; no other source has one."""
+
+        row = conn.execute(
+            "SELECT note_id FROM xhs_notes WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        if row is None:
+            raise NotFound("xhs note", source_id)
+        return self._xhs_note(conn, str(row["note_id"]))
+
+    def xhs_note_view(self, source_id: str) -> dict[str, Any]:
+        """One saved note with its blogger, images and recommendations, each
+        recommendation with its Capture's state and its imported source's kind.
+
+        Rows only, for the caller to project. No task is read, so no payload
+        (where a signed URL may live) and no lease is part of the answer.
+        """
+
+        with self._connect() as conn:
+            note = self._xhs_note_by_source(conn, source_id)
+            blogger = conn.execute(
+                "SELECT * FROM xhs_bloggers WHERE user_id = ?", (note["user_id"],)
+            ).fetchone()
+            return {
+                "note": note,
+                "blogger": None if blogger is None else self._row(blogger),
+                "images": self._xhs_images(conn, str(note["note_id"])),
+                "recommendations": [
+                    self._xhs_recommendation_view(conn, str(recommendation["id"]))
+                    for recommendation in self._xhs_recommendations(conn, str(note["note_id"]))
+                ],
+            }
+
+    def _xhs_recommendation_view(
+        self, conn: sqlite3.Connection, recommendation_id: str
+    ) -> dict[str, Any]:
+        """One recommendation with its Capture's state and revision and the
+        kind of the source it imported."""
+
+        recommendation = self._xhs_recommendation(conn, recommendation_id)
+        capture = imported = None
+        if recommendation["capture_id"] is not None:
+            capture = conn.execute(
+                "SELECT state, revision FROM captures WHERE id = ?",
+                (recommendation["capture_id"],),
+            ).fetchone()
+        if recommendation["imported_source_id"] is not None:
+            imported = conn.execute(
+                "SELECT source_kind FROM sources WHERE id = ?",
+                (recommendation["imported_source_id"],),
+            ).fetchone()
+        recommendation["capture_state"] = None if capture is None else capture["state"]
+        recommendation["capture_revision"] = None if capture is None else capture["revision"]
+        recommendation["imported_source_kind"] = (
+            None if imported is None else imported["source_kind"]
+        )
+        return recommendation
+
     # -- images ---------------------------------------------------------------
 
     def _xhs_upsert_image(
@@ -777,12 +842,17 @@ class XhsStore:
         with self._connect() as conn:
             note_id = normalize_xhs_id(note_id, "note_id")
             self._xhs_note(conn, note_id)
-            rows = conn.execute(
-                """SELECT id FROM xhs_recommendations WHERE note_id = ?
-                   ORDER BY image_ordinal IS NULL, image_ordinal, created_at, id""",
-                (note_id,),
-            ).fetchall()
-            return [self._xhs_recommendation(conn, str(row["id"])) for row in rows]
+            return self._xhs_recommendations(conn, note_id)
+
+    def _xhs_recommendations(
+        self, conn: sqlite3.Connection, note_id: str
+    ) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            """SELECT id FROM xhs_recommendations WHERE note_id = ?
+               ORDER BY image_ordinal IS NULL, image_ordinal, created_at, id""",
+            (note_id,),
+        ).fetchall()
+        return [self._xhs_recommendation(conn, str(row["id"])) for row in rows]
 
     def _xhs_recommendation(
         self, conn: sqlite3.Connection, recommendation_id: str
@@ -1997,6 +2067,187 @@ class XhsStore:
                 (canonical_id, source_kind),
             ).fetchone()
             return None if row is None else str(row["id"])
+
+    # -- operator import and links -----------------------------------------------
+
+    def import_xhs_recommendations(
+        self,
+        *,
+        note_source_id: str,
+        recommendation_ids: Sequence[str],
+        expected_revision: int,
+        actor_id: str,
+        idempotency_key: str,
+    ):
+        """Import recommendations of one saved note, each with its own disposition.
+
+        A paper is staged as a pending Capture of its arXiv abstract page, and
+        an open Capture of the same payload is reused; approval stays the
+        Capture's own command. A blog with a link gets a `blog_import` task.
+        Anything else is refused item by item while the rest proceed.
+        `expected_revision` is the note's.
+        """
+
+        if (
+            isinstance(recommendation_ids, (str, bytes))
+            or not isinstance(recommendation_ids, Sequence)
+            or not 1 <= len(recommendation_ids) <= XHS_IMPORT_BATCH_MAX
+        ):
+            raise ValueError("recommendation_ids is invalid")
+        ids = [
+            self._required_text(value, "recommendation_id", maximum=200)
+            for value in recommendation_ids
+        ]
+        if len(set(ids)) != len(ids):
+            raise ValueError("recommendation_ids must be unique")
+        request = {"recommendation_ids": ids, "expected_revision": expected_revision}
+        operation = f"POST:/api/v1/sources/{note_source_id}/recommendations/import"
+        with self._transaction() as conn:
+            replay = self._receipt(conn, actor_id, operation, idempotency_key, request)
+            if replay:
+                return replay
+            note = self._xhs_note_by_source(conn, note_source_id)
+            self._expect_revision(note, expected_revision)
+            items = [self._xhs_import_one(conn, note, value) for value in ids]
+            dispositions: dict[str, int] = {}
+            for item in items:
+                dispositions[item["disposition"]] = dispositions.get(item["disposition"], 0) + 1
+            self._audit(
+                conn, "xhs_note", str(note["note_id"]), "xhs.recommendations.imported",
+                {"dispositions": dict(sorted(dispositions.items()))},
+            )
+            value = {"note_source_id": note_source_id, "items": items}
+            return self._save_receipt(
+                conn, actor_id, operation, idempotency_key, request, value, 200
+            )
+
+    def _xhs_import_one(
+        self, conn: sqlite3.Connection, note: Mapping[str, Any], recommendation_id: str
+    ) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "recommendation_id": recommendation_id,
+            "disposition": "refused",
+            "reason": None,
+            "capture_id": None,
+            "capture_revision": None,
+            "capture_state": None,
+            "recommendation": None,
+        }
+        row = conn.execute(
+            "SELECT id FROM xhs_recommendations WHERE id = ? AND note_id = ?",
+            (recommendation_id, note["note_id"]),
+        ).fetchone()
+        if row is None:
+            return {**item, "reason": "not_found"}
+        recommendation = self._xhs_recommendation(conn, recommendation_id)
+        reason = self._xhs_import_refusal(recommendation)
+        if reason is not None:
+            return {
+                **item,
+                "reason": reason,
+                "recommendation": self._xhs_recommendation_view(conn, recommendation_id),
+            }
+        if recommendation["kind"] == "blog":
+            self._xhs_queue_blog_import(conn, recommendation)
+            item["disposition"] = "blog_import_queued"
+        else:
+            capture, reused = self._stage_capture(
+                conn,
+                payload=f"https://arxiv.org/abs/{recommendation['arxiv_id']}",
+                note=self._xhs_capture_note(note, recommendation),
+            )
+            self._xhs_queue_capture_link(conn, recommendation, str(capture["id"]))
+            item.update(
+                disposition="capture_reused" if reused else "capture_staged",
+                capture_id=capture["id"],
+                capture_revision=capture["revision"],
+                capture_state=capture["state"],
+            )
+        item["recommendation"] = self._xhs_recommendation_view(conn, recommendation_id)
+        return item
+
+    @staticmethod
+    def _xhs_import_refusal(recommendation: Mapping[str, Any]) -> str | None:
+        """Why one recommendation cannot be imported, or None when it can."""
+
+        if recommendation["import_state"] == "imported":
+            return "already_imported"
+        if recommendation["kind"] == "paper":
+            # Only an arXiv ID makes a Capture payload; a title alone does not.
+            return None if recommendation["arxiv_id"] else "no_arxiv_id"
+        if recommendation["kind"] == "blog":
+            return None if recommendation["url"] else "no_url"
+        return "not_importable"
+
+    @staticmethod
+    def _xhs_capture_note(note: Mapping[str, Any], recommendation: Mapping[str, Any]) -> str:
+        title = " ".join(str(note["title"] or "").split()) or f"XHS note {note['note_id']}"
+        ordinal = recommendation["image_ordinal"]
+        where = "caption" if ordinal is None else f"image {ordinal}"
+        return f"Recommended in XHS note {title[:500]} · {where}"
+
+    def set_xhs_recommendation_link(
+        self,
+        *,
+        note_source_id: str,
+        recommendation_id: str,
+        url: str,
+        expected_revision: int,
+        actor_id: str,
+        idempotency_key: str,
+    ):
+        """Replace a blog recommendation's link with the operator's.
+
+        The link becomes `operator_set`, which no later search or
+        identification overwrites, and an identified or saved note queues its
+        next version with it. A link is not changed while its blog imports or
+        after it was imported. `expected_revision` is the recommendation's.
+        """
+
+        if not isinstance(url, str):
+            raise ValueError("url is invalid")
+        url = normalize_url(url)
+        if urlsplit(url).port is not None:
+            # Normalization keeps only a port the blog fetch would refuse.
+            raise ValueError("url must use the default port")
+        request = {"url": url, "expected_revision": expected_revision}
+        operation = (
+            f"POST:/api/v1/sources/{note_source_id}/recommendations/{recommendation_id}/link"
+        )
+        with self._transaction() as conn:
+            replay = self._receipt(conn, actor_id, operation, idempotency_key, request)
+            if replay:
+                return replay
+            note = self._xhs_note_by_source(conn, note_source_id)
+            row = conn.execute(
+                "SELECT id FROM xhs_recommendations WHERE id = ? AND note_id = ?",
+                (recommendation_id, note["note_id"]),
+            ).fetchone()
+            if row is None:
+                raise NotFound("xhs recommendation", recommendation_id)
+            recommendation = self._xhs_recommendation(conn, recommendation_id)
+            self._expect_revision(recommendation, expected_revision)
+            if recommendation["kind"] != "blog":
+                raise InvalidTransition("xhs_recommendation_not_linkable", "operator_set")
+            if recommendation["import_state"] in {"importing", "imported"}:
+                raise InvalidTransition(str(recommendation["import_state"]), "operator_set")
+            self._xhs_update_recommendation(
+                conn, recommendation_id, expected_revision=expected_revision,
+                url=url, url_state="operator_set", url_checked_title=None,
+            )
+            recommendation = self._xhs_recommendation_view(conn, recommendation_id)
+            note = self._xhs_note(conn, str(note["note_id"]))
+            if note["state"] in {"identified", "saved"}:
+                # A note still on its way to `identified` saves the link anyway.
+                self._xhs_queue_save(conn, note)
+            self._audit(
+                conn, "xhs_recommendation", recommendation_id, "xhs.recommendation.link_set",
+                {"note_id": note["note_id"]},
+            )
+            value = {"recommendation": recommendation}
+            return self._save_receipt(
+                conn, actor_id, operation, idempotency_key, request, value, 200
+            )
 
     # -- retries ----------------------------------------------------------------
 
