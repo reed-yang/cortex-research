@@ -57,8 +57,8 @@ Out of scope, each a follow-up:
 - Reclassifying the three legacy web items adopted as papers.
 - Downloading images inside blog pages. Remote images keep the Library reader's
   host-text rendering.
-- Release composition. `distribution/release.toml` still targets schema 19
-  while main is at 20; this change adds 21.
+- Release composition. Product 0.1.30 selects Control schema 21 separately
+  (`docs/releases/0.1.30.md`).
 
 ## Placement
 

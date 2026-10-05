@@ -33,10 +33,10 @@ operator's choice (papers through the existing Capture flow). It is disabled
 by default, capped per provider per day, and adds no research evidence. See
 the [plan](plans/xhs-sources.md) and the [runbook](runbooks/xhs.md).
 
-Before it counts as accepted: a command that registers its two asset roots,
+Product 0.1.30 carries it at Control schema 21. Before it counts as accepted:
 operator-approved live provider acceptance (keys stored as references, a small
 test set with a measured identification match rate, then an approved backfill
-budget), and a release composition that includes Control schema 21.
+budget).
 
 Deferred, each its own decision: notes and blogs in search and `/research`
 evidence (the stored blogger role takes effect only with a new research

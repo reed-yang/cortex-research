@@ -16,6 +16,7 @@ instructions. The following files are intentionally tracked and public.
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
 | [Operator skills](runbooks/operator-skills.md) | OCR for PDF-only papers through an accepted, digest-pinned skill |
 | [XHS notes and blogs](runbooks/xhs.md) | Opt-in XHS plugin: setup, follow, cadence, caps, backfill, retries, disable and provider data disclosure |
+| [0.1.30](releases/0.1.30.md) | Library Markdown reader, XHS notes and blogs, recommendation import (Control schema 21) |
 | [0.1.29](releases/0.1.29.md) | Retrieval query and converted-title fixes after 0.1.28 |
 | [0.1.28](releases/0.1.28.md) | Idea fragments, one-token Capture parsing and paper-level research evidence |
 | [0.1.27](releases/0.1.27.md) | OCR for PDF-only papers through an accepted operator skill |
