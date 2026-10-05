@@ -260,10 +260,16 @@ that nothing was started; it appends no message to the bound thread and asks for
 no turn. After `/idea` (or `/idea@<bot>`), exactly one space, tab or line break
 separates the command from the idea, and everything after it is kept as sent.
 Any other separator, an empty idea, an unbound chat and a photo, file, video or
-animation captioned `/idea` are refused, and nothing is saved. Telegram's own
-limits still apply: the whole message, command included, is at most 16384 bytes,
-and a carriage return is refused. A redelivered update saves nothing twice.
-`/capture` and plain messages still add the text to the bound thread.
+animation captioned `/idea` are refused, and nothing is saved. Cortex also
+refuses a message whose text, command included, is over 16384 bytes or contains
+a carriage return. A redelivered update saves nothing twice. `/capture` and
+plain messages still add the text to the bound thread.
+
+Telegram limits one text message to 4096 characters, and the official apps send
+longer text as several messages. Only the first of them starts with `/idea`, so
+only that part is saved as an idea. Each later part arrives in the bound chat as
+a plain message, so Cortex appends it to the bound thread and asks for a turn.
+Save an idea longer than one Telegram message from Inbox → Save an idea instead.
 
 Successful Web research does not prove Telegram delivery, and the absence of a
 typing indicator does not prove that a run was not received. Keep receive, run
