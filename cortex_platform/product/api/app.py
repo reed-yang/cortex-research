@@ -72,6 +72,8 @@ class APIResponse:
     payload: dict[str, Any]
     content_type: str = "application/json"
     headers: tuple[tuple[str, str], ...] = ()
+    #: Raw bytes sent instead of the JSON payload; None for every JSON response.
+    body: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -728,6 +730,18 @@ class ControlAPI:
             return self._source_knowledge_response(
                 source_id=match.group(1), query=query
             )
+
+        match = re.fullmatch(
+            rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/document", path
+        )
+        if match:
+            return self._source_document_response(match.group(1), query)
+
+        match = re.fullmatch(
+            rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/asset", path
+        )
+        if match:
+            return self._source_asset_response(match.group(1), query)
 
         match = re.fullmatch(r"/api/v1/sources/([^/]+)", path)
         if match:
@@ -1420,6 +1434,89 @@ class ControlAPI:
             )
         except NotFound:
             return self._problem(404, "not_found", "Source was not found")
+
+    def _source_document_response(
+        self, source_id: str, query: Mapping[str, list[str]]
+    ) -> APIResponse:
+        from ..sources.reader import (
+            SourceContentUnavailable,
+            SourceDocumentTooLarge,
+            SourceKnowledgeReader,
+            SourceQueryInvalid,
+        )
+
+        try:
+            self._require_query_fields(query, frozenset({"kind"}))
+            kind = self._single_query(query, "kind", default="notes")
+            if kind not in {"notes", "full_text", "grounding"}:
+                raise ValueError("invalid source query")
+        except ValueError:
+            return self._problem(400, "source_query_invalid", "Source query is invalid")
+        try:
+            value = SourceKnowledgeReader(
+                self.store,
+                redact_line=lambda line: any(pattern.search(line) for pattern in _SENSITIVE_TEXT_PATTERNS),
+            ).document(source_id, kind=kind)
+        except SourceQueryInvalid:
+            return self._problem(400, "source_query_invalid", "Source query is invalid")
+        except SourceDocumentTooLarge:
+            return self._problem(
+                413, "source_document_too_large", "Source document is too large to read whole"
+            )
+        except SourceContentUnavailable:
+            return self._problem(
+                409, "source_content_unavailable",
+                "Source content is unavailable or could not be verified",
+            )
+        except NotFound:
+            return self._problem(404, "not_found", "Source was not found")
+        # The reader projected text per original line, as it does for pages.
+        result = {
+            key: value[key] if key == "text" else self._public_source_text(value[key])
+            for key in (
+                "source_id", "canonical_id", "kind", "text", "content_sha256",
+                "retained_bytes", "redacted",
+            )
+        }
+        return APIResponse(200, result, headers=(("Cache-Control", "no-store"),))
+
+    def _source_asset_response(
+        self, source_id: str, query: Mapping[str, list[str]]
+    ) -> APIResponse:
+        from ..sources.reader import (
+            SourceAssetInvalid,
+            SourceAssetTooLarge,
+            SourceAssetUnavailable,
+            SourceAssetUnsupported,
+            SourceKnowledgeReader,
+        )
+
+        values = query.get("path")
+        if set(query) != {"path"} or len(values) != 1:
+            return self._problem(400, "source_asset_invalid", "Source asset path is invalid")
+        try:
+            media_type, body = SourceKnowledgeReader(self.store).asset(source_id, values[0])
+        except SourceAssetInvalid:
+            return self._problem(400, "source_asset_invalid", "Source asset path is invalid")
+        except SourceAssetTooLarge:
+            return self._problem(413, "source_asset_too_large", "Source asset is too large")
+        except SourceAssetUnsupported:
+            return self._problem(
+                415, "source_asset_unsupported", "Source asset is not a supported image"
+            )
+        except SourceAssetUnavailable:
+            return self._problem(404, "source_asset_unavailable", "Source asset is unavailable")
+        # The daemon adds Content-Length and Cache-Control: no-store.
+        return APIResponse(
+            200,
+            {},
+            media_type,
+            headers=(
+                ("X-Content-Type-Options", "nosniff"),
+                ("Cross-Origin-Resource-Policy", "same-origin"),
+            ),
+            body=body,
+        )
 
     @staticmethod
     def _public_source_text(value: Any) -> Any:
