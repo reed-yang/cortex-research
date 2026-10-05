@@ -19,6 +19,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
+import re
 import shutil
 import unicodedata
 from pathlib import Path
@@ -215,8 +216,18 @@ def render_transcription(
         if image["ocr_flags"]:
             lines.extend([f"Flags: {', '.join(image['ocr_flags'])}", ""])
         text = texts.get(ordinal, "")
-        lines.extend([text if text.strip() else "(no text)", ""])
+        lines.extend([_escape_headings(text) if text.strip() else "(no text)", ""])
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+_IMAGE_HEADING_RE = re.compile(r"^## Image [0-9]+$", re.MULTILINE)
+
+
+def _escape_headings(text: str) -> str:
+    """A line of OCR text that reads like a section heading is escaped, so it
+    renders the same and never starts another image's section."""
+
+    return _IMAGE_HEADING_RE.sub(lambda match: "\\" + match.group(0), text)
 
 
 def render_blog_notes(

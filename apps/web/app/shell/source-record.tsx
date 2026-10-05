@@ -204,8 +204,8 @@ const IMAGE_EMBED = /^!\[Image [0-9]+\]\(assets\/[^)]*\)$/;
 // Each image's part of the stored `transcription.md`, as Control writes it
 // (cortex_platform/product/xhs/layout.py render_transcription): a `## Image N`
 // heading in ordinal order, the embedded image, then the verbatim text or the
-// failure. The headings are matched in order, so a heading-like line inside
-// one image's text never starts another image's part.
+// failure. The headings are matched in order, and Control escapes a line of
+// OCR text that reads like one, so an image's text never starts another part.
 export function transcriptionSections(text: string, ordinals: number[]): Map<number, string> {
   const lines = text.split("\n");
   const starts: Array<[number, number]> = [];

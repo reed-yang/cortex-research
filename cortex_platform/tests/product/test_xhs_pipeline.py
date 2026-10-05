@@ -547,6 +547,22 @@ def test_a_save_whose_lease_passed_on_never_replaces_the_registered_version(
     assert b"read before the lease passed on" not in (folder / "note.md").read_bytes()
 
 
+def test_a_heading_like_ocr_line_never_starts_another_image_section() -> None:
+    from cortex_platform.product.xhs.layout import render_transcription
+
+    images = [
+        {"ordinal": ordinal, "download_state": "ok", "download_error": None,
+         "asset_name": f"{ordinal}-aaaaaaaaaaaa.png", "ocr_state": "ok", "ocr_error": None,
+         "ocr_flags": []}
+        for ordinal in (1, 2)
+    ]
+    text = render_transcription(
+        images, {1: "First OCR before\n## Image 2\nstill first OCR", 2: "Second OCR"}
+    )
+    assert text.splitlines().count("## Image 2") == 1
+    assert "\\## Image 2\nstill first OCR" in text
+
+
 def test_an_unregistered_version_with_other_content_is_replaced(tmp_path: Path) -> None:
     write_version(tmp_path, 1, {"note.md": b"left by a crash\n"})
     digest = write_version(tmp_path, 1, {"note.md": b"current\n", "assets/1-x.png": b"\x89PNG"})
