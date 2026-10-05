@@ -345,3 +345,23 @@ def test_strip_signed_urls_keeps_user_text() -> None:
         "url": "https://cdn.example/x",
         "nested": [{"original": "http://cdn.example/y"}],
     }
+
+
+def test_an_odd_video_cover_never_fails_the_page_but_a_broken_carousel_does() -> None:
+    video = listed(NOTE_C)
+    video["type"] = "video"
+    video["images_list"] = [{"url": cdn("cover")}]  # no fileid
+    page = xhs_client.list_user_notes(
+        USER, "", api_key=KEY,
+        transport=transport_for(envelope({"has_more": False, "notes": [listed(NOTE_A), video]})),
+    )
+    assert [(note.note_type, len(note.images)) for note in page.notes] == [("normal", 2), ("video", 0)]
+
+    broken = listed(NOTE_A)
+    broken["images_list"] = [{"url": cdn("x")}]
+    with pytest.raises(ProviderError) as caught:
+        xhs_client.list_user_notes(
+            USER, "", api_key=KEY,
+            transport=transport_for(envelope({"has_more": False, "notes": [broken]})),
+        )
+    assert caught.value.category == "invalid_response"

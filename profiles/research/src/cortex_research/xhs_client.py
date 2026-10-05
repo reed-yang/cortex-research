@@ -39,6 +39,8 @@ LIST_PATH = "/api/v1/xiaohongshu/app_v2/get_user_posted_notes"
 DETAIL_PATH = "/api/v1/xiaohongshu/app_v2/get_image_note_detail"
 # The variant order the spec fixes: the first non-empty http(s) URL wins.
 IMAGE_VARIANTS = ("original", "url_size_large", "url")
+# The note type of an image note; every other type is unsupported.
+IMAGE_NOTE_TYPE = "normal"
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_API_BYTES = 16 * 1024 * 1024
 API_TIMEOUT_SECONDS = 60.0
@@ -232,6 +234,21 @@ def parse_images(entries: Any) -> tuple[ImageRef, ...]:
     return tuple(images)
 
 
+def _note_images(note: Mapping[str, Any]) -> tuple[ImageRef, ...]:
+    """An image note's carousel, strictly; any other note type's, if usable.
+
+    Video and other notes are marked unsupported and never processed, so an
+    odd cover entry there must not fail the whole page.
+    """
+
+    try:
+        return parse_images(note.get("images_list") or [])
+    except ProviderError:
+        if note.get("type") == IMAGE_NOTE_TYPE:
+            raise
+        return ()
+
+
 def _inner(document: Any) -> Any:
     """The provider's inner payload after the inner success check."""
 
@@ -299,7 +316,7 @@ def list_user_notes(
                 caption=str(entry.get("desc") or ""),
                 published_at=_timestamp(entry.get("create_time")),
                 cursor=str(entry.get("cursor") or ""),
-                images=parse_images(entry.get("images_list") or []),
+                images=_note_images(entry),
             )
         )
     has_more = data.get("has_more") is True
@@ -359,7 +376,7 @@ def note_detail(
         published_at=_timestamp(note.get("time")),
         user_id=owner if isinstance(owner, str) and owner else None,
         user_name=name if isinstance(name, str) and name else None,
-        images=parse_images(note.get("images_list") or []),
+        images=_note_images(note),
         raw=strip_signed_urls(document),
     )
 
