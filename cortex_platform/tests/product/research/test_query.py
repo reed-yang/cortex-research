@@ -50,6 +50,10 @@ def test_citation_label_groups_are_removed(label):
     # by answers, so it goes, and the destination after it goes with it.
     ("[S1](https://example.test/a(b(c)))", ""), ("[S1, S2](https://example.test/a(b(c)))", ""),
     ("[D2](https://example.test/a(b(c)))", ""), ("[S1-S3](https://example.test/a(b(c)))", ""),
+    # So does a whole link whose text a label bracket starts, and any nesting depth counts.
+    ("[S1 [note]](https://example.test/a(b(c)))", ""), ("[D2 [x]](deep(a(b(c))))", ""),
+    ("[S1](https://example.test/" + "(" * 40 + "deep" + ")" * 40 + ")", ""),
+    ("[memory](https://example.test/" + "(" * 40 + "deep" + ")" * 40 + ")", "memory"),
 ])
 def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept):
     """One table (CL6/RS3): a bracket is dropped whole exactly when an answer cites with it."""
@@ -79,6 +83,13 @@ def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept
     # A destination may nest parentheses deeper than the answer grammar reads.
     ("[cache](https://example.org/library(papers(cache))) memory", "cache memory"),
     ("[cache](https://example.test/a(b(c(d)))) memory", "cache memory"),
+    ("cache [S1 [note]](deep(a(b(c)))) memory", "cache memory"),
+    ("[cache](https://example.test/" + "(" * 40 + "deepword" + ")" * 40 + ") memory", "cache memory"),
+    ("[cache]( https://example.test/a(b(c))) memory", "cache memory"),
+    ('[cache](https://example.test/a(b(c)) "Deep title") memory', "cache memory"),
+    ("[cache](https://example.test/a(b(c)) (Deep title)) memory", "cache memory"),
+    # An unbalanced deep destination is prose.
+    ("[cache](https://example.test/open(deep(note) memory", "cache https example test open deep note memory"),
 ])
 def test_ordinary_brackets_stay_and_links_keep_only_their_text(question, expected):
     assert retrieval_query(question) == expected
