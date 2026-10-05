@@ -30,6 +30,18 @@ SUPPORTED_MODULES = {
     "radar_schema.py",
 }
 
+# First-party provider clients for the XHS plugin. They run only inside an
+# engine child, which imports each one lazily inside its operation handler.
+# They are not part of the arXiv bridge: none of the nine may import them, and
+# `trafilatura` stays forbidden for the nine.
+PROVIDER_MODULES = {
+    "provider_http.py",
+    "xhs_client.py",
+    "image_ocr.py",
+    "responses_client.py",
+    "blog_fetch.py",
+}
+
 # Read by `db.apply_schema` (the first four) and `radar_schema.ensure_radar_schema`
 # (the last). Nine `.py` files alone silently lose schema behaviour.
 SUPPORTED_RESOURCES = {
@@ -50,7 +62,35 @@ def _package_files() -> set[str]:
 
 
 def test_the_package_is_exactly_the_supported_modules_and_resources() -> None:
-    assert _package_files() == SUPPORTED_MODULES | SUPPORTED_RESOURCES
+    assert _package_files() == SUPPORTED_MODULES | PROVIDER_MODULES | SUPPORTED_RESOURCES
+
+
+def _imports(path: Path, *, top_level_only: bool = False) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    nodes = tree.body if top_level_only else list(ast.walk(tree))
+    names: set[str] = set()
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                names.add(f"cortex_research.{node.module}" if node.module else "cortex_research")
+            elif node.module:
+                names.add(node.module)
+    return names
+
+
+@pytest.mark.parametrize("name", sorted(PROVIDER_MODULES))
+def test_provider_modules_stay_outside_the_bridge(name: str) -> None:
+    """Provider clients import no platform code and no bridge module, and
+    trafilatura only inside the function that extracts an article."""
+
+    imported = _imports(PACKAGE / name)
+    assert not {module for module in imported if module.split(".")[0] == "cortex_platform"}
+    bridge = {f"cortex_research.{module.removesuffix('.py')}" for module in SUPPORTED_MODULES}
+    assert not imported & bridge, sorted(imported & bridge)
+    top_level = {module.split(".")[0] for module in _imports(PACKAGE / name, top_level_only=True)}
+    assert "trafilatura" not in top_level
 
 
 def test_the_package_has_no_subpackages() -> None:
