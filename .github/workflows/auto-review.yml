@@ -1,7 +1,7 @@
 name: Independent PR review
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize, converted_to_draft, closed]
+    types: [opened, reopened, ready_for_review, synchronize, converted_to_draft, closed, labeled]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -30,7 +30,7 @@ jobs:
        (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review') && github.event.comment.user.type != 'Bot')) &&
       (github.event_name != 'pull_request_target' || github.event.pull_request.user.login != 'dependabot[bot]')
     # Reviewed standalone release; project policy and Secrets stay in Cortex.
-    uses: reed-yang/independent-pr-review/.github/workflows/review.yml@46a98dff3d0c0925627bcbeef31d102a519d4188 # v0.3.0
+    uses: reed-yang/independent-pr-review/.github/workflows/review.yml@4b6f03ad2544db1232135678518f570ef20d44c8 # v0.4.0
     with:
       pr_number: ${{ inputs.pr_number && format('{0}', inputs.pr_number) || '' }}
       mode: ${{ inputs.mode || 'review' }}
@@ -38,5 +38,4 @@ jobs:
     secrets:
       REVIEW_STATE_KEY: ${{ secrets.REVIEW_STATE_KEY }}
       GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
-      AGY_OAUTH_JSON: ${{ secrets.AGY_OAUTH_JSON }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GPT_API_KEY: ${{ secrets.GPT_API_KEY }}

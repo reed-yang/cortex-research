@@ -55,19 +55,21 @@ policy stays in `.github/review.json` and `tools/pr_review/cortex-rules.md`. Rea
 `tools/pr_review/README.md` before changing activation, credentials or publishing.
 These are checkout-only development tools and are not part of product runtime.
 
-PR head content is untrusted API data and never executes. The trusted engine
-collects bounded context, obtains independent Grok/native agy opinions, verifies
-candidates, and updates an English PR summary plus verified inline comments. It
-never approves, merges or modifies code. Signed state preserves budgets, per-lane
-baselines and owned finding threads. Silence does not mean an old issue is fixed.
+PR head content is untrusted data. The trusted engine (v0.4.0) gives each
+reviewer an immutable snapshot of the PR head and merge base: Grok 4.7 xhigh reads
+it through engine read-only tools, and GPT-6.1 Sol ultra reads it with the official
+Codex CLI in a read-only, no-network sandbox, the only place PR content may execute.
+GPT generates only for large PRs, ready-for-review, the `deep-review` label or
+`/review full`, and otherwise still verifies. Each family verifies the other's
+candidates before the engine updates an English PR summary plus verified inline
+comments. It never approves, merges or modifies code. Signed state preserves budgets,
+per-lane baselines and owned finding threads. Silence does not mean an old issue is fixed.
 
 Provider credentials and a per-repository `REVIEW_STATE_KEY` belong to the
-`pr-review` GitHub Environment restricted to the default branch. Only inference
-steps receive provider credentials; they receive neither a GitHub write token nor
-the state signing key. Native agy OAuth refreshes in disposable hosted HOME state.
-The current lanes are Grok 4.6 xhigh/500k and Gemini 3.8 Flash Medium/1M. Context
-projection is per lane; token estimates and provider capacities are distinct. The
-engine also limits the agy lane to the CLI's per-message input cap.
+`pr-review` GitHub Environment restricted to the default branch. Each reviewer job
+receives only its own provider key and neither a GitHub write token nor the state
+signing key; the GPT key stays in a loopback proxy that Codex reaches with a per-run
+token. Gemini/agy is retired until agy supports Gemini 4 with repository tools.
 Consumer CI validates project configuration; engine tests run in its own repository.
 
 ## Release and state
