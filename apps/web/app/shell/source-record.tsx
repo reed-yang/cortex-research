@@ -199,6 +199,9 @@ export function importable(recommendation: XhsRecommendation): boolean {
   return false;
 }
 
+// Control imports at most this many recommendations per request.
+export const MAX_IMPORT = 100;
+
 const IMAGE_EMBED = /^!\[Image [0-9]+\]\(assets\/[^)]*\)$/;
 
 // Each image's part of the stored `transcription.md`, as Control writes it
@@ -501,7 +504,7 @@ function XhsNoteBody({ client, detail, onOpenSource }: SourceRecordProps) {
   async function importSelected() {
     if (!note) return;
     const ids = note.recommendations.filter((item) => selected.has(item.id) && importable(item)).map((item) => item.id);
-    if (!ids.length) return;
+    if (!ids.length || ids.length > MAX_IMPORT) return;
     setBusy("import");
     setImportError(null);
     try {
@@ -548,10 +551,11 @@ function XhsNoteBody({ client, detail, onOpenSource }: SourceRecordProps) {
       <section aria-label={copy.xhs.recommendations} className="flex w-full flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <h4 className="text-sm font-semibold">{copy.xhs.recommendations}</h4>
-          <Button disabled={busy !== null || chosen === 0} onClick={() => void importSelected()} size="sm" type="button">
+          <Button disabled={busy !== null || chosen === 0 || chosen > MAX_IMPORT} onClick={() => void importSelected()} size="sm" type="button">
             {busy === "import" ? copy.xhs.importing : copy.xhs.importSelected}
           </Button>
         </div>
+        {chosen > MAX_IMPORT ? <p className="text-sm text-muted-foreground" role="status">{copy.xhs.importTooMany}</p> : null}
         {importError ? <p className="text-sm text-destructive" role="alert">{importError}</p> : null}
         {note.recommendations.length ? (
           <ul className="flex flex-col gap-2">

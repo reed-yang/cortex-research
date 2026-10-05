@@ -275,6 +275,24 @@ describe("XHS note record", () => {
     expect(await screen.findByRole("heading", { level: 3, name: "Synthetic Memory Networks" })).toBeTruthy();
   });
 
+  it("never sends more than 100 recommendations in one import", async () => {
+    const control = seeded();
+    Object.assign(control.xhsNotes.source_note!, {
+      recommendations: Array.from({ length: 101 }, (_, index) => xhsRecommendation(`xhs_rec_many_${index}`, {
+        title: `Synthetic paper ${index}`, quote: `Synthetic paper ${index}`, arxiv_id: `2401.${String(index + 1).padStart(5, "0")}`,
+      })),
+    });
+    const region = await openNote(control);
+    for (const box of within(region).getAllByRole("checkbox")) await userEvent.click(box);
+    const importButton = within(region).getByRole("button", { name: copy.xhs.importSelected });
+    expect((importButton as HTMLButtonElement).disabled).toBe(true);
+    expect(within(region).getByText(copy.xhs.importTooMany)).toBeTruthy();
+    await userEvent.click(within(region).getAllByRole("checkbox")[0]!);
+    expect((importButton as HTMLButtonElement).disabled).toBe(false);
+    expect(within(region).queryByText(copy.xhs.importTooMany)).toBeNull();
+    expect(control.posts).toHaveLength(0);
+  });
+
   it("stages the selection, approves each staged paper and reports every row, a failed approval included", async () => {
     const control = seeded();
     choices(control);

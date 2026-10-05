@@ -282,6 +282,7 @@ export const copy = Object.freeze({
     importSelected: "Import selected",
     importing: "Importing…",
     importNotDone: "Nothing was imported",
+    importTooMany: "Select at most 100 recommendations to import at once.",
     evidence: "Evidence",
     transcription: "Transcription",
     identified: "Identified (auto)",
