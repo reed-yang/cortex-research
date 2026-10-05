@@ -8,7 +8,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { copy, runStateLabel } from "../app/shell/copy.ts";
-import { awaitAllSettled } from "./await-all-settled.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(webRoot, "../..");
@@ -61,6 +60,33 @@ const capturePaperTitle = "Synthetic Capture Paper for Library Navigation";
 const ideaText = "  第一行的想法 🎬\n\n  indented second line  ";
 const ideaNote = "Synthetic idea note";
 const execution = { pids: [], ports: [], root: null, secrets: [] };
+
+// Awaits every operation, then throws the first one to fail, or returns their
+// values in order.
+//
+// `Promise.all` rejects on the first failure while the other operations still
+// run. When one of them is a child process working under a temporary root, the
+// caller's `finally` would remove that root under it, and the child's own
+// failure would never be reported.
+//
+// tests/control-workflow-process.test.mjs evaluates this function's source on
+// its own, so it must not use any other binding of this module.
+async function awaitAllSettled(operations) {
+  let failed = false;
+  let failure;
+  const values = await Promise.all(
+    operations.map((operation) =>
+      Promise.resolve(operation).catch((error) => {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
+      }),
+    ),
+  );
+  if (failed) throw failure;
+  return values;
+}
 
 function outputCollector(description) {
   return { description, full: "", overflow: false, tail: "" };

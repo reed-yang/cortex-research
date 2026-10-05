@@ -104,6 +104,17 @@ function combinatorCalls(source) {
   return calls;
 }
 
+// `awaitAllSettled` is defined in the verifier, and importing the verifier starts
+// a workflow run, so the tests evaluate the function's own source.
+async function verifierAwaitAllSettled() {
+  const verifier = await readFile(path.join(webRoot, "scripts/verify-control-workflow.mjs"), "utf8");
+  const definition = verifier.match(/^async function awaitAllSettled\(operations\) \{\n[\s\S]*?\n\}\n/m);
+  assert.ok(definition, "the verifier must define awaitAllSettled as a top-level function");
+  const source = `${definition[0]}export { awaitAllSettled };\n`;
+  const { awaitAllSettled } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+  return awaitAllSettled;
+}
+
 test("a fixture run is never abandoned by a combinator that rejects early", async () => {
   const verifier = await readFile(path.join(webRoot, "scripts/verify-control-workflow.mjs"), "utf8");
   // `Promise.all` rejects on the first failure while its other operations still
@@ -117,7 +128,7 @@ test("a fixture run is never abandoned by a combinator that rejects early", asyn
 });
 
 test("a stream that fails first leaves the fixture running until it exits", async () => {
-  const { awaitAllSettled } = await import("../scripts/await-all-settled.mjs");
+  const awaitAllSettled = await verifierAwaitAllSettled();
   const root = await mkdtemp(path.join(os.tmpdir(), "cortex-settle-"));
   const marker = path.join(root, "fixture-finished");
   // A child that writes under the temporary root after the stream has failed,
@@ -144,7 +155,7 @@ test("a stream that fails first leaves the fixture running until it exits", asyn
 });
 
 test("awaitAllSettled reports the first failure in time and returns values in order", async () => {
-  const { awaitAllSettled } = await import("../scripts/await-all-settled.mjs");
+  const awaitAllSettled = await verifierAwaitAllSettled();
   const delayed = (milliseconds, value, failure) =>
     new Promise((resolve, reject) => setTimeout(() => (failure ? reject(failure) : resolve(value)), milliseconds));
   assert.deepEqual(await awaitAllSettled([delayed(20, "stream"), delayed(5, "fixture"), "plain"]), ["stream", "fixture", "plain"]);
