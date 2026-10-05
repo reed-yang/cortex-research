@@ -9,7 +9,7 @@ import unicodedata
 from collections.abc import Iterable
 
 from ..sources.search import MAX_QUERY_BYTES, MAX_QUERY_TERMS, query_terms
-from .context import _CITATION_SCAN, _LINK_TEXT
+from .context import _INLINE_LINK, _LABEL_BRACKET, _LINK_TEXT
 
 #: English words that describe the requested answer format rather than its topic.
 FORMAT_TERMS = frozenset(
@@ -28,14 +28,19 @@ def _nested_parentheses(depth):
     return text
 
 
-#: An inline link whose destination nests parentheses deeper than the answer
-#: grammar reads, up to 32 levels; the query still keeps only its text.
-_DEEP_LINK = (
-    _LINK_TEXT + rf"\(\s*{_nested_parentheses(32)}"
+#: A destination that nests parentheses deeper than the answer grammar reads,
+#: up to 32 levels, with the same optional title.
+_DEEP_DESTINATION = (
+    rf"\(\s*{_nested_parentheses(32)}"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
 )
-#: The answer's citation scan first, so labels are read exactly as answers cite.
-_QUERY_SCAN = re.compile(rf"{_CITATION_SCAN.pattern}|{_DEEP_LINK}")
+#: The answer's citation scan (inline link, then label bracket) first, so labels
+#: are read exactly as answers cite. A label bracket takes a deep destination
+#: right after it, and other text before one is read as a link, so no
+#: destination becomes search terms.
+_QUERY_SCAN = re.compile(
+    rf"{_INLINE_LINK}|{_LABEL_BRACKET}(?:{_DEEP_DESTINATION})?|{_LINK_TEXT}{_DEEP_DESTINATION}"
+)
 # Explicit answer-length requirements only; other numbers, years and versions stay.
 # A count may be a range (800-1000, 300到500, 2 to 3). After a CJK unit the span
 # must end at a length suffix, 的, punctuation, a space or the end of the text, or
@@ -82,7 +87,8 @@ def _without_citations(text):
     """Read with the answer's citation scan: label-led brackets go, links keep their text.
 
     A bracket that cited_labels would read as a label group, malformed ones
-    included, is removed; an inline link, including one whose destination nests
+    included, is removed with any deeper destination right after it; an inline
+    link, including one whose destination nests
     parentheses deeper than answers read, is replaced by its text, cleaned the
     same way, so destinations and titles never become search terms.
     """

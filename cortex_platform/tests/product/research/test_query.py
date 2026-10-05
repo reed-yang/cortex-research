@@ -46,6 +46,10 @@ def test_citation_label_groups_are_removed(label):
     ("[Self Forcing](https://example.org)", "Self Forcing"), ("[S1-S3](notes.md)", "S1 S3"),
     ("[notes [S9]](https://example.test/x)", "notes"), ("[Data](https://example.test/[S1])", "Data"),
     ("[memory](https://example.test/a(b(c)))", "memory"),
+    # A label-led bracket before a destination deeper than answers read is cited
+    # by answers, so it goes, and the destination after it goes with it.
+    ("[S1](https://example.test/a(b(c)))", ""), ("[S1, S2](https://example.test/a(b(c)))", ""),
+    ("[D2](https://example.test/a(b(c)))", ""), ("[S1-S3](https://example.test/a(b(c)))", ""),
 ])
 def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept):
     """One table (CL6/RS3): a bracket is dropped whole exactly when an answer cites with it."""
@@ -71,6 +75,7 @@ def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept
     # Not inline links: the parenthesized prose stays searchable.
     ("[Self Forcing](a streaming method) memory", "Self Forcing streaming method memory"),
     ("[cache](https://example.org/open( memory", "cache https example org open memory"),
+    ("[S1](a streaming method) memory", "streaming method memory"),
     # A destination may nest parentheses deeper than the answer grammar reads.
     ("[cache](https://example.org/library(papers(cache))) memory", "cache memory"),
     ("[cache](https://example.test/a(b(c(d)))) memory", "cache memory"),
