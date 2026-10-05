@@ -45,6 +45,7 @@ def test_citation_label_groups_are_removed(label):
     ("[sic]", "sic"), ("[Supplementary]", "Supplementary"), ("【S1】", "S1"),
     ("[Self Forcing](https://example.org)", "Self Forcing"), ("[S1-S3](notes.md)", "S1 S3"),
     ("[notes [S9]](https://example.test/x)", "notes"), ("[Data](https://example.test/[S1])", "Data"),
+    ("[memory](https://example.test/a(b(c)))", "memory"),
 ])
 def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept):
     """One table (CL6/RS3): a bracket is dropped whole exactly when an answer cites with it."""
@@ -70,9 +71,9 @@ def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept
     # Not inline links: the parenthesized prose stays searchable.
     ("[Self Forcing](a streaming method) memory", "Self Forcing streaming method memory"),
     ("[cache](https://example.org/open( memory", "cache https example org open memory"),
-    # The answer grammar reads one level of nested parentheses in a destination.
-    ("[cache](https://example.org/library(papers(cache))) memory",
-     "cache https example org library papers memory"),
+    # A destination may nest parentheses deeper than the answer grammar reads.
+    ("[cache](https://example.org/library(papers(cache))) memory", "cache memory"),
+    ("[cache](https://example.test/a(b(c(d)))) memory", "cache memory"),
 ])
 def test_ordinary_brackets_stay_and_links_keep_only_their_text(question, expected):
     assert retrieval_query(question) == expected
@@ -92,14 +93,15 @@ def test_numbers_versions_and_years_stay_while_length_requirements_go():
     "少于 5 条", "控制在800字左右", "控制在500字以内", "3个段", "IN 200 WORDS",
     "3个段落", "3句话", "控制在500字内，", "不超过500字符", "500个字符以内", "字数控制在500以内",
     "字数不超过500字", "在300字以内", "300字的", "300-500字", "300到500字", "in 800-1000 words",
-    "800–1000 words", "2 to 3 sentences", "300-word", "in 300-character",
+    "800–1000 words", "2 to 3 sentences", "300-word", "2-paragraph", "3-sentence",
 ])
 def test_length_requirements_are_removed(requirement):
     assert retrieval_query(f"cache memory {requirement} replacement") == "cache memory replacement"
 
 
 @pytest.mark.parametrize("question,expected", [
-    ("用300字总结推测解码", "用 总结推测解码"),
+    ("用300字总结推测解码", "总结推测解码"),
+    ("请用300字总结推测解码", "请 总结推测解码"),
     ("写一段200字的介绍", "写一段 介绍"),
     ("请在300字内回答", "请 回答"),
     ("300字内说明推测解码", "说明推测解码"),
@@ -110,6 +112,23 @@ def test_length_requirements_inside_a_sentence_are_removed(question, expected):
     assert retrieval_query(question) == expected
 
 
+@pytest.mark.parametrize("question,expected", [
+    ("现在300字内回答缓存问题", "现在 回答缓存问题"),
+    ("存在300字的摘要吗", "存在 摘要吗"),
+    ("使用2段分析法", "使用2段分析法"),
+])
+def test_a_length_prefix_character_inside_a_word_stays_with_it(question, expected):
+    assert retrieval_query(question) == expected
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("a 128-token context", "128 token context"),
+    ("7-point Likert scale evaluation", "point Likert scale evaluation"),
+])
+def test_hyphenated_sizes_that_are_not_answer_lengths_stay(question, expected):
+    assert retrieval_query(question) == expected
+
+
 def test_length_words_do_not_cut_into_neighbouring_terms():
     assert retrieval_query("plugin 200 words Net2.1 characters") == "plugin Net2.1"
 
@@ -117,6 +136,9 @@ def test_length_words_do_not_cut_into_neighbouring_terms():
 @pytest.mark.parametrize("term", [
     "1024字节缓存", "2段式检测", "3词汇表", "5句式变换", "4条件生成", "8字符串", "64字节对齐",
     "500字内存", "第2段", "8字符串匹配", "2段式说明", "3条件介绍", "1024字节的方案",
+    # Compound nouns that start with an answer verb, counted topics and spaced ordinals.
+    "2段分析法", "3段写作技巧", "常用汉字数3500的统计方法", "统计汉字数3000的语料",
+    "论文第 20段的比较", "第 12条解释",
 ])
 def test_counts_inside_cjk_compound_terms_are_not_length_requirements(term):
     assert retrieval_query(f"cache {term} memory") == f"cache {term} memory"

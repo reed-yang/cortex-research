@@ -18,26 +18,54 @@ FORMAT_TERMS = frozenset(
     "markdown latex please summarize summarise".split()
 )
 _LINK_TEXT_PREFIX = re.compile(_LINK_TEXT)
+
+
+def _nested_parentheses(depth):
+    """Destination text without spaces whose parentheses nest at most depth levels."""
+    text = r"[^\s()]*"
+    for _ in range(depth):
+        text = rf"(?:[^\s()]|\({text}\))*"
+    return text
+
+
+#: An inline link whose destination nests parentheses deeper than the answer
+#: grammar reads, up to 32 levels; the query still keeps only its text.
+_DEEP_LINK = (
+    _LINK_TEXT + rf"\(\s*{_nested_parentheses(32)}"
+    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
+)
+#: The answer's citation scan first, so labels are read exactly as answers cite.
+_QUERY_SCAN = re.compile(rf"{_CITATION_SCAN.pattern}|{_DEEP_LINK}")
 # Explicit answer-length requirements only; other numbers, years and versions stay.
 # A count may be a range (800-1000, 300到500, 2 to 3). After a CJK unit the span
 # must end at a length suffix, 的, punctuation, a space or the end of the text, or
-# before an answer verb such as 总结 or 回答 (optionally after 内). So a count
-# inside a compound term such as 1024字节, 2段式, 8字符串 or 500字内存 is kept, and
-# so is an ordinal such as 第2段. After a strong CJK length prefix the suffix 内
-# always ends it, and 字数 may be followed by a bare count (字数控制在500以内).
-_NUMBER = r"(?<![0-9A-Za-z.第])\d{1,5}(?:\s*(?:[-–~～到至]|to(?=\s))\s*\d{1,5})?"
+# at 内 before an answer verb (300字内回答). So a count inside a compound term such
+# as 1024字节, 2段式, 2段分析法, 8字符串 or 500字内存 is kept, and so is an ordinal
+# such as 第2段 or 第 2段. An answer verb may follow the unit directly only after a
+# strong CJK length prefix, 字数 or 用 (用300字总结); after a strong prefix the suffix
+# 内 always ends the span, and 字数 may be followed by a bare count (字数控制在500以内).
+# 在, 用 and 字数 start a requirement only at the start of a word or after 请, so
+# 现在, 使用 and 汉字数 keep their characters. A hyphenated English size is a
+# requirement only for words, sentences, paragraphs and bullets (a 300-word
+# summary), not for model or scale sizes such as a 128-token context.
+_NUMBER = r"(?<![0-9A-Za-z.第])(?<!第 )\d{1,5}(?:\s*(?:[-–~～到至]|to(?=\s))\s*\d{1,5})?"
 _COUNT = rf"{_NUMBER}\s*(?:个\s*)?"
 _CJK_UNIT = r"(?:段落|句话|字符(?!串)|字|词|句|段|条)"
 _ANSWER_VERB = r"(?:总结|概括|概述|回答|介绍|说明|描述|解释|阐述|分析|论述|讲解|写)"
-_CJK_CLOSE = rf"(?:以内|之内|左右|的|内?(?!\w)|内?(?={_ANSWER_VERB}))"
+_CJK_CLOSE = rf"(?:以内|之内|左右|的|内?(?!\w)|内(?={_ANSWER_VERB}))"
+_BEFORE_VERB = rf"(?={_ANSWER_VERB})"
 _CJK_PREFIX = r"(?:控制在|不超过|不多于|少于)"
+_WORD_START = r"(?:(?<![^\W\d_])|(?<=请))"
 _ENGLISH_PREFIX = r"(?:\b(?:within|under|in|at most|no more than)\s+)?"
 _LENGTH = re.compile(
-    rf"{_CJK_PREFIX}\s*{_COUNT}{_CJK_UNIT}(?:内|{_CJK_CLOSE})"
-    rf"|字数\s*[:：]?\s*(?:{_CJK_PREFIX}|在)?\s*{_COUNT}{_CJK_UNIT}?{_CJK_CLOSE}"
-    rf"|(?:在\s*|{_ENGLISH_PREFIX}){_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
-    rf"|{_ENGLISH_PREFIX}{_NUMBER}(?:\s*|-)"
-    r"(?:words?|characters?|chars?|sentences?|paragraphs?|bullets?|points?|tokens?)"
+    rf"{_CJK_PREFIX}\s*{_COUNT}{_CJK_UNIT}(?:内|{_CJK_CLOSE}|{_BEFORE_VERB})"
+    rf"|{_WORD_START}字数\s*[:：]?\s*(?:{_CJK_PREFIX}|在)?\s*{_COUNT}{_CJK_UNIT}?(?:{_CJK_CLOSE}|{_BEFORE_VERB})"
+    rf"|{_WORD_START}在\s*{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
+    rf"|{_WORD_START}用\s*{_COUNT}{_CJK_UNIT}(?:{_CJK_CLOSE}|{_BEFORE_VERB})"
+    rf"|{_ENGLISH_PREFIX}{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
+    rf"|{_ENGLISH_PREFIX}{_NUMBER}"
+    r"(?:\s*(?:words?|characters?|chars?|sentences?|paragraphs?|bullets?|points?|tokens?)"
+    r"|-(?:words?|sentences?|paragraphs?|bullets?))"
     r"(?![A-Za-z])(?:以内|之内|内|左右)?",
     re.IGNORECASE,
 )
@@ -54,14 +82,15 @@ def _without_citations(text):
     """Read with the answer's citation scan: label-led brackets go, links keep their text.
 
     A bracket that cited_labels would read as a label group, malformed ones
-    included, is removed; an inline link is replaced by its text, cleaned the
+    included, is removed; an inline link, including one whose destination nests
+    parentheses deeper than answers read, is replaced by its text, cleaned the
     same way, so destinations and titles never become search terms.
     """
     def replace(match):
         if match[1] is not None:
             return " "
         return f" {_without_citations(_LINK_TEXT_PREFIX.match(match[0])[0][1:-1])} "
-    return _CITATION_SCAN.sub(replace, text)
+    return _QUERY_SCAN.sub(replace, text)
 
 
 def _pieces(text):
