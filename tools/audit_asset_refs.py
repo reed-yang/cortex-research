@@ -510,7 +510,18 @@ def _destination(text: str, index: int) -> tuple[int, int, int] | None:
                 return None
             cursor += 1
         return None
-    cursor, depth = index, 0
+    cursor, balanced = _raw_destination(text, index)
+    return (index, cursor, cursor) if balanced else None
+
+
+def _raw_destination(text: str, index: int) -> tuple[int, bool]:
+    """Scan a raw destination; return its end and whether it is valid.
+
+    It stops at a space or control character, at an unbalanced ')', or at
+    nesting deeper than ``_MAX_DESTINATION_PARENS``. That limit also bounds
+    how many scans can cover one character, which keeps repeated scans linear.
+    """
+    size, cursor, depth = len(text), index, 0
     while cursor < size:
         ch = text[cursor]
         if ch == "\\" and cursor + 1 < size and text[cursor + 1] in _PUNCTUATION:
@@ -519,7 +530,7 @@ def _destination(text: str, index: int) -> tuple[int, int, int] | None:
         if ch == "(":
             depth += 1
             if depth > _MAX_DESTINATION_PARENS:
-                return None
+                return cursor, False
         elif ch == ")":
             if depth == 0:
                 break
@@ -527,7 +538,7 @@ def _destination(text: str, index: int) -> tuple[int, int, int] | None:
         elif ch <= " " or ch == "\x7f":
             break
         cursor += 1
-    return None if depth else (index, cursor, cursor)
+    return cursor, depth == 0
 
 
 def _title_end(text: str, index: int) -> int | None:
@@ -629,10 +640,26 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
         unsupported.append(UnsupportedForm(form, line, column, source.byte(start),
                                            source.byte(end), source.text[start:end]))
 
-    def tail_end(after: int, ends: list[int]) -> int:
-        """End of the text after '(' that a failed destination is judged by."""
-        position = bisect_left(ends, after)
-        return min(source.line_end(after), ends[position] if position < len(ends) else size)
+    def angles_in(judged: str) -> list[int]:
+        return [m.start() for m in re.finditer(">", judged) if not _escaped(judged, m.start())]
+
+    def tail_span(judged: str, after: int, closes: list[int], angles: list[int]) -> tuple[int, int]:
+        """Span after '(' that a failed destination is judged by.
+
+        It starts where a destination may start, after spaces and at most one
+        line ending, and runs to the first ')' or the line end, or further to
+        the end of the destination itself. Balanced parentheses, a destination
+        on the next line or a ')' inside '<...>' then cannot hide its rest.
+        """
+        start = _skip_space(judged, after + 1)
+        line_end = source.line_end(start)
+        position = bisect_left(closes, start)
+        end = min(line_end, closes[position] if position < len(closes) else size)
+        position = bisect_left(angles, start)
+        if (start < size and judged[start] == "<" and position < len(angles)
+                and angles[position] < line_end):
+            return start, max(end, angles[position] + 1)
+        return start, max(end, _raw_destination(judged, start)[0])
 
     for comment in blocks.unclosed_comments:
         if _ASSET_LOOKING.search(source.text, comment + 4):
@@ -679,6 +706,7 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
             unsupported_form("unparsed_reference_definition", start, line_end)
 
     clean: tuple[int, int] | None = None   # (end, start) of a search without assets
+    angles = angles_in(text)
     brackets = _bracket_pairs(text, breaks)
     for index in sorted(brackets):
         if consumed[index]:
@@ -698,16 +726,16 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
                 reference(f"markdown_{kind}", at, placeholder.start(1), placeholder.end(1), None)
                 mark(after, placeholder.end())
                 continue
-            end = tail_end(after, closers)
-            if _PSEUDO.match(text, after + 1, end):
-                unsupported_form("unrecognized_pseudo_destination", after + 1, end)
+            start, end = tail_span(text, after, closers, angles)
+            if _PSEUDO.match(text, start, end):
+                unsupported_form("unrecognized_pseudo_destination", start, end)
                 mark(after, end)
-            elif not (clean and clean[0] == end and clean[1] <= after + 1):
-                if _ASSET_LOOKING.search(text, after + 1, end):
-                    unsupported_form("unparsed_markdown_destination", after + 1, end)
+            elif not (clean and clean[0] == end and clean[1] <= start):
+                if _ASSET_LOOKING.search(text, start, end):
+                    unsupported_form("unparsed_markdown_destination", start, end)
                     mark(after, end)
                 else:
-                    clean = (end, after + 1)
+                    clean = (end, start)
             # A failed inline tail still leaves [label] as a shortcut reference.
         label_start, label_end = index + 1, close
         # A second bracket without a partner is text, leaving a shortcut.
@@ -743,19 +771,20 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
                           *(m.span() for m in (*tag_matches, *css_matches)
                             if not consumed[m.start()])])
     judged_closers = [match.start() for match in re.finditer(r"\)", judged)]
+    judged_angles = angles_in(judged)
     clean, reported = None, 0
     for match in re.finditer(r"\]\(", judged):
         after = match.end() - 1
         if after < reported:
             continue   # inside a destination reported here already
-        end = tail_end(after, judged_closers)
-        if not _PSEUDO.match(judged, after + 1, end):
-            if clean and clean[0] == end and clean[1] <= after + 1:
+        start, end = tail_span(judged, after, judged_closers, judged_angles)
+        if not _PSEUDO.match(judged, start, end):
+            if clean and clean[0] == end and clean[1] <= start:
                 continue
-            if not _ASSET_LOOKING.search(judged, after + 1, end):
-                clean = (end, after + 1)
+            if not _ASSET_LOOKING.search(judged, start, end):
+                clean = (end, start)
                 continue
-        unsupported_form("unparsed_markdown_destination", after + 1, end)
+        unsupported_form("unparsed_markdown_destination", start, end)
         reported = end
 
     tags: list[tuple[int, int]] = []

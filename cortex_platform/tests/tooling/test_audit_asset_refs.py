@@ -341,6 +341,36 @@ def test_html_and_css_after_a_destination_without_an_opener_keep_their_class(tex
     assert [(u.form, u.snippet) for u in unsupported] == forms
 
 
+@pytest.mark.parametrize(("text", "snippet"), [
+    # Balanced parentheses belong to the destination, so it ends at the last
+    # ')', not the first one.
+    ("![Synthetic score (-1, 2].]((synthetic)/assets/chart.svg)\n",
+     "(synthetic)/assets/chart.svg"),
+    # A destination may start after spaces and one line ending.
+    ("![Synthetic score (-1, 2].](\nassets/chart.svg)\n", "assets/chart.svg"),
+    ("![Synthetic score (-1, 2].](  \n  (v2)/assets/chart.svg)\n", "(v2)/assets/chart.svg"),
+    # A pointy destination may hold an unbalanced ')'.
+    ("![Synthetic score (-1, 2].](<v)2/assets/chart.svg>)\n", "<v)2/assets/chart.svg>"),
+    # The same boundary applies when the brackets pair but the tail fails.
+    ('![Synthetic chart]((synthetic)/assets/chart.svg "open title)\n',
+     "(synthetic)/assets/chart.svg"),
+    ('![Synthetic chart](\nassets/chart.svg "open title)\n', 'assets/chart.svg "open title'),
+    ('![Synthetic chart](<v)2/assets/chart.svg> "open title)\n', "<v)2/assets/chart.svg>"),
+])
+def test_a_failed_destination_is_judged_to_its_own_end(text, snippet):
+    data, refs, unsupported = _scan(text)
+
+    start = text.index(snippet)
+    line = text.count("\n", 0, start) + 1
+    column = start - text.rfind("\n", 0, start)
+    assert refs == ()
+    assert [(u.form, u.line, u.column, u.snippet) for u in unsupported] == [
+        ("unparsed_markdown_destination", line, column, snippet)]
+    byte_start = data.index(snippet.encode())
+    assert (unsupported[0].byte_start, unsupported[0].byte_end) == (
+        byte_start, byte_start + len(snippet.encode()))
+
+
 def test_a_bracket_inside_a_code_span_does_not_break_the_caption():
     # The ']' of the interval sits in a code span, so the image still parses
     # and no destination is reported twice.
@@ -385,8 +415,9 @@ def test_long_paragraphs_with_unmatched_brackets_and_backticks_scan_in_linear_ti
     "[x](" * 50_000, "[x](a(" * 33_000, "[x](<a " * 28_000, "``x <!-- " * 22_000,
     "<b x=" * 40_000, "[" * 100_000 + "]" * 100_000,
     "](x " * 50_000, "](" * 50_000 + "assets/a.png",
+    "](" * 50_000 + ")" * 50_000, "](<" * 50_000, "](\n" * 50_000,
 ], ids=["open-paren", "nested-paren", "angle", "backticks-comment", "tag", "nested-brackets",
-        "orphan-close", "orphan-close-asset"])
+        "orphan-close", "orphan-close-asset", "orphan-nested", "orphan-angle", "orphan-next-line"])
 def test_repeated_malformed_constructs_scan_in_linear_time(body):
     text = body + "\n\n![x](assets/end.png)\n"
     started = time.perf_counter()
@@ -676,6 +707,22 @@ def test_an_ingested_caption_with_an_interval_is_a_finding_not_a_clean_file(tmp_
     assert record["occurrences"] == _counts(present=1, unsupported=1)
     assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
         ("unsupported", "unparsed_markdown_destination", 3, "assets/fig3.png")]
+
+
+def test_a_caption_destination_with_parentheses_or_a_line_break_is_a_finding(tmp_path, capsys):
+    body = ("## Results\n\n"
+            "![Synthetic score (-1, 2].]((synthetic)/assets/chart.svg)\n\n"
+            "![Synthetic score (-1, 2].](\nassets/chart.svg)\n")
+    corpus = _corpus(tmp_path)
+    _paper(corpus, "xi", {"full_text.md": body})
+    code, report, _ = _run(capsys, "--corpus", str(corpus))
+
+    record = _file(report, "xi/full_text.md")
+    assert code == 0
+    assert record["occurrences"] == _counts(unsupported=2)
+    assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
+        ("unsupported", "unparsed_markdown_destination", 3, "(synthetic)/assets/chart.svg"),
+        ("unsupported", "unparsed_markdown_destination", 6, "assets/chart.svg")]
 
 
 def test_tags_after_a_destination_without_an_opener_are_classified_in_the_report(tmp_path, capsys):

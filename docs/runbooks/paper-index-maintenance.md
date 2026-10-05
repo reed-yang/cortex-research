@@ -88,7 +88,10 @@ HTML block or blank line; an HTML tag keeps backticks and `<!--` in its
 attributes; a definition-shaped line inside a paragraph or a footnote is
 scanned as text; and a leading byte order mark is skipped while byte offsets
 still count it. It does not detect autolinks or bare URLs. These
-approximations over-report rather than hide: Markdown inside raw HTML blocks
+approximations over-report rather than hide: a destination that fails to parse
+is judged from where a destination may start, after spaces and one line ending,
+to the first `)` or the line end, or to its own end when balanced parentheses
+or `<...>` carry it further; Markdown inside raw HTML blocks
 and after a closed block comment is scanned as live text; code, comments and
 HTML blocks inside block quotes are not recognized; and a definition-shaped
 line inside a paragraph still resolves uses that no other definition matches.
