@@ -372,6 +372,28 @@ def test_roots_report_missing_disabled_overlapping_and_ready(
     assert store.xhs_roots_status() == {"xhs-notes": "overlaps_corpus", "blogs": "disabled"}
 
 
+def test_roots_overlap_is_judged_after_dot_dot_and_links_resolve(
+    store: ControlStore, tmp_path: Path
+) -> None:
+    (tmp_path / "corpus").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "corpus", target_is_directory=True)
+    store.register_asset_root(
+        root_id="research-corpus", private_path=tmp_path / "corpus", max_bytes=1 << 20,
+        enabled=True, actor_id=ACTOR, idempotency_key="root-corpus-00001",
+    )
+    store.register_asset_root(
+        root_id="xhs-notes", private_path=tmp_path / "sources" / ".." / "corpus",
+        max_bytes=1 << 20, enabled=True, actor_id=ACTOR, idempotency_key="root-notes-000001",
+    )
+    store.register_asset_root(
+        root_id="blogs", private_path=tmp_path / "link" / "blogs", max_bytes=1 << 20,
+        enabled=True, actor_id=ACTOR, idempotency_key="root-blogs-000001",
+    )
+    assert store.xhs_roots_status() == {
+        "xhs-notes": "overlaps_corpus", "blogs": "overlaps_corpus",
+    }
+
+
 def test_content_versions_bind_once_in_order_and_replay(
     store: ControlStore, tmp_path: Path
 ) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 from collections.abc import Collection, Mapping, Sequence
@@ -142,6 +143,13 @@ _RECOMMENDATION_UPDATE_FIELDS = frozenset(
         "imported_source_id",
     }
 )
+
+
+def _paths_overlap(first: str, second: str) -> bool:
+    """Whether one directory is inside the other once `..` and links resolve."""
+
+    first_path, second_path = Path(os.path.realpath(first)), Path(os.path.realpath(second))
+    return first_path.is_relative_to(second_path) or second_path.is_relative_to(first_path)
 
 
 def _category(value: Any, name: str = "failure category") -> str:
@@ -2525,7 +2533,8 @@ class XhsStore:
         """`ready`, `disabled`, `missing` or `overlaps_corpus` for each plugin root.
 
         Both roots stay outside the paper corpus, so the paper indexer can
-        never scan a note or a blog; a root nested either way is not ready.
+        never scan a note or a blog; a root nested either way, after `..` and
+        links are resolved, is not ready.
         """
 
         with self._connect() as conn:
@@ -2540,9 +2549,8 @@ class XhsStore:
                 ).fetchone()
                 if row is None:
                     status[root_id] = "missing"
-                elif corpus is not None and (
-                    Path(row["private_path"]).is_relative_to(corpus["private_path"])
-                    or Path(corpus["private_path"]).is_relative_to(row["private_path"])
+                elif corpus is not None and _paths_overlap(
+                    row["private_path"], corpus["private_path"]
                 ):
                     status[root_id] = "overlaps_corpus"
                 else:
