@@ -156,9 +156,10 @@ def _three_images(supervisor: PipelineSupervisor, n: int = 1) -> None:
         (USER, ""): page(USER, "", [listed(n)], False),
         (OTHER_USER, ""): page(OTHER_USER, "", [], False),
     })
-    supervisor.details[note_id(n)] = [
-        with_caption(detail(n, ["file-a", "file-b", "file-c"]), CAPTION_BLOG)
-    ]
+    answer = with_caption(detail(n, ["file-a", "file-b", "file-c"]), CAPTION_BLOG)
+    # An emoji sequence joins with U+200D, a format character the registry refuses.
+    answer["note"]["title"] = "👩\u200d💻 Weekly papers\n本周论文"
+    supervisor.details[note_id(n)] = [answer]
     supervisor.downloads.update({
         _url("file-a"): png(1), _url("file-b"): "not_found", _url("file-c"): png(3),
     })
@@ -234,6 +235,7 @@ def test_the_saved_version_has_the_layout_and_its_digest_is_recorded(
     )
     source = store.get_source(note["source_id"])
     assert (source["source_kind"], source["authority_id"]) == ("xhs_note", note_id(1))
+    assert source["official_title"] == "👩 💻 Weekly papers 本周论文"
     folder = _version_dir(tmp_path, 1, 1)
     tree = read_tree(folder)
     assert binding["tree_sha256"] == tree_sha256(tree)

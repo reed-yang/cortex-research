@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -93,7 +94,21 @@ def _where(image_ordinal: int | None) -> str:
 
 
 def note_title(note: Mapping[str, Any]) -> str:
-    return str(note["title"]).strip() or f"XHS note {note['note_id']}"
+    return " ".join(str(note["title"]).split()) or f"XHS note {note['note_id']}"
+
+
+def source_title(value: str, fallback: str, *, maximum: int = 1_000) -> str:
+    """A title the source registry accepts.
+
+    The registry refuses every control and format character, and an emoji
+    sequence often carries a zero-width joiner, so each becomes a space.
+    """
+
+    cleaned = "".join(
+        " " if unicodedata.category(character).startswith("C") else character
+        for character in unicodedata.normalize("NFC", value or "")
+    )
+    return " ".join(cleaned.split())[:maximum].strip() or fallback
 
 
 def render_note(

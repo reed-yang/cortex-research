@@ -51,6 +51,7 @@ from .layout import (
     render_blog_notes,
     render_note,
     render_transcription,
+    source_title,
     write_version,
 )
 from .results import validate_engine
@@ -894,7 +895,7 @@ class XhsDrain:
         return {
             "version": version,
             "tree_sha256": digest,
-            "title": note_title(note)[:_MAX_TITLE],
+            "title": source_title(note_title(note), f"XHS note {note_id}"),
             "metadata": {
                 "note_id": note_id,
                 "user_id": note["user_id"],
@@ -958,7 +959,9 @@ class XhsDrain:
                 continue
             entry = self._recommended_in(recommendation_id, files)
             entries.append(entry)
-        title = _short(metadata.get("title")) or str(recommendation["title"])
+        title = source_title(
+            str(metadata.get("title") or ""), source_title(str(recommendation["title"]), "Blog")
+        )
         files["notes.md"] = render_blog_notes(
             title=title,
             normalized_url=str(engine["normalized_url"]),
@@ -975,7 +978,7 @@ class XhsDrain:
             "authority_id": authority_id,
             "version": version,
             "tree_sha256": digest,
-            "title": title[:_MAX_TITLE],
+            "title": title,
             "metadata": {
                 "normalized_url": engine["normalized_url"],
                 "final_url": _short(metadata.get("final_url"), 2_000),
