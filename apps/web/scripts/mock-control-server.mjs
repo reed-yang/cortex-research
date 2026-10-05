@@ -144,6 +144,14 @@ const noteRecommendations = [
     capture_id: null, capture_state: null, capture_revision: null, import_state: "imported",
     imported_source_id: "src_echo", imported_source_kind: "paper", revision: 2, created_at: dayBefore, updated_at: dayBefore,
   },
+  // Not in the library yet, so the note detail scene has a row to select.
+  {
+    id: "xhs_rec_window", image_ordinal: 1, kind: "paper", title: "Windowed recall for long-context agents",
+    quote: "Windowed recall (arXiv 2607.01234): a smaller memory window first", arxiv_id: "2607.01234",
+    url: null, url_state: "none", url_checked_title: null, origin: "rule+model", identify_run: "xhs_task_identify_c1",
+    capture_id: null, capture_state: null, capture_revision: null, import_state: "none",
+    imported_source_id: null, imported_source_kind: null, revision: 0, created_at: dayBefore, updated_at: dayBefore,
+  },
   {
     id: "xhs_rec_blog", image_ordinal: 2, kind: "blog", title: "Memory drift, measured layer by layer",
     quote: "博客：Memory drift, measured layer by layer", arxiv_id: null, url: BLOG_URL, url_state: "auto_matched",
@@ -167,10 +175,18 @@ const noteProjection = {
   published_at: "2026-07-22T09:00:00Z",
   caption: "Two memory papers and one blog post this week.\n本周两篇记忆论文和一篇博客。",
   caption_complete: true,
-  images: NOTE_IMAGES.map((image) => ({
-    ordinal: image.ordinal, asset_path: `assets/${image.asset_name}`, media_type: "image/png", width: 270, height: 360,
-    download_state: "ok", download_error: null, ocr_state: "ok", ocr_error: null, ocr_engine: "deepseek-ocr-2", ocr_flags: [],
-  })),
+  // The third slide's signed link expired before it was downloaded, so the
+  // scene also shows a failed image with Retry.
+  images: [
+    ...NOTE_IMAGES.map((image) => ({
+      ordinal: image.ordinal, asset_path: `assets/${image.asset_name}`, media_type: "image/png", width: 270, height: 360,
+      download_state: "ok", download_error: null, ocr_state: "ok", ocr_error: null, ocr_engine: "deepseek-ocr-2", ocr_flags: [],
+    })),
+    {
+      ordinal: 3, asset_path: null, media_type: null, width: null, height: null, download_state: "failed",
+      download_error: "url_expired", ocr_state: "pending", ocr_error: null, ocr_engine: null, ocr_flags: [],
+    },
+  ],
   recommendations: noteRecommendations,
 };
 
@@ -203,8 +219,8 @@ const xhsStatus = {
 
 // The stored files of the note and the blog, in the layout Control saves them
 // (cortex_platform/product/xhs/layout.py), by `${source_id}:${kind}`.
-const NOTE_MD = `# ${noteSource.official_title}\n\n- Blogger: Synthetic Curator 合成 (curator)\n- Published: 2026-07-22T09:00:00Z\n- Permalink: <https://www.xiaohongshu.com/explore/${NOTE_ID}>\n- Images: 2\n\n## Caption\n\n${noteProjection.caption}\n\n## Recommendations\n\n### 1. Echo-Infinity: evolving memory for long video\n\nIdentified (auto): paper, from the image 1\n\n> Echo-Infinity (arXiv 2606.04527): memory that only writes what is new\n\narXiv: 2606.04527\n`;
-const TRANSCRIPTION_MD = `# Transcription\n\n## Image 1\n\n![Image 1](assets/${NOTE_IMAGES[0].asset_name})\n\nEcho-Infinity (arXiv 2606.04527): memory that only writes what is new\n\n## Image 2\n\n![Image 2](assets/${NOTE_IMAGES[1].asset_name})\n\n博客：Memory drift, measured layer by layer\n`;
+const NOTE_MD = `# ${noteSource.official_title}\n\n- Blogger: Synthetic Curator 合成 (curator)\n- Published: 2026-07-22T09:00:00Z\n- Permalink: <https://www.xiaohongshu.com/explore/${NOTE_ID}>\n- Images: 3, 1 failed\n\n## Caption\n\n${noteProjection.caption}\n\n## Recommendations\n\n### 1. Echo-Infinity: evolving memory for long video\n\nIdentified (auto): paper, from the image 1\n\n> Echo-Infinity (arXiv 2606.04527): memory that only writes what is new\n\narXiv: 2606.04527\n`;
+const TRANSCRIPTION_MD = `# Transcription\n\n## Image 1\n\n![Image 1](assets/${NOTE_IMAGES[0].asset_name})\n\nEcho-Infinity (arXiv 2606.04527): memory that only writes what is new\nWindowed recall (arXiv 2607.01234): a smaller memory window first\n\n## Image 2\n\n![Image 2](assets/${NOTE_IMAGES[1].asset_name})\n\n博客：Memory drift, measured layer by layer\n\n## Image 3\n\nDownload failed (url_expired).\n`;
 const ARTICLE_MD = "# Memory drift, measured layer by layer\n\nA synthetic article: drift is measured per layer before the context is scaled.\n";
 const BLOG_NOTES_MD = `# Memory drift, measured layer by layer\n\n- Source: <${BLOG_URL}>\n- Article text: extracted from the page\n- Not peer-reviewed\n\n## Recommended in\n\n### ${noteSource.official_title} · image 2\n\n> 博客：Memory drift, measured layer by layer\n`;
 const contentDocuments = new Map([
