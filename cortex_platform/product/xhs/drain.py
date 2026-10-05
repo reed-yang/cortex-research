@@ -138,6 +138,14 @@ class Deferred(Exception):
         self.seconds = seconds
 
 
+class Refused(Exception):
+    """A task that fails before its operation runs, with this category."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
 class LeaseLost(Exception):
     """The task's lease passed to another holder before its files were written."""
 
@@ -314,6 +322,10 @@ class DownloadHandler(TaskHandler):
         payload = task["payload"]
         if drain.image(payload["note_id"], payload["ordinal"])["download_state"] != "pending":
             return None
+        if payload["url"] is None:
+            # The detail named no URL: like an expired one, it earns one
+            # fresh detail, which matches the image by fileid.
+            raise Refused("url_expired")
         staging = drain.staging_dir(payload["note_id"])
         staging.mkdir(parents=True, exist_ok=True)
         return {
@@ -684,6 +696,8 @@ class XhsDrain:
             payload = handler.prepare(self, task)
         except Deferred as deferred:
             return self._defer(task, deferred.seconds)
+        except Refused as refused:
+            return self._fail(task, refused.category)
         except (NotFound, ValueError, KeyError, TypeError):
             return self._fail(task, "invalid_response")
         if payload is None:

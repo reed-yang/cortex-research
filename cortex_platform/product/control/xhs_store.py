@@ -1517,12 +1517,7 @@ class XhsStore:
                 upstream_width=image["width"],
                 upstream_height=image["height"],
             )
-            if not image["url"]:
-                # Nothing to fetch: the image is shown failed rather than
-                # silently dropped, and keeps its ordinal.
-                self._xhs_fail_image_download(conn, note_id, ordinal, "invalid_response")
-                continue
-            self._xhs_create_task(
+            task, _ = self._xhs_create_task(
                 conn,
                 kind="download",
                 subject_key=f"download:{note_id}:{ordinal}",
@@ -1530,10 +1525,22 @@ class XhsStore:
                     "note_id": note_id,
                     "ordinal": ordinal,
                     "fileid": image["fileid"],
-                    "url": image["url"],
+                    "url": image["url"] or None,
                     "refreshed": False,
                 },
             )
+            if not image["url"]:
+                # Nothing to fetch: the image is shown failed rather than
+                # silently dropped, and keeps its ordinal. Its download task
+                # stays, failed, so a retry asks a fresh detail for its URL.
+                conn.execute(
+                    """UPDATE xhs_tasks
+                       SET state = 'failed', last_error = 'invalid_response',
+                           revision = revision + 1, updated_at = ?
+                       WHERE id = ? AND state = 'pending'""",
+                    (self._registry_now(), task["id"]),
+                )
+                self._xhs_fail_image_download(conn, note_id, ordinal, "invalid_response")
         self._xhs_advance_note(conn, note_id)
         return {"images": len(result["images"])}
 
@@ -2373,7 +2380,6 @@ class XhsStore:
                 (f"download:{note_id}:{ordinal}",),
             ).fetchone()
             if row is None:
-                # The detail gave no URL for it: there is nothing to fetch again.
                 raise InvalidTransition("xhs_image_not_retryable", "pending")
             task = self._xhs_task(conn, str(row["id"]))
             self._xhs_update_image(

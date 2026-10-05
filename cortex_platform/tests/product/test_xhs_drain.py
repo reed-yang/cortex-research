@@ -580,6 +580,36 @@ def test_a_second_expiry_after_the_refresh_fails_the_image(
     assert store.get_xhs_note(note_id(1))["state"] == "ocr_done"
 
 
+def test_an_image_without_a_url_fails_and_its_retry_asks_a_fresh_detail(
+    store: ControlStore, supervisor: ScriptedSupervisor
+) -> None:
+    _one_note(supervisor, ["file-a", "file-b"])
+    supervisor.details[note_id(1)][0]["note"]["images"][1]["url"] = None
+    supervisor.details[note_id(1)].append(detail(1, ["file-a", "file-b"], tag="v2"))
+    supervisor.downloads.update({_url("file-a"): png(1), _url("file-b", "v2"): png(2)})
+    supervisor.ocr.update({
+        hashlib.sha256(png(1)).hexdigest(): ("first", []),
+        hashlib.sha256(png(2)).hexdigest(): ("second", []),
+    })
+    drain = drain_for(store, supervisor)
+    drain.pull()
+    drain.drain()
+    image = store.list_xhs_note_images(note_id(1))[1]
+    assert (image["download_state"], image["download_error"]) == ("failed", "invalid_response")
+    assert store.get_xhs_note(note_id(1))["state"] == "ocr_done"
+    assert supervisor.operations().count("xhs_download_image") == 1
+    retried = store.retry_failed_xhs_tasks(
+        kinds=["download"], actor_id=ACTOR, idempotency_key="retry-download-00001"
+    ).value
+    assert retried == {"retried": {"download": 1}, "skipped": 0}
+    drain.drain()
+    image = store.list_xhs_note_images(note_id(1))[1]
+    assert (image["download_state"], image["sha256"]) == (
+        "ok", hashlib.sha256(png(2)).hexdigest(),
+    )
+    assert supervisor.operations().count("xhs_note_detail") == 2
+
+
 def test_an_inconsistent_answer_is_an_invalid_response(
     store: ControlStore, supervisor: ScriptedSupervisor
 ) -> None:
