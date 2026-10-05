@@ -844,9 +844,15 @@ async function main() {
     );
     const cursor = JSON.parse(cursorRecord.body).next_cursor;
     assert.equal(typeof cursor, "string");
-    const ssePromise = captureSse(daemonPort, daemon.token, cursor);
-    summaries.push(await runFixture("emit-redacted", temporaryRoot, capability, secrets, processOutputs));
-    sseBodies.push(await ssePromise);
+    // Awaited together: a stream read parked while the fixture runs has no
+    // handler, so a fixture failure would leave it to reject unhandled when
+    // `finally` stops the daemon, ending the process before cleanup.
+    const [sseBody, redactedSummary] = await Promise.all([
+      captureSse(daemonPort, daemon.token, cursor),
+      runFixture("emit-redacted", temporaryRoot, capability, secrets, processOutputs),
+    ]);
+    summaries.push(redactedSummary);
+    sseBodies.push(sseBody);
     const redactedRecord = await waitForResponse(
       responseRecords,
       cursorRecord.sequence,
@@ -951,9 +957,12 @@ async function main() {
     await activePage.getByText(copy.errors.unconfirmed, { exact: true }).waitFor();
     assert.equal(await activePage.evaluate(() => window.__cortexDroppedSaveStatus), 201, "the first save must reach Control and commit");
     assert.equal(await ideaBox.inputValue(), ideaText, "an unconfirmed save must keep the typed idea");
-    const retriedSave = activePage.waitForResponse((response) => response.request().method() === "POST" && response.url() === fragmentsRoute);
-    await activePage.getByRole("button", { name: copy.inbox.saveIdea, exact: true }).click();
-    const retryAnswer = await retriedSave;
+    // The wait starts with the click it waits on, for the same reason as the
+    // stream read above: a failed click must surface as itself.
+    const [retryAnswer] = await Promise.all([
+      activePage.waitForResponse((response) => response.request().method() === "POST" && response.url() === fragmentsRoute),
+      activePage.getByRole("button", { name: copy.inbox.saveIdea, exact: true }).click(),
+    ]);
     assert.equal(retryAnswer.status(), 201);
     assert.equal(retryAnswer.headers()["idempotency-replayed"], "true", "the retry must replay the committed save");
     await activePage.getByText(copy.notice.ideaSaved, { exact: true }).waitFor();

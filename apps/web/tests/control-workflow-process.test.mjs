@@ -76,6 +76,18 @@ test("temporary workflow harness fail-closes network, logs, and process cleanup"
   assert.ok(/cleanupProcessGroup/.test(wrapper), "detached process groups must always be cleaned");
 });
 
+test("a wait started before its trigger is awaited together with it", async () => {
+  const verifier = await readFile(path.join(webRoot, "scripts/verify-control-workflow.mjs"), "utf8");
+  // A wait parked in a variable has no rejection handler while the steps before
+  // its `await` run. If one of them throws, closing the browser or stopping the
+  // daemon in `finally` rejects the parked wait, Node exits on the unhandled
+  // rejection, and both the cleanup and the original error are lost.
+  const parked = [...verifier.matchAll(
+    /\b(?:const|let)\s+(\w+)\s*=\s*(?:[\w.]+\.)?(?:waitFor(?:Event|Request|Response|URL)|captureSse)\(/g,
+  )].map((match) => match[1]);
+  assert.deepEqual(parked, []);
+});
+
 test("real temporary research workflow crosses the Web boundary and cleans up", { timeout: 120_000 }, async () => {
   const child = spawn(process.execPath, ["scripts/verify-control-workflow.mjs"], {
     cwd: webRoot,
