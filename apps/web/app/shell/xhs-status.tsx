@@ -23,7 +23,7 @@ function summary(status: XhsStatus): string {
   return copy.status.xhs.offSchedule;
 }
 
-function failurePhrase(category: string | null): string | null {
+export function failurePhrase(category: string | null): string | null {
   if (!category) return null;
   return copy.status.xhs.failures[category] ?? humanCategory(category) ?? copy.status.unknown;
 }

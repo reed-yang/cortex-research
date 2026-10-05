@@ -262,6 +262,74 @@ export const copy = Object.freeze({
     caption: "caption",
     unreadable: "The notes that recommend this source could not be read.",
   },
+  // The XHS note record: who posted it, what it recommends (each with the
+  // image or caption it came from), importing them, and its failed images.
+  // Transcription, Identified (auto) and Caption say where each text came from.
+  xhs: {
+    loading: "Loading the note…",
+    unreadable: "This note's recommendations and images could not be read.",
+    by: "By",
+    roles: { curator: "Curator", author: "Author" },
+    // What each role means today: an author's notes become research evidence
+    // in a later release.
+    roleScope: { curator: "Library only", author: "Research evidence later" },
+    published: "Published",
+    permalink: "Open on Xiaohongshu",
+    processing: "Cortex is still processing this note; a new version is saved when it finishes.",
+    noteFailed: "Processing this note failed",
+    recommendations: "Recommendations",
+    noRecommendations: "No recommendation was identified in this note.",
+    importSelected: "Import selected",
+    importing: "Importing…",
+    importNotDone: "Nothing was imported",
+    evidence: "Evidence",
+    transcription: "Transcription",
+    identified: "Identified (auto)",
+    caption: "Caption",
+    transcriptionLoading: "Loading the transcription…",
+    transcriptionUnreadable: "The transcription could not be read.",
+    transcriptionMissing: "This image has no transcription in the saved copy.",
+    imageMissing: "This image is not in the saved copy yet.",
+    fields: { kind: "Kind", title: "Title", quote: "Quote", arxiv: "arXiv", link: "Link" },
+    kinds: { paper: "paper", blog: "blog", other: "other" },
+    open: "Open",
+    linkLabel: "Blog link",
+    saveLink: "Save link",
+    linkSaved: "Link saved.",
+    linkInvalid: "Enter an http or https link.",
+    linkNotSaved: "Link not saved",
+    // Where a recommendation's link came from, or why there is none.
+    urlStates: {
+      none: "No link yet",
+      from_text: "Link from the note",
+      auto_matched: "Link found and checked",
+      unverified: "Link found, not checked",
+      not_found: "No link found",
+      operator_set: "Link set by you",
+      failed: "Link lookup failed",
+    },
+    importStates: { staged: "In the inbox", importing: "Importing", imported: "Imported", failed: "Import failed" } as Record<string, string | undefined>,
+    // What importing did for each selected row. A paper is staged as a
+    // Capture and then approved as its own decision, so either step can fail.
+    outcomes: {
+      approved: "Approved; Cortex imports it next.",
+      notApproved: "In the inbox but not approved",
+      blogQueued: "Blog import queued.",
+      refused: {
+        not_found: "Not imported: this recommendation is no longer on the note.",
+        already_imported: "Already imported.",
+        not_importable: "Not imported: only papers and blogs can be imported.",
+        no_url: "Not imported: this blog has no link yet.",
+        no_arxiv_id: "Not imported: this paper has no arXiv id.",
+      },
+    },
+    failedImages: "Failed images",
+    download: "download",
+    ocr: "transcription",
+    retry: "Retry",
+    retryQueued: "Retry queued; the note is saved again when it finishes.",
+    retryNotDone: "Not retried",
+  },
   // The Library reader's own words around a stored document: Preview, Source
   // and Copy source are the shared document controls' labels.
   reader: {
@@ -599,6 +667,12 @@ export const label = Object.freeze({
   // Where in a note a recommendation came from: one image, or the caption.
   noteEvidence: (ordinal: number | null) => (ordinal === null ? copy.links.caption : `image ${ordinal}`),
   sourceKind: (kind: string) => copy.source.kinds[kind] ?? kind.replaceAll("_", " "),
+  // The XHS note record's rows: a recommendation to select, one carousel
+  // image, and an image that failed with the step and the reason.
+  selectRecommendation: (title: string) => `Select ${title}`,
+  xhsImage: (ordinal: number) => `Image ${ordinal}`,
+  xhsImageFailed: (ordinal: number, step: string, reason: string) => `Image ${ordinal}: ${step} failed (${reason})`,
+  retryImage: (ordinal: number) => `Retry image ${ordinal}`,
   // One followed blogger's last scan, as the Status line says it.
   xhsScan: (name: string, when: string | null, outcome: string | null, failure: string | null) => {
     if (!when || !outcome) return `${name}: ${copy.status.xhs.notScanned}`;

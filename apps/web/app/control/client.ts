@@ -536,7 +536,9 @@ export class CortexControlClient {
     return this.prepare("/fragments", { text: input.text, note: input.note }, decodeFragment);
   }
 
-  prepareApproveCapture(capture: Capture): PreparedMutation<Capture> {
+  // Only the row's identity and revision cross, so a Capture that importing a
+  // recommendation staged is approved from the import's answer, without a reread.
+  prepareApproveCapture(capture: Pick<Capture, "id" | "revision">): PreparedMutation<Capture> {
     return this.prepareCaptureDecision(capture, "approve", { expected_revision: capture.revision });
   }
 
@@ -614,7 +616,7 @@ export class CortexControlClient {
   }
 
   private prepareCaptureDecision(
-    capture: Capture,
+    capture: Pick<Capture, "id" | "revision">,
     action: "approve" | "dismiss" | "reopen",
     body: Record<string, unknown>,
   ): PreparedMutation<Capture> {

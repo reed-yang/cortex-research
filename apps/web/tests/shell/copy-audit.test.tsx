@@ -76,6 +76,7 @@ function seeded(): FakeControl {
   control.link("source_0a1e", "source_b10b", 2);
   control.link("source_0a1e", "source_11aabbcc", null);
   control.sourceContent("source_b10b", "full_text", "# Notes on synthetic retrieval\n\nThe article body.\n");
+  control.sourceContent("source_0a1e", "full_text", "# Transcription\n\n## Image 1\n\n![Image 1](assets/1-000000000001.png)\n\n第一张图 Synthetic Memory Networks\n");
   // Each scan outcome, and a blogger with no name, whose 24-hex id may only
   // appear inside a disclosure.
   control.xhsStatus = xhsStatusProjection({
@@ -176,6 +177,17 @@ describe("shell copy audit", () => {
     await screen.findByText(copy.source.notPeerReviewed);
     await screen.findByRole("region", { name: copy.links.title });
     check("blog record");
+
+    // The XHS note record: its byline, a recommendation opened onto its image,
+    // transcription and identified fields, and its failed image. The note id
+    // is only the permalink's target.
+    const listed = screen.getByRole("navigation", { name: copy.library.sources });
+    await userEvent.setup().click(within(listed).getByRole("button", { name: /^Weekly reading list/ }));
+    const recommendations = await screen.findByRole("region", { name: copy.xhs.recommendations });
+    await userEvent.setup().click(within(recommendations).getAllByRole("button", { name: copy.xhs.evidence })[0]!);
+    await screen.findByText("第一张图 Synthetic Memory Networks");
+    await screen.findByRole("region", { name: copy.xhs.failedImages });
+    check("xhs note record");
 
     // The XHS line names each blogger's last scan in words.
     await open("status");
