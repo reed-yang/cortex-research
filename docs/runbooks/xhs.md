@@ -25,11 +25,19 @@ The plugin runs only when all of these hold:
 `cortex xhs status` shows both schedule rows and reports `refusal` as
 `disabled_in_config` or `roots_not_ready` when one of those two conditions is
 missing, with each root as `ready`, `disabled`, `missing` or
-`overlaps_corpus`. No command registers the two roots yet. Their intended
-default locations are `<data>/sources/xhs-notes` and `<data>/sources/blogs`,
-beside the research data and never inside the corpus. Until a registration
-command exists, an installation without them refuses every scan with
-`roots_not_ready`.
+`overlaps_corpus`. Create and register both roots once with:
+
+```sh
+cortex xhs init-roots
+```
+
+It creates `<data>/sources/xhs-notes` and `<data>/sources/blogs` owner-only
+(mode 0700), refuses a location that is a symlink, not a directory, owned by
+another user or overlapping the `research-corpus` root, and registers each
+enabled with a 20 MiB per-file bound. For each root it reports `registered`,
+or `already_registered` or `registered_elsewhere` for a root that already
+exists, which it leaves unchanged, so running it again is safe. Without the
+two roots every scan refuses with `roots_not_ready`.
 
 ## Configuration
 

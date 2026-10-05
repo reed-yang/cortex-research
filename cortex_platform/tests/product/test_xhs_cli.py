@@ -175,3 +175,58 @@ def test_retry_failed_makes_failed_tasks_due_again(tmp_path, capsys) -> None:
     code, retried = _run(tmp_path, "xhs", "retry", "--failed", capsys=capsys)
     assert code == 0 and retried["retried"]["list_page"] == 2
     assert store.xhs_task_counts()["pending"] == 2
+
+
+def _initialized(root: Path, capsys) -> None:
+    assert main(["init", *_paths(root)], environ={"HOME": str(root)}) == 0
+    capsys.readouterr()
+
+
+def test_init_roots_creates_and_registers_both_roots_once(tmp_path, capsys) -> None:
+    _initialized(tmp_path, capsys)
+    with (tmp_path / "config" / "config.toml").open("a", encoding="utf-8") as stream:
+        stream.write("\n[xhs]\nenabled = true\n")
+    code, first = _run(tmp_path, "xhs", "init-roots", capsys=capsys)
+    assert code == 0
+    sources = tmp_path / "data" / "sources"
+    for root_id in ("xhs-notes", "blogs"):
+        entry = first["roots"][root_id]
+        assert (entry["action"], entry["path"], entry["enabled"]) == (
+            "registered", str(sources / root_id), True,
+        )
+        assert entry["max_bytes"] == 20 * 1024 * 1024
+        assert (sources / root_id).is_dir()
+        assert (sources / root_id).stat().st_mode & 0o777 == 0o700
+    assert first["status"] == {"xhs-notes": "ready", "blogs": "ready"}
+    assert first["refusal"] is None
+    code, second = _run(tmp_path, "xhs", "init-roots", capsys=capsys)
+    assert code == 0
+    assert {root_id: entry["action"] for root_id, entry in second["roots"].items()} == {
+        "xhs-notes": "already_registered", "blogs": "already_registered",
+    }
+    assert _store(tmp_path).get_asset_root("blogs").revision == 0
+
+
+def test_init_roots_refuses_a_symlinked_location(tmp_path, capsys) -> None:
+    _initialized(tmp_path, capsys)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (tmp_path / "data" / "sources").symlink_to(elsewhere, target_is_directory=True)
+    code, error = _run(tmp_path, "xhs", "init-roots", capsys=capsys)
+    assert code == 1
+    assert error["error"] == "invalid_request"
+    assert "symlink" in error["message"]
+    assert _store(tmp_path).xhs_roots_status() == {"xhs-notes": "missing", "blogs": "missing"}
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_init_roots_refuses_a_location_inside_the_corpus(tmp_path, capsys) -> None:
+    _initialized(tmp_path, capsys)
+    _store(tmp_path).register_asset_root(
+        root_id="research-corpus", private_path=tmp_path / "data", max_bytes=1 << 20,
+        enabled=True, actor_id="local-operator", idempotency_key="root-corpus-000001",
+    )
+    code, error = _run(tmp_path, "xhs", "init-roots", capsys=capsys)
+    assert code == 1
+    assert "overlap the research corpus" in error["message"]
+    assert not (tmp_path / "data" / "sources").exists()

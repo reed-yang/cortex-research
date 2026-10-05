@@ -467,6 +467,11 @@ def xhs_settings(config: Mapping[str, object]) -> XhsSettings:
     return replace(defaults, daily_calls=daily_calls, **values)
 
 
+#: The per-file bound both plugin roots are registered with: the largest image
+#: the download accepts.
+XHS_ROOT_MAX_BYTES = 20 * 1024 * 1024
+
+
 def xhs_asset_root_paths(paths: PathRegistry) -> dict[str, Path]:
     """Where the two plugin roots live by default: product data, beside the
     research engine's directory and never inside the paper corpus."""

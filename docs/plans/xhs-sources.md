@@ -190,8 +190,9 @@ The legacy `xhs-pull-scan` rows stay inert.
   The plugin refuses to run, and says why, without both roots enabled. A
   root nested inside the corpus, or containing it, is reported as
   `overlaps_corpus` and is not ready. `xhs_asset_root_paths` names the default
-  locations, `<data>/sources/xhs-notes` and `<data>/sources/blogs`, but no
-  command registers the roots yet (see Known limits).
+  locations, `<data>/sources/xhs-notes` and `<data>/sources/blogs`;
+  `cortex xhs init-roots` creates them owner-only without following links and
+  registers both, and leaves a root that is already registered unchanged.
 - Note layout: `<note_id>/v<N>/` contains:
   - `note.md`: caption, blogger, date, permalink and the recommendation list;
   - `transcription.md`: one section per image, in order, with each image's
@@ -424,6 +425,8 @@ All read routes use the same authorization as the other source GETs and send
 - `list`
 - `status`
 - `enable` and `disable`: both schedule rows, by expected revision.
+- `init-roots`: create and register the two asset roots at their default
+  locations; idempotent.
 - `scan [--user ID] [--full --max-pages N --yes]`. A scan skips bloggers
   whose previous scan still has a page to run, and refuses while the plugin
   would refuse. `--full` needs `--max-pages` (1 to 1000); without `--yes` it
@@ -514,9 +517,6 @@ Live provider acceptance follows this PR, after operator approval:
 
 Left open by this change, each a follow-up:
 
-- No command registers the `xhs-notes` and `blogs` asset roots. On an
-  installation without them, `cortex xhs status` reports both as `missing`
-  and every scan refuses with `roots_not_ready`.
 - The TikHub detail response shape follows the recorded probe. The live
   contract is confirmed only by the operator-approved acceptance above.
 - No test runs the provider operations through a real effect child. The

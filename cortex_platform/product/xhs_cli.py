@@ -8,19 +8,29 @@ reads a credential.
 `enable` and `disable` arm both schedule rows, each at the revision just
 read. `[xhs] enabled` in the configuration is a separate switch, and the
 plugin runs only when both are on and both asset roots are ready.
+`init-roots` creates and registers those roots at their default locations.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sqlite3
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
-from .config import XhsSettings, load_config, xhs_settings
-from .control import ControlStore, ControlStoreError
+from .config import (
+    XHS_ROOT_MAX_BYTES,
+    XhsSettings,
+    load_config,
+    xhs_asset_root_paths,
+    xhs_settings,
+)
+from .control import ControlStore, ControlStoreError, NotFound
 from .control.xhs_store import XHS_ROLES, XHS_TASK_KINDS
 from .paths import PathRegistry
 from .xhs.status import public_blogger as _blogger
@@ -55,6 +65,7 @@ def add_xhs_parser(subparsers: Any, *, common: argparse.ArgumentParser) -> None:
     actions.add_parser("status", parents=[common])
     writer("enable")
     writer("disable")
+    actions.add_parser("init-roots", parents=[common]).add_argument("--actor", default=_ACTOR)
     scan = actions.add_parser("scan", parents=[common])
     scan.add_argument("--user", action="append", dest="users")
     scan.add_argument("--full", action="store_true")
@@ -108,7 +119,10 @@ def run_xhs_command(arguments: argparse.Namespace, paths: PathRegistry) -> int:
                 raise ValueError("the Control database does not exist; run `cortex init`")
         else:
             store.initialize()
-        payload = _run(command, arguments, store, settings)
+        if command == "init-roots":
+            payload = _init_roots(paths, store, settings, arguments.actor)
+        else:
+            payload = _run(command, arguments, store, settings)
         if payload is None:
             return 1
     except ControlStoreError as exc:
@@ -185,6 +199,85 @@ def _run(
             idempotency_key=_key(arguments, "retry"),
         ).value
     raise ValueError(f"unknown xhs command: {command}")
+
+
+def _overlaps(first: Path, second: Path) -> bool:
+    first, second = Path(os.path.realpath(first)), Path(os.path.realpath(second))
+    return first.is_relative_to(second) or second.is_relative_to(first)
+
+
+def _init_roots(
+    paths: PathRegistry, store: ControlStore, settings: XhsSettings, actor: str
+) -> dict[str, Any]:
+    """Create and register `xhs-notes` and `blogs` at their default locations.
+
+    Each directory is made owner-private without following a link, and one
+    that is a link, not a directory or not owned by this user is refused. A
+    root already registered is reported and left as it is, so running this
+    again changes nothing.
+    """
+
+    # Imported here: the materializer stays out of every other command.
+    from .artifacts.materializer import MaterializerError, _open_directory, _open_secure_root
+
+    try:
+        corpus: Path | None = store.get_asset_root("research-corpus").private_path
+    except NotFound:
+        corpus = None
+    roots: dict[str, dict[str, Any]] = {}
+    for root_id, path in sorted(xhs_asset_root_paths(paths).items()):
+        try:
+            existing = store.get_asset_root(root_id)
+        except NotFound:
+            existing = None
+        if existing is not None:
+            roots[root_id] = {
+                "action": (
+                    "already_registered"
+                    if existing.private_path == path
+                    else "registered_elsewhere"
+                ),
+                "path": str(existing.private_path),
+                "enabled": existing.enabled,
+                "max_bytes": existing.max_bytes,
+            }
+            continue
+        if corpus is not None and _overlaps(path, corpus):
+            raise ValueError(f"the {root_id} root would overlap the research corpus")
+        descriptors: list[int] = []
+        try:
+            descriptors.append(_open_secure_root(paths.data_dir)[0])
+            for name in path.relative_to(paths.data_dir).parts:
+                descriptors.append(
+                    _open_directory(descriptors[-1], name, create=True, private=True)
+                )
+        except MaterializerError as exc:
+            raise ValueError(f"the {root_id} root cannot be created safely: {exc}") from exc
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+        record = store.register_asset_root(
+            root_id=root_id,
+            private_path=path,
+            max_bytes=XHS_ROOT_MAX_BYTES,
+            enabled=True,
+            actor_id=actor,
+            idempotency_key=(
+                f"xhs-root-{root_id}-"
+                + hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+            ),
+        )
+        roots[root_id] = {
+            "action": "registered",
+            "path": str(record.private_path),
+            "enabled": record.enabled,
+            "max_bytes": record.max_bytes,
+        }
+    return {
+        "roots": roots,
+        "status": store.xhs_roots_status(),
+        "refusal": _refusal(settings, store),
+    }
 
 
 def _scan(
