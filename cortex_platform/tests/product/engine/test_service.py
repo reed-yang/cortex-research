@@ -120,6 +120,14 @@ def _approve(store: ControlStore, payload: str, tag: str) -> str:
     return str(created.value["id"])
 
 
+def test_cortexd_drains_every_xhs_task_kind(service) -> None:
+    from cortex_platform.product.control.xhs_store import XHS_TASK_KINDS
+
+    drain = service.tick._xhs
+    assert drain.refusal() == "disabled_in_config"
+    assert set(drain._handlers) == set(XHS_TASK_KINDS)
+
+
 def test_a_failing_tick_is_reported_by_type_and_never_by_message(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

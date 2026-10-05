@@ -258,6 +258,19 @@ def test_the_saved_version_has_the_layout_and_its_digest_is_recorded(
     assert not list(folder.parent.glob(".v*"))
 
 
+def test_the_library_reader_reads_what_the_pipeline_saved(
+    store: ControlStore, supervisor: PipelineSupervisor
+) -> None:
+    from cortex_platform.product.sources.reader import SourceKnowledgeReader
+
+    note = _saved(store, supervisor)
+    reader = SourceKnowledgeReader(store)
+    assert "## Recommendations" in reader.document(note["source_id"], kind="notes")["text"]
+    assert BLOG_TEXT in reader.document(note["source_id"], kind="full_text")["text"]
+    asset = f"assets/3-{hashlib.sha256(png(3)).hexdigest()[:12]}.png"
+    assert reader.asset(note["source_id"], asset) == ("image/png", png(3))
+
+
 def test_a_model_failure_never_yields_an_empty_list_and_retry_recovers(
     store: ControlStore, supervisor: PipelineSupervisor
 ) -> None:
@@ -352,9 +365,13 @@ def test_retrying_a_failed_image_writes_version_two_and_keeps_version_one(
     v2 = read_tree(_version_dir(tmp_path, 1, 2))
     assert "第二张 image two" in v2["transcription.md"].decode()
     assert store.latest_content_binding(note["source_id"])["tree_sha256"] == tree_sha256(v2)
-    # A new transcription is a new input: identification ran once more.
+    # A new transcription is a new input: identification ran once more,
+    # updating the same rows and keeping the link the search had found.
     assert len(tasks(store, "identify")) == 2
-    assert len(store.list_xhs_recommendations(note_id(1))) == 3
+    recommendations = {r["title"]: r for r in store.list_xhs_recommendations(note_id(1))}
+    assert len(recommendations) == 3
+    assert recommendations["Attention Sinks"]["url_state"] == "auto_matched"
+    assert len(tasks(store, "resolve")) == 1
 
 
 def test_an_image_that_fails_again_after_a_retry_reuses_its_identification(
@@ -510,6 +527,11 @@ def test_two_notes_importing_one_blog_share_one_source_and_get_two_links(
     assert "笔记 1: Attention Sinks" in notes and "笔记 2: Attention Sinks" in notes
     assert "Not peer-reviewed" in notes
     assert len(list((tmp_path / "blogs").iterdir())) == 1
+    from cortex_platform.product.sources.reader import SourceKnowledgeReader
+
+    reader = SourceKnowledgeReader(store)
+    assert reader.document(blog_id, kind="full_text")["text"].startswith("# Attention Sinks")
+    assert reader.asset(blog_id, shots[1]) == ("image/png", png(12))
 
 
 def test_a_failed_blog_fetch_marks_the_import_failed_and_retry_imports_it(
@@ -582,6 +604,48 @@ def test_capture_link_waits_for_the_capture_then_links_its_paper(
     assert tasks(store, "capture_link")[0]["result"] == {
         "capture_state": "consumed", "linked": 1, "failed": 0,
     }
+
+
+def test_one_capture_reused_by_two_notes_links_both_to_one_paper(
+    store: ControlStore, supervisor: PipelineSupervisor
+) -> None:
+    supervisor.lists.update({
+        (USER, ""): page(USER, "", [listed(1), listed(2)], False),
+        (OTHER_USER, ""): page(OTHER_USER, "", [], False),
+    })
+    for n, fileid in ((1, "file-a"), (2, "file-z")):
+        text = f"第{n}篇 see arXiv:2601.00042"
+        supervisor.details[note_id(n)] = [detail(n, [fileid])]
+        supervisor.downloads[_url(fileid)] = png(20 + n)
+        supervisor.ocr[hashlib.sha256(png(20 + n)).hexdigest()] = (text, [])
+        supervisor.identify[text] = [[]]  # the model found nothing; the rule did
+    drain = pipeline(store, supervisor)
+    drain.pull()
+    drain.drain()
+    papers = [store.list_xhs_recommendations(note_id(n))[0] for n in (1, 2)]
+    assert [(p["origin"], p["arxiv_id"]) for p in papers] == [("rule", "2601.00042")] * 2
+    capture = store.create_capture(
+        payload="https://arxiv.org/abs/2601.00042", note="Recommended in XHS",
+        actor_id=ACTOR, idempotency_key="capture-shared-0001",
+    ).value
+    with store._transaction() as conn:
+        first = store._xhs_queue_capture_link(conn, papers[0], capture["id"])
+        second = store._xhs_queue_capture_link(conn, papers[1], capture["id"])
+    assert first["id"] == second["id"]
+    source = store.register_source(
+        authority="arxiv", authority_id="2601.00042", source_kind="paper",
+        official_title="A synthetic paper", engine_ref="paper:20261005-Synthetic",
+        actor_id=ACTOR, idempotency_key="paper-source-000002",
+    ).value
+    _end_capture(store, capture["id"], "consumed", [source["id"]])
+    pipeline(store, supervisor).drain()
+    assert {store.get_xhs_recommendation(p["id"])["imported_source_id"] for p in papers} == {
+        source["id"]
+    }
+    links = store.list_source_links(source["id"])["recommended_in"]
+    assert sorted(link["source_id"] for link in links) == sorted(
+        store.get_xhs_note(note_id(n))["source_id"] for n in (1, 2)
+    )
 
 
 def test_a_failed_capture_marks_the_import_failed(
