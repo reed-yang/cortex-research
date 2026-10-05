@@ -236,6 +236,23 @@ INSERT INTO transport_activation_decisions VALUES('disable');
         self.assertEqual((self.app / "Data.schema19-retained/new-artifact.md").read_text(), "new cited result")
         self.assertEqual(Path(str(self.external) + ".schema19-retained/notes.md").read_text(), "after")
 
+    def test_schema20_preservation_recovers19_without_replacing_generations(self):
+        self.layout(True)
+        self._seed_schema(19)
+        self.pointers(18, 17)
+        self.upgraded(source=19, target=20, declare_target=True)
+        pointers = {name: (self.prefix / name).read_bytes() for name in ("current.json", "last-known-good.json")}
+        result = self.restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name, value in pointers.items():
+            self.assertEqual((self.prefix / name).read_bytes(), value)
+        with contextlib.closing(sqlite3.connect(self.database)) as db:
+            self.assertEqual(db.execute("SELECT max(version) FROM schema_migrations").fetchone()[0], 19)
+        with contextlib.closing(sqlite3.connect(self.session)) as db:
+            self.assertEqual(db.execute("SELECT content FROM sessions").fetchone()[0], "before")
+        self.assertEqual((self.app / "Data.schema20-retained/new-artifact.md").read_text(), "new cited result")
+        self.assertEqual(Path(str(self.external) + ".schema20-retained/notes.md").read_text(), "after")
+
     def test_the_staging_suffix_is_read_from_the_manifest_not_recomputed(self):
         """`restore-paths.sh` outlives the tool it calls back into."""
 
