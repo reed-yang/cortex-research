@@ -15,6 +15,7 @@ instructions. The following files are intentionally tracked and public.
 | [Runtime credentials](runbooks/runtime-credentials.md) | Keychain and age references, scoped checkout commands |
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
 | [Operator skills](runbooks/operator-skills.md) | OCR for PDF-only papers through an accepted, digest-pinned skill |
+| [0.1.29](releases/0.1.29.md) | Retrieval query and converted-title fixes after 0.1.28 |
 | [0.1.28](releases/0.1.28.md) | Idea fragments, one-token Capture parsing and paper-level research evidence |
 | [0.1.27](releases/0.1.27.md) | OCR for PDF-only papers through an accepted operator skill |
 | [0.1.26](releases/0.1.26.md) | Durable age credential resolution |
