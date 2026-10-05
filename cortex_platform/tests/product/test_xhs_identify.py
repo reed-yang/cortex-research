@@ -96,6 +96,49 @@ def test_a_url_written_in_the_cited_text_is_from_text() -> None:
     assert blog["url_state"] == "from_text"
 
 
+@pytest.mark.parametrize(
+    ("text", "proposed"),
+    [
+        # A different ID beside the written one, and an ID with none written.
+        ("arXiv:2601.00042 Fast Inference from Transformers", "2601.00099"),
+        ("Fast Inference from Transformers", "1706.03762"),
+    ],
+)
+def test_a_model_arxiv_id_not_written_in_the_cited_text_is_dropped(
+    text: str, proposed: str
+) -> None:
+    outcome = identify.identify(
+        "", [(1, text)],
+        [model_item(title="Fast Inference from Transformers", image=1,
+                    quote="Fast Inference from Transformers", arxiv_id=proposed)],
+    )
+    model = [item for item in outcome.items if item["origin"] != "rule"]
+    assert len(model) == 1
+    assert model[0]["arxiv_id"] is None
+    assert not model[0]["item_key"].startswith("arxiv:")
+    assert proposed not in {item["arxiv_id"] for item in outcome.items}
+
+
+def test_a_merged_item_keeps_the_caption_its_quote_was_checked_against() -> None:
+    outcome = identify.identify(
+        "Review of A Real Paper Title arXiv:2601.00042",
+        [(1, "arXiv:2601.00042")],
+        [model_item(title="A Real Paper Title", image=None,
+                    quote="Review of A Real Paper Title", arxiv_id="2601.00042")],
+    )
+    (item,) = outcome.items
+    assert (item["origin"], item["image"], item["arxiv_id"]) == ("rule+model", None, "2601.00042")
+    # The image is preferred when it shows the title and quote too.
+    outcome = identify.identify(
+        "Review of A Real Paper Title arXiv:2601.00042",
+        [(1, "Review of A Real Paper Title arXiv:2601.00042")],
+        [model_item(title="A Real Paper Title", image=None,
+                    quote="Review of A Real Paper Title", arxiv_id="2601.00042")],
+    )
+    (item,) = outcome.items
+    assert (item["origin"], item["image"]) == ("rule+model", 1)
+
+
 def test_identify_with_no_model_items_keeps_rule_items() -> None:
     outcome = identify.identify(CAPTION, TRANSCRIPTIONS, [])
     assert {item["arxiv_id"] for item in outcome.items} == {"1706.03762", "2312.00752"}

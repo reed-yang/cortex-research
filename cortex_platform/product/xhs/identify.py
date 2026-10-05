@@ -4,7 +4,8 @@ Identification reads a note's caption and each image's verbatim transcription
 and returns the papers, blogs and other items the note recommends. Rules find
 arXiv IDs and URLs in the text. The model proposes items with a verbatim
 quote; an item survives only when its quote and title both occur, after
-whitespace and case normalization, in the text it cites. Model output is
+whitespace and case normalization, in the text it cites, and keeps a model
+arXiv ID or URL only when that text writes it. Model output is
 untrusted until it passes these checks, and a model failure never becomes an
 empty list: the caller fails the task instead.
 """
@@ -296,13 +297,29 @@ def verbatim_filter(
     return kept, dropped
 
 
+def arxiv_ids_in(text: str) -> set[str]:
+    """Every canonical arXiv ID written in `text`."""
+
+    found: set[str] = set()
+    for match in _ARXIV_RE.finditer(text or ""):
+        try:
+            found.add(canonicalize_arxiv_id(match.group(1)).authority_id)
+        except ValueError:
+            continue
+    return found
+
+
 def _model_item(
     item: Mapping[str, Any], raw_texts: Mapping[int | None, str]
 ) -> dict[str, Any]:
     kind = str(item["kind"])
     image = item.get("image")
     title = str(item["title"])
+    # Like a URL, an arXiv ID counts only when it is written in the cited
+    # text; any other model ID is a guess and the item stays title-only.
     arxiv_id = _arxiv(item.get("arxiv_id")) if kind == "paper" else None
+    if arxiv_id is not None and arxiv_id not in arxiv_ids_in(raw_texts.get(image, "")):
+        arxiv_id = None
     url: str | None = None
     url_state = "none"
     if kind != "paper":
@@ -352,7 +369,16 @@ def merge_items(
         if arxiv_id and arxiv_id in by_arxiv:
             rule = by_arxiv.pop(arxiv_id)
             candidate["origin"] = "rule+model"
-            if candidate["image"] is None:
+            # The rule's image is preferred only when it also shows the
+            # model's title and quote; otherwise the item keeps the place
+            # its quote was checked against.
+            shown = normalize_match_text(raw_texts.get(rule["image"], ""))
+            if (
+                candidate["image"] is None
+                and rule["image"] is not None
+                and normalize_match_text(candidate["title"]) in shown
+                and normalize_match_text(candidate["quote"]) in shown
+            ):
                 candidate["image"] = rule["image"]
             merged.append(candidate)
             continue
