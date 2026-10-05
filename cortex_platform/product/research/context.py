@@ -165,12 +165,14 @@ def citation_labels(packet):
     return labels, re.compile(rf"\[([{prefixes}][^\]]*)\]")
 
 
-#: An immediate inline link, skipped whole: text with at most one level of
-#: nested brackets, a plain destination with balanced parentheses or a <...>
-#: destination, and an optional "...", '...' or (...) title.
+#: Link text with at most one level of nested brackets.
+_LINK_TEXT = r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]"
+#: An immediate inline link, skipped whole: link text, a plain destination with
+#: balanced parentheses or a <...> destination, and an optional "...", '...' or
+#: (...) title. retrieval_query reads links and labels with the same scan.
 _INLINE_LINK = (
-    r"\[(?:[^\[\]]|\[[^\[\]]*\])*\]"
-    r"\(\s*(?:<[^<>\n]*>|(?:[^\s()]|\([^\s()]*\))*)"
+    _LINK_TEXT
+    + r"\(\s*(?:<[^<>\n]*>|(?:[^\s()]|\([^\s()]*\))*)"
     r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
 )
 #: An ASCII bracket whose body starts like a label; it must be a group. A

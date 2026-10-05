@@ -141,16 +141,30 @@ def _named(raw, heads, titles):
     return _section_window(raw, heads, found[0], found[-1], extend=True) if found else None
 
 
+def _converted_title(raw, heads):
+    """Whether the second heading is the converted page's title right after the first.
+
+    Paper ingestion writes the metadata title and then the converted page, whose
+    own title heading comes first at the same level with nothing but blank lines
+    between the two. Its text can differ (a footnote mark, rendered math).
+    """
+    if len(heads) < 2 or heads[1][0] > heads[0][0]:
+        return False
+    title_end = raw.find(b"\n", heads[0][2]) + 1
+    return not raw[title_end:heads[1][2]].strip()
+
+
 def _author_section(raw, heads):
     """The paper's first Limitations section before References, else its Conclusion.
 
     The first heading is taken as the document title (paper ingestion writes
-    one, and the converted page may repeat it at the same level). Its span can
-    be the whole paper, so neither it nor a same-level repeat is a candidate
-    section or a reference boundary.
+    one). The converted page repeats it at the same level, possibly with
+    footnote or math text that makes the two differ. A title's span can be the
+    whole paper, so the title, its exact repeats and a converted title right
+    after it are neither candidate sections nor reference boundaries.
     """
-    sections = [n for n, (level, title, _) in enumerate(heads)
-                if n and (level, title) != heads[0][:2]]
+    first = 2 if _converted_title(raw, heads) else 1
+    sections = [n for n in range(first, len(heads)) if heads[n][:2] != heads[0][:2]]
     stop = next((k for k, n in enumerate(sections) if _REFERENCES.search(heads[n][1])), len(sections))
     for word in ("limitation", "conclusion"):
         for n in sections[:stop]:

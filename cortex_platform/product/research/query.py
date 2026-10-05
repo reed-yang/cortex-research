@@ -9,6 +9,7 @@ import unicodedata
 from collections.abc import Iterable
 
 from ..sources.search import MAX_QUERY_BYTES, MAX_QUERY_TERMS, query_terms
+from .context import _INLINE_LINK, _LABEL_BRACKET, _LINK_TEXT
 
 #: English words that describe the requested answer format rather than its topic.
 FORMAT_TERMS = frozenset(
@@ -16,27 +17,60 @@ FORMAT_TERMS = frozenset(
     "sentence sentences paragraph paragraphs bullet bullets concise concisely briefly "
     "markdown latex please summarize summarise".split()
 )
-# An inline Markdown link opener; _link_end decides whether a link really follows.
-_LINK_OPEN = re.compile(r"\[([^\[\]]*)\]\(")
-# After a link destination: an optional "...", '...' or (...) title, then ")".
-_LINK_TAIL = re.compile(r"""(?: (?:"[^"]*"|'[^']*'|\([^()]*\)))? ?\)""")
-# Bracketed source and document label groups: [S1], [S1, S2], [S1 S2], [S1-S3], [D1],
-# and label-shaped malformed groups such as [S9a].
-_LABELS = re.compile(
-    r"\[\s*[SsDd]\s*[0-9]{1,3}[a-z]?"
-    r"(?:(?:\s*[-–,;，、]\s*|\s+)(?:[SsDd]\s*)?[0-9]{1,3}[a-z]?)*\s*\]")
+_LINK_TEXT_PREFIX = re.compile(_LINK_TEXT)
+
+
+def _nested_parentheses(depth):
+    """Destination text without spaces whose parentheses nest at most depth levels."""
+    text = r"[^\s()]*"
+    for _ in range(depth):
+        text = rf"(?:[^\s()]|\({text}\))*"
+    return text
+
+
+#: A destination that nests parentheses deeper than the answer grammar reads,
+#: up to 32 levels, with the same optional title.
+_DEEP_DESTINATION = (
+    rf"\(\s*{_nested_parentheses(32)}"
+    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
+)
+#: The answer's citation scan (inline link, then label bracket) first, so labels
+#: are read exactly as answers cite. A label bracket takes a deep destination
+#: right after it, and other text before one is read as a link, so no
+#: destination becomes search terms.
+_QUERY_SCAN = re.compile(
+    rf"{_INLINE_LINK}|{_LABEL_BRACKET}(?:{_DEEP_DESTINATION})?|{_LINK_TEXT}{_DEEP_DESTINATION}"
+)
 # Explicit answer-length requirements only; other numbers, years and versions stay.
-# A CJK unit must close the span (a length suffix, punctuation, a space or the end),
-# so a count inside a compound term such as 1024字节 or 2段式 is kept, and so is an
-# ordinal such as 第2段. After a CJK length prefix, the suffix 内 also closes it.
-_COUNT = r"(?<![0-9A-Za-z.第])\d{1,5}\s*(?:个\s*)?"
-_CJK_UNIT = r"(?:段落|句话|字|词|句|段|条)"
+# A count may be a range (800-1000, 300到500, 2 to 3). After a CJK unit the span
+# must end at a length suffix, 的, punctuation, a space or the end of the text, or
+# at 内 before an answer verb (300字内回答). So a count inside a compound term such
+# as 1024字节, 2段式, 2段分析法, 8字符串 or 500字内存 is kept, and so is an ordinal
+# such as 第2段 or 第 2段. An answer verb may follow the unit directly only after a
+# strong CJK length prefix, 字数 or 用 (用300字总结); after a strong prefix the suffix
+# 内 always ends the span, and 字数 may be followed by a bare count (字数控制在500以内).
+# 在, 用 and 字数 start a requirement only at the start of a word or after 请, so
+# 现在, 使用 and 汉字数 keep their characters. A hyphenated English size is a
+# requirement only for words, sentences, paragraphs and bullets (a 300-word
+# summary), not for model or scale sizes such as a 128-token context.
+_NUMBER = r"(?<![0-9A-Za-z.第])(?<!第 )\d{1,5}(?:\s*(?:[-–~～到至]|to(?=\s))\s*\d{1,5})?"
+_COUNT = rf"{_NUMBER}\s*(?:个\s*)?"
+_CJK_UNIT = r"(?:段落|句话|字符(?!串)|字|词|句|段|条)"
+_ANSWER_VERB = r"(?:总结|概括|概述|回答|介绍|说明|描述|解释|阐述|分析|论述|讲解|写)"
+_CJK_CLOSE = rf"(?:以内|之内|左右|的|内?(?!\w)|内(?={_ANSWER_VERB}))"
+_BEFORE_VERB = rf"(?={_ANSWER_VERB})"
+_CJK_PREFIX = r"(?:控制在|不超过|不多于|少于)"
+_WORD_START = r"(?:(?<![^\W\d_])|(?<=请))"
 _ENGLISH_PREFIX = r"(?:\b(?:within|under|in|at most|no more than)\s+)?"
 _LENGTH = re.compile(
-    rf"(?:控制在|不超过|少于)\s*{_COUNT}{_CJK_UNIT}(?:以内|之内|左右|内|(?!\w))"
-    rf"|{_ENGLISH_PREFIX}{_COUNT}{_CJK_UNIT}(?:以内|之内|左右|内?(?!\w))"
-    rf"|{_ENGLISH_PREFIX}{_COUNT}"
-    r"(?:words?|characters?|chars?|sentences?|paragraphs?|bullets?|points?|tokens?)"
+    rf"{_CJK_PREFIX}\s*{_COUNT}{_CJK_UNIT}(?:内|{_CJK_CLOSE}|{_BEFORE_VERB})"
+    rf"|{_WORD_START}字数\s*[:：]?\s*(?:{_CJK_PREFIX}|在)?\s*{_COUNT}{_CJK_UNIT}?(?:{_CJK_CLOSE}|{_BEFORE_VERB})"
+    rf"|{_WORD_START}在\s*{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
+    rf"|{_WORD_START}用\s*{_COUNT}{_CJK_UNIT}(?:{_CJK_CLOSE}|{_BEFORE_VERB})"
+    rf"|{_ENGLISH_PREFIX}{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
+    rf"|{_ENGLISH_PREFIX}{_NUMBER}"
+    r"(?:\s*(?:words?|characters?|chars?|sentences?|paragraphs?|bullets?|points?|tokens?)"
+    r"|-(?:words?|sentences?|paragraphs?|bullets?))"
     r"(?![A-Za-z])(?:以内|之内|内|左右)?",
     re.IGNORECASE,
 )
@@ -49,49 +83,24 @@ def _normalized(text):
     return " ".join(text.split())
 
 
-def _link_end(text, index):
-    """Where an inline link whose destination starts at index ends, or None if none does.
+def _without_citations(text):
+    """Read with the answer's citation scan: label-led brackets go, links keep their text.
 
-    The destination is <...> or non-space text whose parentheses balance at any
-    depth; an optional "...", '...' or (...) title may follow it.
+    A bracket that cited_labels would read as a label group, malformed ones
+    included, is removed with any deeper destination right after it; an inline
+    link, including one whose destination nests
+    parentheses deeper than answers read, is replaced by its text, cleaned the
+    same way, so destinations and titles never become search terms.
     """
-    if text.startswith("<", index):
-        close = text.find(">", index)
-        if close < 0:
-            return None
-        index = close + 1
-    else:
-        depth = 0
-        while index < len(text) and text[index] != " ":
-            if text[index] == "(":
-                depth += 1
-            elif text[index] == ")":
-                if not depth:
-                    return index + 1
-                depth -= 1
-            index += 1
-        if depth:
-            return None
-    tail = _LINK_TAIL.match(text, index)
-    return None if tail is None else tail.end()
-
-
-def _link_texts(text):
-    """Inline links keep their text; destinations and titles never become search terms."""
-    kept, position = [], 0
-    for match in _LINK_OPEN.finditer(text):
-        if match.start() < position:
-            continue
-        end = _link_end(text, match.end())
-        if end is not None:
-            kept += [text[position:match.start()], f" {match[1]} "]
-            position = end
-    return "".join(kept) + text[position:]
+    def replace(match):
+        if match[1] is not None:
+            return " "
+        return f" {_without_citations(_LINK_TEXT_PREFIX.match(match[0])[0][1:-1])} "
+    return _QUERY_SCAN.sub(replace, text)
 
 
 def _pieces(text):
-    text = _link_texts(_normalized(text))
-    text = _LENGTH.sub(" ", _LABELS.sub(" ", text))
+    text = _LENGTH.sub(" ", _without_citations(_normalized(text)))
     return [piece for piece in _PIECE.findall(text)
             if piece.casefold() not in FORMAT_TERMS and any(query_terms(piece))]
 

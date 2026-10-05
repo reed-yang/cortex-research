@@ -24,7 +24,7 @@ OPERATIONS: frozenset[str] = frozenset(
 )
 
 # The frozen store allowlist an effect failure has to land in
-# (`control/store.py:150`). Nothing else may cross this boundary.
+# (`control/store.py:151`). Nothing else may cross this boundary.
 FAILURE_CATEGORIES: frozenset[str] = frozenset(
     {
         "adapter_unavailable",
