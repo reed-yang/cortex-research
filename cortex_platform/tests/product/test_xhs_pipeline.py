@@ -451,6 +451,43 @@ def test_a_crash_between_the_file_write_and_the_registration_reuses_the_version(
     assert tasks(store, "save")[0]["attempts"] == 2
 
 
+def test_a_save_whose_lease_passed_on_never_replaces_the_registered_version(
+    store: ControlStore, supervisor: PipelineSupervisor, clock, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cortex_platform.product.xhs import drain as drain_module
+
+    _three_images(supervisor)
+    supervisor.identify[PAPER_TEXT] = [model_items()]
+    real = drain_module.write_version
+    stalled: list[bool] = []
+    reclaimed: list[Any] = []
+
+    def paused(parent, version, files, *, guard=None):
+        if not stalled:
+            # The first holder stalls past its lease; another drain reclaims
+            # the save and registers what it wrote.
+            stalled.append(True)
+            clock.advance(901)
+            reclaimed.append(pipeline(store, supervisor).drain())
+            files = {**files, "note.md": b"read before the lease passed on\n"}
+        return real(parent, version, files, guard=guard)
+
+    monkeypatch.setattr(drain_module, "write_version", paused)
+    drain = pipeline(store, supervisor)
+    drain.pull()
+    report = drain.drain()
+    assert [unit.outcome for unit in report.units if unit.kind == "save"] == ["lost"]
+    assert [unit.outcome for unit in reclaimed[0].units if unit.kind == "save"] == ["done"]
+    note = store.get_xhs_note(note_id(1))
+    assert (note["state"], note["content_version"]) == ("saved", 1)
+    folder = _version_dir(tmp_path, 1, 1)
+    assert store.latest_content_binding(note["source_id"])["tree_sha256"] == tree_sha256(
+        read_tree(folder)
+    )
+    assert b"read before the lease passed on" not in (folder / "note.md").read_bytes()
+
+
 def test_an_unregistered_version_with_other_content_is_replaced(tmp_path: Path) -> None:
     write_version(tmp_path, 1, {"note.md": b"left by a crash\n"})
     digest = write_version(tmp_path, 1, {"note.md": b"current\n", "assets/1-x.png": b"\x89PNG"})

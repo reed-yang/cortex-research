@@ -138,6 +138,10 @@ class Deferred(Exception):
         self.seconds = seconds
 
 
+class LeaseLost(Exception):
+    """The task's lease passed to another holder before its files were written."""
+
+
 @dataclass(frozen=True)
 class UnitOutcome:
     """What one claimed task came to.
@@ -510,7 +514,7 @@ class SaveHandler(TaskHandler):
         return {"note_id": note["note_id"], "version": int(payload["version"])}
 
     def finish(self, drain, task, engine):
-        return drain.write_note_version(engine["note_id"], engine["version"])
+        return drain.write_note_version(engine["note_id"], engine["version"], task=task)
 
 
 class BlogImportHandler(TaskHandler):
@@ -539,7 +543,7 @@ class BlogImportHandler(TaskHandler):
         normalized, authority_id = blog_url_identity(recommendation["url"])
         if (engine["normalized_url"], engine["authority_id"]) != (normalized, authority_id):
             raise ValueError("blog fetch answers another link")
-        return drain.write_blog_version(recommendation, engine)
+        return drain.write_blog_version(recommendation, engine, task=task)
 
 
 class CaptureLinkHandler(TaskHandler):
@@ -687,6 +691,8 @@ class XhsDrain:
         if handler.operation is None:
             try:
                 result = handler.finish(self, task, payload)
+            except LeaseLost:
+                return UnitOutcome(str(task["id"]), str(task["kind"]), "lost")
             except (NotFound, ValueError, KeyError, TypeError):
                 return self._fail(task, "invalid_response")
             except OSError:
@@ -730,6 +736,8 @@ class XhsDrain:
             try:
                 engine = validate_engine(handler.operation, execution.engine)
                 result = handler.finish(self, task, engine)
+            except LeaseLost:
+                return UnitOutcome(str(task["id"]), str(task["kind"]), "lost")
             except (NotFound, ValueError, KeyError, TypeError):
                 return self._fail(task, "invalid_response")
             except OSError:
@@ -874,7 +882,28 @@ class XhsDrain:
             (int(image["ordinal"]), self.transcription(note_id, image)) for image in images
         ]
 
-    def write_note_version(self, note_id: str, version: int) -> dict[str, Any]:
+    def publish_guard(
+        self, task: Mapping[str, Any] | None, source_kind: str, authority_id: str, version: int
+    ):
+        """What a version write checks under its directory lock: the task still
+        holds its lease, and nobody registered this version meanwhile."""
+
+        if task is None:
+            return None
+
+        def guard() -> None:
+            current = self.store.get_xhs_task(str(task["id"]))
+            if current["state"] != "running" or current["revision"] != task["revision"]:
+                raise LeaseLost()
+            if self.store.next_content_version(source_kind, authority_id) > version:
+                # A retry takes the next version.
+                raise FileExistsError("content version is already registered")
+
+        return guard
+
+    def write_note_version(
+        self, note_id: str, version: int, *, task: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Write `<note_id>/v<version>/` and describe it for the save record."""
 
         note = self.store.get_xhs_note(note_id)
@@ -899,7 +928,12 @@ class XhsDrain:
                 files[name] = (staging / name).read_bytes()
         files["note.md"] = render_note(note, blogger, images, recommendations).encode("utf-8")
         files["transcription.md"] = render_transcription(images, texts).encode("utf-8")
-        digest = write_version(self.root(NOTES_ROOT_ID) / note_id, version, files)
+        digest = write_version(
+            self.root(NOTES_ROOT_ID) / note_id,
+            version,
+            files,
+            guard=self.publish_guard(task, "xhs_note", note_id, version),
+        )
         return {
             "version": version,
             "tree_sha256": digest,
@@ -924,7 +958,11 @@ class XhsDrain:
         return self.root(BLOGS_ROOT_ID) / authority_id[:16] / STAGING_DIRECTORY
 
     def write_blog_version(
-        self, recommendation: Mapping[str, Any], engine: Mapping[str, Any]
+        self,
+        recommendation: Mapping[str, Any],
+        engine: Mapping[str, Any],
+        *,
+        task: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Write the blog's next version: the fetched article and private raw
         files, and `notes.md` naming every note that recommends it, each with
@@ -979,7 +1017,10 @@ class XhsDrain:
         ).encode("utf-8")
         version = self.store.next_content_version("blog", authority_id)
         digest = write_version(
-            self.root(BLOGS_ROOT_ID) / authority_id[:16], version, files
+            self.root(BLOGS_ROOT_ID) / authority_id[:16],
+            version,
+            files,
+            guard=self.publish_guard(task, "blog", authority_id, version),
         )
         origin_failure = metadata.get("origin_failure") or {}
         return {

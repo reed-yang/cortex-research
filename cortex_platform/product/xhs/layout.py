@@ -8,17 +8,21 @@ path and content hash; the Control binding records it.
 A version directory left by a crash between the rename and the registration
 is recognised by its digest and reused. One with other content was never
 registered (its version is the next one), so nothing reads it and it is
-replaced.
+replaced. Writers of one directory take turns under a lock on it, and the
+caller's guard runs under that lock before anything is staged or replaced:
+a holder whose lease passed on, or a version registered meanwhile, stops
+there.
 """
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import shutil
 import unicodedata
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from cortex_platform.product.sources.identity import xhs_note_permalink
 
@@ -50,8 +54,18 @@ def _check_name(name: str) -> None:
         raise ValueError("version file name is invalid")
 
 
-def write_version(parent: Path, version: int, files: Mapping[str, bytes]) -> str:
-    """Write `<parent>/v<version>` from `files` (stage, then rename); return its digest."""
+def write_version(
+    parent: Path,
+    version: int,
+    files: Mapping[str, bytes],
+    *,
+    guard: Callable[[], None] | None = None,
+) -> str:
+    """Write `<parent>/v<version>` from `files` (stage, then rename); return its digest.
+
+    `guard` runs under the directory lock before anything is staged or
+    replaced, and raises to stop the write.
+    """
 
     if type(version) is not int or version < 1:
         raise ValueError("content version is invalid")
@@ -59,16 +73,36 @@ def write_version(parent: Path, version: int, files: Mapping[str, bytes]) -> str
         _check_name(name)
     digest = tree_sha256(files)
     parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    lock = os.open(parent, flags)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _write_locked(parent, version, files, digest, guard)
+    finally:
+        os.close(lock)
+
+
+def _write_locked(
+    parent: Path,
+    version: int,
+    files: Mapping[str, bytes],
+    digest: str,
+    guard: Callable[[], None] | None,
+) -> str:
     target = parent / f"v{version}"
     stale = parent / f".v{version}.stale"
     if target.is_dir() and not target.is_symlink():
         if tree_sha256(read_tree(target)) == digest:
             return digest
+        if guard is not None:
+            guard()
         if stale.exists():
             shutil.rmtree(stale)
         os.rename(target, stale)
     elif target.exists() or target.is_symlink():
         raise ValueError("version path is not a directory")
+    elif guard is not None:
+        guard()
     partial = parent / f".v{version}.partial"
     if partial.exists():
         shutil.rmtree(partial)
