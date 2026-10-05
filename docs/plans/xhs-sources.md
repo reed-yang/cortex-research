@@ -1,7 +1,11 @@
 # XHS notes, blogs and recommendation import
 
-Status: in progress on `feat/xhs-sources` (stacked on the Library reader,
-`docs/plans/library-reader.md`).
+Status: implemented on `feat/xhs-sources` (stacked on the Library reader,
+`docs/plans/library-reader.md`). Provider-free tests only; live provider
+acceptance is still pending (see the end of this file). Where the
+implementation differs from the first draft, the text below describes what was
+built; open limits are listed under [Known limits](#known-limits). Operator
+procedures are in `docs/runbooks/xhs.md`.
 
 ## Problem
 
@@ -95,6 +99,7 @@ Out of scope, each a follow-up:
   | `xhs_ocr_image` | `novita`, `glm`, `glm-app-id` |
   | `xhs_identify`, `xhs_resolve_link` | `sub2api-gpt` |
   | `blog_fetch` | `jina`, optional |
+  | `xhs_download_image` | none |
 
   This needs operation-scoped secret selection in the engine service. Today
   every configured alias is resolved for every effect. A missing XHS credential
@@ -182,7 +187,11 @@ The legacy `xhs-pull-scan` rows stay inert.
   - `xhs-notes`: one directory per note;
   - `blogs`: one directory per blog.
 
-  The plugin refuses to run, and says why, without both roots enabled.
+  The plugin refuses to run, and says why, without both roots enabled. A
+  root nested inside the corpus, or containing it, is reported as
+  `overlaps_corpus` and is not ready. `xhs_asset_root_paths` names the default
+  locations, `<data>/sources/xhs-notes` and `<data>/sources/blogs`, but no
+  command registers the roots yet (see Known limits).
 - Note layout: `<note_id>/v<N>/` contains:
   - `note.md`: caption, blogger, date, permalink and the recommendation list;
   - `transcription.md`: one section per image, in order, with each image's
@@ -231,33 +240,49 @@ honour the existing dispatch gate.
 | --- | --- | --- |
 | `list_page` (`scan:<user>:<scan>:<page>`) | TikHub `app_v2/get_user_posted_notes?user_id=&cursor=` (data at `data.data.notes`, `has_more`, cursor is the last note's `cursor`) | Upsert unseen notes as `discovered` and create `detail` tasks. Create the next page only if `has_more`, the page is under `max_list_pages`, and the page had at least one unseen non-`sticky` note. Record the blogger's scan outcome. |
 | `detail` (`detail:<note>`) | `app_v2/get_image_note_detail?note_id=` (note at `data.data[0].note_list[0]`); require `data.success` and returned id == requested id | Store the full caption, `time`, `user` and an ordered `images_list` (variant order `original`, `url_size_large`, `url`); create `download` tasks |
-| `download` (`download:<note>:<ordinal>`) | CDN GET, no cookies, ≤ 20 MiB, type by signature (JPEG, PNG, WebP, GIF) | Write the file into the note's staging directory under its hash. On HTTP 403 or 404, re-run `detail` once and match the image by `fileid`. |
+| `download` (`download:<note>:<ordinal>`) | CDN GET, no cookies, ≤ 20 MiB, type by signature (JPEG, PNG, WebP, GIF) | Write the file into the note's staging directory under its hash. HTTP 401, 403, 404 or 410 is `url_expired`: the image stays pending, `detail` is re-run once, and the refreshed images are matched by `fileid`. A second expiry is final. |
 | `ocr` (`ocr:<note>:<ordinal>:<sha256>`) | Novita `deepseek/deepseek-ocr-2`, prompt `<\|grounding\|>Convert the document to markdown.`, temperature 0, max_tokens 8000, image from local bytes; on failure GLM `layout_parsing`. Aggregate deadline 300 s, no internal retry loops longer than that. | Keep raw and markdown. `finish_reason == "length"` sets `truncated`; empty text sets `empty`. |
-| `identify` (`identify:<note>:<input sha256>`) | Rules, then `gpt-6-luna`, effort `xhigh`, no tools (see below) | Upsert recommendations; create `resolve` tasks for blog items without a usable URL |
+| `identify` (`identify:<note>:<input sha256>`) | Rules, then `gpt-6-luna`, effort `xhigh`, no tools (see below) | cortexd checks the child's input digest against the staged transcriptions and re-runs the rules, the verbatim filter and the merge on its own copy. Upsert recommendations by (note, item key); create `resolve` tasks for blog items without a usable URL |
 | `resolve` (`resolve:<rec>:<n>`) | Luna with `web_search`: exact title in, `{url \| null, page_title}` out; then fetch-and-verify | Set `url_state` |
 | `save` (`save:<note>:<version>`) | Write `v<N>` atomically (stage, then rename), compute the tree digest | Register or update the `xhs_note` source and binding in one transaction. The note becomes `saved`. |
 | `blog_import` (`blog:<rec>:<n>`) | `blog_fetch` | Register or reuse the `blog` source by identity; write the binding, the `source_links` row and `imported_source_id` together |
-| `capture_link` (`capture:<capture_id>`) | Read the Capture | When the Capture is consumed, link its source; when it fails, set `import_state=failed` |
+| `capture_link` (`capture:<capture_id>`) | Read the Capture | While the Capture is open, look again every 600 s without spending an attempt or a drain unit. When it is consumed, link its source; when it is dismissed or fails, set `import_state=failed` |
 
 A note's state advances only when all its images have reached a final download
 state, and then a final OCR state. `save` runs after `identify`. A note with a
 failed image is still saved, and the failure is shown. Retrying an image resets
-that image's task, then its OCR, then `identify` and `save`. The retry
-produces a new version.
+that image's task, then its OCR, then `identify` and `save`, and moves the note
+back to `detail_ok`. A download retry starts with `refreshed=false`, so an
+expired URL gets one fresh `detail`. The retry produces a new version. If
+cortexd stops between the version rename and its registration, the next save
+reuses a version whose tree digest matches and replaces an unregistered one
+with other content.
 
 Failures carry a category:
 
 | Category | Handling |
 | --- | --- |
-| `auth`, `payment` | The task fails and the tick stops; Status shows it. These calls are not billed. |
-| `rate_limited`, `transient`, `outcome_unknown` | Retry after 10 min, then 1 h, then 6 h; at most 3 attempts, then `failed` |
+| `auth`, `payment` | The task fails and the tick stops; Status shows it. These calls are not billed, so the reserved call is returned to the daily count. A configured credential that cannot be resolved is handled as `auth`. |
+| `rate_limited`, `transient`, `outcome_unknown` | Retry after 10 min, then 1 h, then 6 h; the fourth failure is final (`failed`) |
 | `upstream_error` (TikHub `data.success` false or a mismatched id; such calls are still billed), `not_found`, `invalid_response`, `url_expired` | Not retried automatically |
 
 A child timeout is `outcome_unknown`. A paid call may have been charged twice;
-that is accepted and documented.
+that is accepted and documented. A provider child that reports a category
+outside this list is recorded as `outcome_unknown`. A lease that expires is
+reclaimed by the next drain; one that has used its whole retry budget applies
+the same failure effects to the image or note. If the dispatch gate closes
+mid-tick, the claimed task and its reserved call are returned.
+
+A model failure leaves the note at `ocr_done` with `last_error` set and writes
+no recommendation. Recommendations an earlier identification found and a later
+one does not are kept; `identify_run` names the run that produced each. An
+identification overtaken by an image retry is recorded as stale.
 
 Usage caps per day (config, defaults): `tikhub` 100, `ocr` 1000, `gpt` 300.
-When a provider reaches its cap, its tasks wait until the next day. A full
+`tikhub` counts list and detail calls, `ocr` one per OCR task (the GLM fallback
+inside it included), `gpt` identification and link search. CDN downloads and
+blog fetches are not capped. When a provider reaches its cap, its tasks stay
+pending, unclaimed, until the next UTC day. A full
 backfill is an explicit `cortex xhs scan --full --max-pages N`. The CLI prints
 the estimated call count before it enqueues anything and needs `--yes`.
 
@@ -313,10 +338,18 @@ the estimated call count before it enqueues anything and needs `--yes`.
     the existing approve endpoint.
   - A blog with a URL gets a `blog_import` task.
   - `other` items, and blogs without a URL, are refused.
+
+  Dispositions are `capture_staged`, `capture_reused`, `blog_import_queued`
+  and `refused`, with reason `not_found`, `already_imported`,
+  `not_importable`, `no_url` or `no_arxiv_id`. A staged paper's `import_state`
+  is `staged`; a queued blog's is `importing`.
 - `POST /api/v1/sources/{note_source_id}/recommendations/{id}/link` with
   `{url, expected_revision}` validates the URL and sets `operator_set`.
 - `POST /api/v1/sources/{note_source_id}/images/{ordinal}/retry` with
-  `{expected_revision}` resets a failed image.
+  `{expected_revision}` resets a failed image. Control answers 400 for an
+  ordinal above 100; the Web gateway admits 1 to 100.
+- A link edit queues the next save when the note is `identified` or `saved`.
+  A 409 revision conflict returns the current note header or recommendation.
 - Every command uses the existing idempotency-key receipt and revision checks.
   The Capture DTO stays unchanged; links are separate rows. One paper or blog
   recommended by several notes has one source and several links.
@@ -338,11 +371,15 @@ All read routes use the same authorization as the other source GETs and send
     its Capture state, and its imported source ID and kind.
 
   Never include signed URLs, raw responses, private paths or task leases.
+  The projection never reads task rows. Free text is redacted line by line,
+  and a link that matches a sensitive pattern is returned as `null`.
 - `GET /api/v1/sources/{id}/links` returns `recommended_in` (note source,
   title, image ordinal) for any source, and `recommends` for a note.
 - `GET /api/v1/xhs/status` returns enabled, roots ready, followed bloggers
   with their last scan outcome and time, task counts by state, today's usage
-  against the caps, and the last failure category per provider.
+  against the caps, and the last failure category per provider (`tikhub`,
+  `cdn`, `ocr`, `gpt`, `blog`, derived from the tasks' last errors). It is the
+  same shape `cortex xhs status` prints, built by `product/xhs/status.py`.
 - The Web gateway allowlists these routes with exact query keys and the three
   POSTs with exact bodies. Add decoders in `research-contracts.ts`.
 
@@ -360,7 +397,9 @@ All read routes use the same authorization as the other source GETs and send
     "Identified (auto)", with an editable link for blogs and its `url_state`
     label;
   - a checkbox per importable row and "Import selected". That button stages,
-    then approves each paper Capture and shows the outcome per row;
+    then approves each still-pending paper Capture one at a time through the
+    existing approve endpoint and shows the outcome per row; a reused Capture
+    past pending is reported, not approved again;
   - failed images as their own rows, each with Retry;
   - then the shared reader, with tabs Note and Transcription.
 
@@ -385,8 +424,14 @@ All read routes use the same authorization as the other source GETs and send
 - `list`
 - `status`
 - `enable` and `disable`: both schedule rows, by expected revision.
-- `scan [--user ID] [--full --max-pages N --yes]`
+- `scan [--user ID] [--full --max-pages N --yes]`. A scan skips bloggers
+  whose previous scan still has a page to run, and refuses while the plugin
+  would refuse. `--full` needs `--max-pages` (1 to 1000); without `--yes` it
+  prints the estimate, queues nothing and exits non-zero.
 - `retry --failed [--kind K]`
+
+Every command prints one JSON object. `list` and `status` never create or
+migrate the Control database, and no command calls a provider.
 
 Configuration:
 
@@ -464,3 +509,36 @@ Live provider acceptance follows this PR, after operator approval:
 1. Store the TikHub and GPT keys as references.
 2. Run a 27-note test set and measure the identification match rate.
 3. Approve the backfill budget, then run the backfill.
+
+## Known limits
+
+Left open by this change, each a follow-up:
+
+- No command registers the `xhs-notes` and `blogs` asset roots. On an
+  installation without them, `cortex xhs status` reports both as `missing`
+  and every scan refuses with `roots_not_ready`.
+- The TikHub detail response shape follows the recorded probe. The live
+  contract is confirmed only by the operator-approved acceptance above.
+- No test runs the provider operations through a real effect child. The
+  handlers are tested in-process with mocked transports, and the drain with a
+  scripted supervisor.
+- The public-address check for blog and link fetches is a Python-level policy
+  with address pinning, not an OS egress control. Gzip decompression is
+  bounded per chunk only.
+- A link edit does not cancel a pending link search. Its answer is recorded as
+  stale, but its GPT call still counts against the cap.
+- A Capture stuck in `uncertain` keeps its `capture_link` task waiting
+  indefinitely. It spends no drain unit.
+- The note projection lists an `asset_path` for an image downloaded after the
+  latest save. The asset route answers 404 for it until the next save, and the
+  Web says the image is not in the saved copy yet.
+- `xhs_notes` has no index on `source_id`; note, import and retry requests scan
+  the table.
+- The Web control workflow process gate does not open an XHS note, and the
+  committed Status screenshots predate the XHS line. A transcription already
+  loaded in the note record is not reread after a link save or retry until the
+  record is reopened.
+- `tests/packaging/test_wheels.py` still lists only the arXiv-path dependencies
+  of `cortex-research`; `trafilatura` is declared but not listed there.
+- `tools.with_engine_secrets` overlays only the engine bindings, not `tikhub`,
+  `sub2api-gpt` or `jina`.
