@@ -534,8 +534,9 @@ Left open by this change, each a follow-up:
 - The note projection lists an `asset_path` for an image downloaded after the
   latest save. The asset route answers 404 for it until the next save, and the
   Web says the image is not in the saved copy yet.
-- `xhs_notes` has no index on `source_id`; note, import and retry requests scan
-  the table.
+- When the response to a bulk import is lost, the note record cannot resume
+  approving the Captures that import staged; they stay pending in the Inbox,
+  where they can be approved.
 - The Web control workflow process gate does not open an XHS note, and the
   committed Status screenshots predate the XHS line. A transcription already
   loaded in the note record is not reread after a link save or retry until the
