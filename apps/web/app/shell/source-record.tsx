@@ -1,10 +1,13 @@
 "use client";
 
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import type { SourceProjection } from "../control/research-contracts";
-import { copy } from "./copy";
+import type { CortexControlClient } from "../control/client";
+import type { SourceLinks, SourceProjection } from "../control/research-contracts";
+import type { ReaderTab } from "../control/source-knowledge";
+import { copy, label } from "./copy";
 
 type BadgeTone = "default" | "secondary" | "destructive" | "outline";
 
@@ -25,15 +28,173 @@ export function importStateTone(state: string): BadgeTone {
 // formatted in one fixed locale and UTC rather than the reader's machine.
 const DATE = new Intl.DateTimeFormat("en", { day: "numeric", month: "short", timeZone: "UTC", year: "numeric" });
 
-function readableDate(value: string): string {
+export function readableDate(value: string): string {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : DATE.format(parsed);
+}
+
+// The reader tabs each kind maps onto the stored content kinds (Control's
+// reader serves a blog's `article.md` and an XHS note's `transcription.md` as
+// `full_text`). A paper keeps the reader's own three tabs.
+const READER_TABS: Record<string, ReaderTab[] | undefined> = {
+  blog: [["full_text", copy.reader.article], ["notes", copy.reader.notes]],
+  xhs_note: [["notes", copy.reader.note], ["full_text", copy.reader.transcription]],
+};
+
+export function readerTabs(kind: string): ReaderTab[] | undefined {
+  return READER_TABS[kind];
+}
+
+export type SourceRecordProps = {
+  client: CortexControlClient;
+  detail: SourceProjection;
+  // Opens another source in the Library, such as the note that recommends this one.
+  onOpenSource: (id: string) => void;
+};
+
+// The notes that recommend this source, each naming the image (or the
+// caption) the recommendation came from. Nothing is shown when no note does;
+// a read that fails says so, without hiding the record around it.
+export function RecommendedIn({ client, sourceId, onOpenSource }: { client: CortexControlClient; sourceId: string; onOpenSource: (id: string) => void }) {
+  const [links, setLinks] = useState<{ sourceId: string; value: SourceLinks | null } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    client.getSourceLinks(sourceId, controller.signal).then(
+      (value) => { if (!controller.signal.aborted) setLinks({ sourceId, value }); },
+      () => { if (!controller.signal.aborted) setLinks({ sourceId, value: null }); },
+    );
+    return () => controller.abort();
+  }, [client, sourceId]);
+  // An answer for a source the record has moved past is never shown.
+  const current = links?.sourceId === sourceId ? links : null;
+  if (!current) return null;
+  if (!current.value) return <p className="text-sm text-muted-foreground" role="status">{copy.links.unreadable}</p>;
+  if (!current.value.recommended_in.length) return null;
+  return (
+    <section aria-label={copy.links.title} className="flex flex-col gap-1 text-sm">
+      <ul className="flex flex-col gap-1">
+        {current.value.recommended_in.map((entry) => (
+          <li className="flex flex-wrap items-baseline gap-1" data-recommendation-link="" key={entry.recommendation_id}>
+            <span className="text-muted-foreground">{copy.links.title}</span>
+            <button className="font-medium underline-offset-2 hover:underline" onClick={() => onOpenSource(entry.source_id)} type="button">{entry.title}</button>
+            <span className="text-muted-foreground">· {label.noteEvidence(entry.image_ordinal)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function RecordHeader({ detail, badges }: { detail: SourceProjection; badges?: ReactNode }) {
+  return (
+    <>
+      <h3 className="text-base font-semibold">{detail.official_title}</h3>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Badge variant="outline">{label.sourceKind(detail.source_kind)}</Badge>
+        {badges}
+        <Badge variant={importStateTone(detail.import_state)}>{detail.import_state}</Badge>
+        <span className="text-muted-foreground">{copy.source.added} {readableDate(detail.created_at)} · {copy.source.updated} {readableDate(detail.updated_at)}</span>
+      </div>
+    </>
+  );
 }
 
 // Identifiers, the record's own counter and the exact instants are technical
 // detail, so they live behind a closed disclosure; the record itself shows the
 // title, what kind of source it is, where its import stands and readable dates.
-export function SourceRecord({ detail, detailError, selectedId }: { detail: SourceProjection | null; detailError: string | null; selectedId: string | null }) {
+function RecordDetails({ detail }: { detail: SourceProjection }) {
+  return (
+    <Collapsible className="flex w-full flex-col items-start gap-2">
+      <CollapsibleTrigger asChild>
+        <Button size="sm" type="button" variant="outline">{copy.source.details}</Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent aria-label={copy.source.details} className="flex w-full flex-col gap-3" data-details="source record" role="group">
+        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+          <dt className="text-muted-foreground">{copy.details.identifier}</dt>
+          <dd className="truncate font-mono text-xs">{detail.id}</dd>
+          <dt className="text-muted-foreground">{copy.details.authority}</dt>
+          <dd>{detail.authority}</dd>
+          <dt className="text-muted-foreground">{copy.details.authorityId}</dt>
+          <dd className="truncate">{detail.authority_id}</dd>
+          <dt className="text-muted-foreground">{copy.details.canonicalId}</dt>
+          <dd className="truncate">{detail.canonical_id}</dd>
+          <dt className="text-muted-foreground">{copy.details.sourceKind}</dt>
+          <dd>{detail.source_kind}</dd>
+          <dt className="text-muted-foreground">{copy.details.importState}</dt>
+          <dd>{detail.import_state}</dd>
+          <dt className="text-muted-foreground">{copy.details.sourceRevision}</dt>
+          <dd>{detail.revision}</dd>
+          <dt className="text-muted-foreground">{copy.details.sourceCreated}</dt>
+          <dd>{detail.created_at}</dd>
+          <dt className="text-muted-foreground">{copy.details.sourceUpdated}</dt>
+          <dd>{detail.updated_at}</dd>
+        </dl>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{copy.source.aliases}</span>
+          {detail.aliases.length ? (
+            <ul className="flex flex-col gap-1 text-sm">
+              {detail.aliases.map((alias) => (
+                <li className="flex items-center gap-2" key={alias.id}>
+                  <span className="text-muted-foreground">{alias.authority}</span>
+                  <code className="truncate font-mono text-xs">{alias.value}</code>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="text-sm text-muted-foreground">{copy.source.noAliases}</p>}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function PaperRecord({ client, detail, onOpenSource }: SourceRecordProps) {
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <RecordHeader detail={detail} />
+      <RecommendedIn client={client} onOpenSource={onOpenSource} sourceId={detail.id} />
+      <RecordDetails detail={detail} />
+    </div>
+  );
+}
+
+// A blog is web writing, not a reviewed paper, and the record says so before
+// anything else; the notes that led to it follow.
+function BlogRecord({ client, detail, onOpenSource }: SourceRecordProps) {
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <RecordHeader badges={<Badge variant="secondary">{copy.source.notPeerReviewed}</Badge>} detail={detail} />
+      <RecommendedIn client={client} onOpenSource={onOpenSource} sourceId={detail.id} />
+      <RecordDetails detail={detail} />
+    </div>
+  );
+}
+
+// Stands in for the XHS note record (its recommendations, images and import)
+// until that record is registered under `xhs_note` below.
+function XhsNoteRecordPlaceholder({ detail }: SourceRecordProps) {
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <RecordHeader detail={detail} />
+      <RecordDetails detail={detail} />
+    </div>
+  );
+}
+
+// The record each kind is read through. A kind with no record of its own is
+// shown as a paper is: title, badges, dates and the details disclosure.
+export const SOURCE_RECORDS: Record<string, ComponentType<SourceRecordProps> | undefined> = {
+  paper: PaperRecord,
+  blog: BlogRecord,
+  xhs_note: XhsNoteRecordPlaceholder,
+};
+
+export function SourceRecord({ client, detail, detailError, selectedId, onOpenSource }: {
+  client: CortexControlClient;
+  detail: SourceProjection | null;
+  detailError: string | null;
+  selectedId: string | null;
+  onOpenSource: (id: string) => void;
+}) {
   if (detailError) {
     return (
       <div className="flex flex-col items-start gap-2" role="alert">
@@ -48,54 +209,6 @@ export function SourceRecord({ detail, detailError, selectedId }: { detail: Sour
   if (!detail) {
     return <p className="text-sm text-muted-foreground">{selectedId ? copy.source.loading : copy.source.pick}</p>;
   }
-  return (
-    <div className="flex flex-col items-start gap-2">
-      <h3 className="text-base font-semibold">{detail.official_title}</h3>
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Badge variant="outline">{detail.source_kind}</Badge>
-        <Badge variant={importStateTone(detail.import_state)}>{detail.import_state}</Badge>
-        <span className="text-muted-foreground">{copy.source.added} {readableDate(detail.created_at)} · {copy.source.updated} {readableDate(detail.updated_at)}</span>
-      </div>
-      <Collapsible className="flex w-full flex-col items-start gap-2">
-        <CollapsibleTrigger asChild>
-          <Button size="sm" type="button" variant="outline">{copy.source.details}</Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent aria-label={copy.source.details} className="flex w-full flex-col gap-3" data-details="source record" role="group">
-          <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
-            <dt className="text-muted-foreground">{copy.details.identifier}</dt>
-            <dd className="truncate font-mono text-xs">{detail.id}</dd>
-            <dt className="text-muted-foreground">{copy.details.authority}</dt>
-            <dd>{detail.authority}</dd>
-            <dt className="text-muted-foreground">{copy.details.authorityId}</dt>
-            <dd className="truncate">{detail.authority_id}</dd>
-            <dt className="text-muted-foreground">{copy.details.canonicalId}</dt>
-            <dd className="truncate">{detail.canonical_id}</dd>
-            <dt className="text-muted-foreground">{copy.details.sourceKind}</dt>
-            <dd>{detail.source_kind}</dd>
-            <dt className="text-muted-foreground">{copy.details.importState}</dt>
-            <dd>{detail.import_state}</dd>
-            <dt className="text-muted-foreground">{copy.details.sourceRevision}</dt>
-            <dd>{detail.revision}</dd>
-            <dt className="text-muted-foreground">{copy.details.sourceCreated}</dt>
-            <dd>{detail.created_at}</dd>
-            <dt className="text-muted-foreground">{copy.details.sourceUpdated}</dt>
-            <dd>{detail.updated_at}</dd>
-          </dl>
-          <div className="flex flex-col gap-1">
-            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{copy.source.aliases}</span>
-            {detail.aliases.length ? (
-              <ul className="flex flex-col gap-1 text-sm">
-                {detail.aliases.map((alias) => (
-                  <li className="flex items-center gap-2" key={alias.id}>
-                    <span className="text-muted-foreground">{alias.authority}</span>
-                    <code className="truncate font-mono text-xs">{alias.value}</code>
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="text-sm text-muted-foreground">{copy.source.noAliases}</p>}
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
-  );
+  const Record = SOURCE_RECORDS[detail.source_kind] ?? PaperRecord;
+  return <Record client={client} detail={detail} onOpenSource={onOpenSource} />;
 }

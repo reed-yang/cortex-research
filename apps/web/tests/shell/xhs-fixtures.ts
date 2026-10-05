@@ -5,6 +5,12 @@
 type Row = Record<string, unknown>;
 
 export const xhsNow = "2026-10-05T08:00:00Z";
+
+// A 1x1 PNG, the smallest image a test needs; no real screenshot is used.
+export function tinyPng(): Uint8Array<ArrayBuffer> {
+  const encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  return Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+}
 export const XHS_NOTE_ID = "0000000000000000000000a1";
 export const XHS_USER_ID = "00000000000000000000b0b1";
 

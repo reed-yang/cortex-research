@@ -7,7 +7,10 @@ import { DocumentViewControls, type DocumentMode } from "./artifact-document";
 import { ControlProblemError, CortexControlClient } from "./client";
 import type { SourceContent, SourceContentKind, SourceDocument, SourceSearch } from "./research-contracts";
 
-const KINDS: Array<[SourceContentKind, string]> = [["notes", "Notes"], ["full_text", "Full text"], ["grounding", "Grounding"]];
+// The reader's tabs: which stored content kind each one reads, and its label.
+// A paper has all three; a blog or an XHS note maps its own files onto two.
+export type ReaderTab = [SourceContentKind, string];
+const KINDS: ReaderTab[] = [["notes", "Notes"], ["full_text", "Full text"], ["grounding", "Grounding"]];
 const RETRIEVAL_LABELS: Record<string, string> = { fts5_or: "Keyword matches", unicode_title_fallback: "Title matches", "fts5_or+unicode_title_fallback": "Keyword and title matches" };
 
 function contentError(error: unknown): string {
@@ -18,7 +21,7 @@ function contentError(error: unknown): string {
   return "Source content could not be loaded. Retry to read this document.";
 }
 
-function ContentPages({ client, sourceId, kind }: { client: CortexControlClient; sourceId: string; kind: SourceContentKind }) {
+function ContentPages({ client, sourceId, kind, label }: { client: CortexControlClient; sourceId: string; kind: SourceContentKind; label: string }) {
   const [pages, setPages] = useState<SourceContent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +61,7 @@ function ContentPages({ client, sourceId, kind }: { client: CortexControlClient;
   }
 
   return (
-    <div aria-label={`${KINDS.find(([value]) => value === kind)?.[1]} content`} aria-busy={loading} className="source-content-pages" role="tabpanel" id={`source-panel-${kind}`} aria-labelledby={`source-tab-${kind}`}>
+    <div aria-label={`${label} content`} aria-busy={loading} className="source-content-pages" role="tabpanel" id={`source-panel-${kind}`} aria-labelledby={`source-tab-${kind}`}>
       {pages.map((page, index) => (
         <section className="source-content-page" key={index}>
           <p className="source-citation">{page.canonical_id} / {page.kind} / L{page.start_line}–L{page.end_line} <span title={page.content_sha256}>sha256 {page.content_sha256.slice(0, 12)}</span></p>
@@ -180,8 +183,9 @@ function DocumentPreview({ kind, state, components, onRetry }: { kind: SourceCon
   );
 }
 
-export function SourceContentReader({ client, sourceId }: { client: CortexControlClient; sourceId: string }) {
-  const [kind, setKind] = useState<SourceContentKind>("notes");
+export function SourceContentReader({ client, sourceId, tabs = KINDS }: { client: CortexControlClient; sourceId: string; tabs?: ReaderTab[] }) {
+  const [kind, setKind] = useState<SourceContentKind>(tabs[0]![0]);
+  const tabLabel = tabs.find(([value]) => value === kind)?.[1] ?? kind;
   const [revision, setRevision] = useState(0);
   // A choice made here wins. Until there is one, the remembered choice is read
   // from the browser -- never while server rendering or hydrating, where it is
@@ -226,9 +230,9 @@ export function SourceContentReader({ client, sourceId }: { client: CortexContro
   return (
     <div className="source-content-reader">
       <div aria-label="Source content" className="output-tabs" role="tablist">
-        {KINDS.map(([value, label], index) => <button aria-selected={kind === value} aria-controls={`source-panel-${value}`} className={kind === value ? "text-foreground!" : "text-muted-foreground!"} id={`source-tab-${value}`} key={value} role="tab" tabIndex={kind === value ? 0 : -1} type="button" onClick={() => setKind(value)} onKeyDown={(event) => {
-          const next = event.key === "ArrowRight" ? (index + 1) % KINDS.length : event.key === "ArrowLeft" ? (index + KINDS.length - 1) % KINDS.length : event.key === "Home" ? 0 : event.key === "End" ? KINDS.length - 1 : null;
-          if (next !== null) { event.preventDefault(); setKind(KINDS[next][0]); document.getElementById(`source-tab-${KINDS[next][0]}`)?.focus(); }
+        {tabs.map(([value, label], index) => <button aria-selected={kind === value} aria-controls={`source-panel-${value}`} className={kind === value ? "text-foreground!" : "text-muted-foreground!"} id={`source-tab-${value}`} key={value} role="tab" tabIndex={kind === value ? 0 : -1} type="button" onClick={() => setKind(value)} onKeyDown={(event) => {
+          const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
+          if (next !== null) { event.preventDefault(); setKind(tabs[next]![0]); document.getElementById(`source-tab-${tabs[next]![0]}`)?.focus(); }
         }}>{label}</button>)}
       </div>
       <DocumentViewControls className="mt-3 bg-background" controls={`source-panel-${kind}`} copyText={current?.status === "ready" && current.document.text ? current.document.text : null} markdown mode={mode ?? "preview"} onModeChange={changeMode} previewDisabled={oversized} />
@@ -236,14 +240,15 @@ export function SourceContentReader({ client, sourceId }: { client: CortexContro
       {/* Source has its own page errors; this one names only what the failed
           whole-document read takes away, so a double failure is not two alerts. */}
       {mode === "source" && current?.status === "error" ? <div className="mb-3 text-sm text-muted-foreground" role="status"><p>{copy.reader.copyUnavailable}</p><button className="source-reopen" onClick={() => forget(documentKey)} type="button">{copy.reader.retry}</button></div> : null}
-      {mode === "source" ? <ContentPages client={client} key={`${sourceId}:${kind}:${revision}`} kind={kind} sourceId={sourceId} /> : null}
+      {mode === "source" ? <ContentPages client={client} key={`${sourceId}:${kind}:${revision}`} kind={kind} label={tabLabel} sourceId={sourceId} /> : null}
       {mode === "preview" ? <DocumentPreview components={components} kind={kind} onRetry={() => forget(documentKey)} state={current} /> : null}
       <button className="source-reopen" onClick={() => { setDocuments({}); setRevision((value) => value + 1); }} type="button">Reopen document</button>
     </div>
   );
 }
 
-export function SourceKnowledgeSearch({ client, onSelect }: { client: CortexControlClient; onSelect: (id: string) => void }) {
+// `scope` says what the search covers, when the list beside it holds more.
+export function SourceKnowledgeSearch({ client, onSelect, scope }: { client: CortexControlClient; onSelect: (id: string) => void; scope?: string }) {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<SourceSearch | null>(null);
   const [loading, setLoading] = useState(false);
@@ -265,7 +270,8 @@ export function SourceKnowledgeSearch({ client, onSelect }: { client: CortexCont
     <div className="source-knowledge-search">
       <form className="source-search-form" onSubmit={(event) => void search(event)}>
         <label htmlFor="source-query">Search stored papers</label>
-        <div><input id="source-query" maxLength={1024} onChange={(event) => setQuery(event.target.value)} placeholder="Keywords in English or Chinese" value={query} /><button disabled={!query.trim() || loading} type="submit">Search sources</button><button onClick={() => { generation.current += 1; setQuery(""); setResult(null); setError(null); setLoading(false); }} type="button">Clear search</button></div>
+        {scope ? <p className="mb-2 text-xs text-muted-foreground" id="source-query-scope">{scope}</p> : null}
+        <div><input aria-describedby={scope ? "source-query-scope" : undefined} id="source-query" maxLength={1024} onChange={(event) => setQuery(event.target.value)} placeholder="Keywords in English or Chinese" value={query} /><button disabled={!query.trim() || loading} type="submit">Search sources</button><button onClick={() => { generation.current += 1; setQuery(""); setResult(null); setError(null); setLoading(false); }} type="button">Clear search</button></div>
       </form>
       {loading ? <p role="status">Searching stored papers…</p> : null}
       {error ? <p role="alert">{error}</p> : null}

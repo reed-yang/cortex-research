@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BANNED_WORDS, copy, decisionKindLabel, problemSentence, runStateLabel } from "../../app/shell/copy";
 import { Shell } from "../../app/shell/shell";
 import { FakeControl, now } from "./fake-control";
+import { xhsBloggerStatus, xhsStatusProjection, XHS_USER_ID } from "./xhs-fixtures";
 
 afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
 
@@ -68,6 +69,23 @@ function seeded(): FakeControl {
   });
   control.source("source_11aabbcc", "arxiv:2401.12345", "Memory in long-horizon agents");
   control.sourceContent("source_11aabbcc", "notes", "# Notes\n\nA stored passage.\n\n![Plot](assets/plot.png)\n");
+  // A blog and an XHS note: both are identified by hex digests (a URL hash, a
+  // 24-hex note id) that must stay out of the list rows and the records.
+  control.blog("source_b10b", "Notes on synthetic retrieval");
+  control.xhsNote("source_0a1e", "Weekly reading list");
+  control.link("source_0a1e", "source_b10b", 2);
+  control.link("source_0a1e", "source_11aabbcc", null);
+  control.sourceContent("source_b10b", "full_text", "# Notes on synthetic retrieval\n\nThe article body.\n");
+  // Each scan outcome, and a blogger with no name, whose 24-hex id may only
+  // appear inside a disclosure.
+  control.xhsStatus = xhsStatusProjection({
+    enabled: true, enabled_in_config: true, refusal: null,
+    bloggers: [
+      xhsBloggerStatus(XHS_USER_ID, "Synthetic Curator", { last_scan_at: now, last_scan_outcome: "ok" }),
+      xhsBloggerStatus("00000000000000000000b0b2", "Quiet curator", { last_scan_at: now, last_scan_outcome: "no_new_notes" }),
+      xhsBloggerStatus("00000000000000000000b0b3", null, { last_scan_at: now, last_scan_outcome: "failed", last_scan_error: "outcome_unknown" }),
+    ],
+  });
   // A saved idea is the operator's own words, shown verbatim: they may say
   // "replay" or paste a hash, and the audit must not prohibit that. Its ids --
   // the idea, the bound thread, the item at the time -- stay under Details.
@@ -150,7 +168,19 @@ describe("shell copy audit", () => {
     await userEvent.setup().click(await screen.findByRole("button", { name: /^Memory in long-horizon agents/ }));
     fireEvent.error(await screen.findByRole("img", { name: "Plot" }));
     await screen.findByText(copy.reader.figureMissing);
+    await screen.findByRole("region", { name: copy.links.title });
     check("library reader");
+
+    // A blog's record, its tabs and the note that recommended it.
+    await userEvent.setup().click(await screen.findByRole("button", { name: /^Notes on synthetic retrieval/ }));
+    await screen.findByText(copy.source.notPeerReviewed);
+    await screen.findByRole("region", { name: copy.links.title });
+    check("blog record");
+
+    // The XHS line names each blogger's last scan in words.
+    await open("status");
+    await screen.findByText(/last scan failed \(outcome unknown\)/);
+    check("status XHS line");
 
     // The dossier too: it is the one screen that holds an item's original
     // identity, its document version and that version's digest.

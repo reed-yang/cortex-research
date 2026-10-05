@@ -21,7 +21,7 @@ import {
   type Workspace,
 } from "../control/contracts";
 import { EventReplayController, invalidatedRunId, type ReplayState } from "../control/event-replay";
-import type { ResearchWorkflowProjection, SourceProjection } from "../control/research-contracts";
+import type { ResearchWorkflowProjection, SourceKind, SourceProjection } from "../control/research-contracts";
 import type {
   ResearchItem,
   ResearchItemDetail,
@@ -149,6 +149,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   const [view, setView] = useState<ShellView>(initialLocation.view);
   const [showEngine, setShowEngine] = useState(false);
   const [lastTurnOutcome, setLastTurnOutcome] = useState<string | null>(null);
+  const [sourceKind, setSourceKind] = useState<SourceKind | null>(initialLocation.kind ?? null);
   const [sources, setSources] = useState<SourceProjection[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
@@ -202,6 +203,8 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   const sourceGeneration = useRef(0);
   const sourceListGeneration = useRef(0);
   const selectedSourceIdRef = useRef<string | null>(null);
+  // The filter every listing read uses, so a read never waits on a render.
+  const sourceKindRef = useRef<SourceKind | null>(initialLocation.kind ?? null);
   // A source opened from another view. Entering the Library resets the
   // selection, so the entry read applies this one after that reset.
   const pendingSourceIdRef = useRef<string | null>(null);
@@ -327,8 +330,27 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
       });
   }, []);
 
-  const loadSources = useCallback(async () => {
+  // The listing alone, of the kind the filter holds. Control answers in
+  // identity order; the Library shows the newest first, so a new note is on
+  // top, and a stable sort keeps Control's order between equal instants.
+  const readSources = useCallback(async () => {
     const generation = ++sourceListGeneration.current;
+    setSourcesLoading(true);
+    setSourcesError(null);
+    try {
+      const envelope = await clientRef.current.listSources(sourceKindRef.current ?? undefined);
+      if (sourceListGeneration.current !== generation) return;
+      setSources([...envelope.items].sort((left, right) => right.created_at.localeCompare(left.created_at)));
+    } catch (error) {
+      if (sourceListGeneration.current !== generation) return;
+      setSources([]);
+      setSourcesError(error instanceof Error ? error.message : copy.errors.unreadable);
+    } finally {
+      if (sourceListGeneration.current === generation) setSourcesLoading(false);
+    }
+  }, []);
+
+  const loadSources = useCallback(async () => {
     sourceGeneration.current += 1;
     selectedSourceIdRef.current = null;
     setSelectedSourceId(null);
@@ -339,20 +361,17 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     const pending = pendingSourceIdRef.current;
     pendingSourceIdRef.current = null;
     if (pending) selectSource(pending);
-    setSourcesLoading(true);
-    setSourcesError(null);
-    try {
-      const envelope = await clientRef.current.listSources();
-      if (sourceListGeneration.current !== generation) return;
-      setSources(envelope.items);
-    } catch (error) {
-      if (sourceListGeneration.current !== generation) return;
-      setSources([]);
-      setSourcesError(error instanceof Error ? error.message : copy.errors.unreadable);
-    } finally {
-      if (sourceListGeneration.current === generation) setSourcesLoading(false);
-    }
-  }, [selectSource]);
+    await readSources();
+  }, [readSources, selectSource]);
+
+  // A new filter rereads the listing only: the record the operator has open
+  // may be of another kind, and it stays open.
+  const selectSourceKind = useCallback((kind: SourceKind | null) => {
+    if (sourceKindRef.current === kind) return;
+    sourceKindRef.current = kind;
+    setSourceKind(kind);
+    void readSources();
+  }, [readSources]);
 
   const loadResearchItems = useCallback(async (
     kind: ResearchItemKind,
@@ -699,8 +718,11 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
   // settled: a failed load must not erase what the operator asked for.
   useEffect(() => {
     if (loading || fatalError) return;
-    writeShellLocation({ project: workspaceId, thread: threadId, item: selectedResearchItemId, view });
-  }, [fatalError, loading, selectedResearchItemId, threadId, view, workspaceId]);
+    writeShellLocation({
+      project: workspaceId, thread: threadId, item: selectedResearchItemId, view,
+      ...(sourceKind ? { kind: sourceKind } : {}),
+    });
+  }, [fatalError, loading, selectedResearchItemId, sourceKind, threadId, view, workspaceId]);
 
   useEffect(() => {
     let cursorStorage: Storage | undefined;
@@ -1261,6 +1283,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     fragments,
     fragmentsLoading,
     fragmentsError,
+    sourceKind,
     sources,
     sourcesLoading,
     sourcesError,
@@ -1286,7 +1309,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     nextRunCursor, notice, offline, pendingDecisions, replayState, research, researchItem, researchItemError,
     researchItemLoading, researchItems, researchKind, researchLimit, researchListError, researchListLoading,
     researchOffset, researchStatus, researchTotal, run, runs, selectedCaptureId, selectedResearchItemId,
-    selectedRunId, selectedSourceId, showEngine, sourceDetail, sourceDetailError, sources, sourcesError,
+    selectedRunId, selectedSourceId, showEngine, sourceDetail, sourceDetailError, sourceKind, sources, sourcesError,
     sourcesLoading, thread, threads, view, workspace, workspaces,
   ]);
 
@@ -1321,6 +1344,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     selectSource,
     openSource,
     refreshSources,
+    selectSourceKind,
     selectResearchKind,
     selectResearchStatus,
     selectResearchItem,
@@ -1334,7 +1358,7 @@ export function useControlState(client: CortexControlClient): [ControlState, Con
     loadOlderRuns, messageCommitted, openResearchThread, openSource, openThread, refreshCaptures, refreshFragments,
     refreshResearchItems, refreshSources, refreshThread, renameThread, renameWorkspace, resolveDecision, retainTurn, retry,
     runAction, runCreated, saveIdea, selectResearchItem, selectResearchKind, selectResearchStatus, selectRun,
-    selectSource, selectThread, selectView, selectWorkspace, takeRetainedTurn, unarchiveThread,
+    selectSource, selectSourceKind, selectThread, selectView, selectWorkspace, takeRetainedTurn, unarchiveThread,
   ]);
 
   return [state, actions];
