@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -74,6 +75,101 @@ test("temporary workflow harness fail-closes network, logs, and process cleanup"
   assert.ok(/output\.full/.test(verifier), "complete process output must be scanned");
   assert.ok(/CORTEX_WORKFLOW_FIXTURE_CAPABILITY/.test(fixture), "fixture roots must use a capability");
   assert.ok(/cleanupProcessGroup/.test(wrapper), "detached process groups must always be cleaned");
+});
+
+test("a wait started before its trigger is awaited together with it", async () => {
+  const verifier = await readFile(path.join(webRoot, "scripts/verify-control-workflow.mjs"), "utf8");
+  // A wait parked in a variable has no rejection handler while the steps before
+  // its `await` run. If one of them throws, closing the browser or stopping the
+  // daemon in `finally` rejects the parked wait, Node exits on the unhandled
+  // rejection, and both the cleanup and the original error are lost.
+  const parked = [...verifier.matchAll(
+    /\b(?:const|let)\s+(\w+)\s*=\s*(?:[\w.]+\.)?(?:waitFor(?:Event|Request|Response|URL)|captureSse)\(/g,
+  )].map((match) => match[1]);
+  assert.deepEqual(parked, []);
+});
+
+// The source of every `Promise.all`/`race`/`any` call, its parentheses balanced.
+function combinatorCalls(source) {
+  const calls = [];
+  for (const match of source.matchAll(/\bPromise\.(?:all|race|any)\(/g)) {
+    let depth = 0;
+    let end = match.index + match[0].length - 1;
+    for (; end < source.length; end += 1) {
+      if (source[end] === "(") depth += 1;
+      if (source[end] === ")" && --depth === 0) break;
+    }
+    calls.push(source.slice(match.index, end + 1));
+  }
+  return calls;
+}
+
+// `awaitAllSettled` is defined in the verifier, and importing the verifier starts
+// a workflow run, so the tests evaluate the function's own source.
+async function verifierAwaitAllSettled() {
+  const verifier = await readFile(path.join(webRoot, "scripts/verify-control-workflow.mjs"), "utf8");
+  const definition = verifier.match(/^async function awaitAllSettled\(operations\) \{\n[\s\S]*?\n\}\n/m);
+  assert.ok(definition, "the verifier must define awaitAllSettled as a top-level function");
+  const source = `${definition[0]}export { awaitAllSettled };\n`;
+  const { awaitAllSettled } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+  return awaitAllSettled;
+}
+
+test("a fixture run is never abandoned by a combinator that rejects early", async () => {
+  const verifier = await readFile(path.join(webRoot, "scripts/verify-control-workflow.mjs"), "utf8");
+  // `Promise.all` rejects on the first failure while its other operations still
+  // run. A fixture is a child process working under the temporary root, and the
+  // verifier's `finally` removes that root, so a fixture run must be settled by
+  // `awaitAllSettled`, which waits for every operation before it reports.
+  const calls = combinatorCalls(verifier);
+  assert.ok(calls.length >= 2, "the combinator scan must see the verifier's calls");
+  assert.deepEqual(calls.filter((call) => /\brunFixture\(/.test(call)), []);
+  assert.match(verifier, /awaitAllSettled\(\[\s*captureSse\([^)]*\),\s*runFixture\("emit-redacted"/);
+});
+
+test("a stream that fails first leaves the fixture running until it exits", async () => {
+  const awaitAllSettled = await verifierAwaitAllSettled();
+  const root = await mkdtemp(path.join(os.tmpdir(), "cortex-settle-"));
+  const marker = path.join(root, "fixture-finished");
+  // A child that writes under the temporary root after the stream has failed,
+  // as the `emit-redacted` fixture does while the SSE read gives up.
+  const fixture = spawn(process.execPath, [
+    "-e",
+    `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "written"), 300)`,
+  ], { stdio: "ignore" });
+  const fixtureRun = new Promise((resolve, reject) => {
+    fixture.once("error", reject);
+    fixture.once("close", (code) => (code === 0 ? resolve("fixture") : reject(new Error(`fixture exited ${code}`))));
+  });
+  const streamFailure = new Error("stream failed first");
+  const stream = new Promise((_, reject) => setTimeout(() => reject(streamFailure), 10));
+  try {
+    await assert.rejects(awaitAllSettled([stream, fixtureRun]), (error) => error === streamFailure);
+    assert.equal(fixture.exitCode, 0, "the fixture must have exited before the failure is reported");
+    assert.equal(processExists(fixture.pid), false);
+    assert.equal(await readFile(marker, "utf8"), "written");
+  } finally {
+    if (fixture.exitCode === null) fixture.kill("SIGKILL");
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("awaitAllSettled reports the first failure in time and returns values in order", async () => {
+  const awaitAllSettled = await verifierAwaitAllSettled();
+  const delayed = (milliseconds, value, failure) =>
+    new Promise((resolve, reject) => setTimeout(() => (failure ? reject(failure) : resolve(value)), milliseconds));
+  assert.deepEqual(await awaitAllSettled([delayed(20, "stream"), delayed(5, "fixture"), "plain"]), ["stream", "fixture", "plain"]);
+
+  const fixtureFailure = new Error("fixture failed first");
+  const streamTimeout = new Error("stream timed out later");
+  let streamSettled = false;
+  const stream = delayed(40, undefined, streamTimeout).finally(() => {
+    streamSettled = true;
+  });
+  await assert.rejects(awaitAllSettled([stream, delayed(5, undefined, fixtureFailure)]), (error) => {
+    assert.equal(streamSettled, true, "a later failure must still be awaited");
+    return error === fixtureFailure;
+  });
 });
 
 test("real temporary research workflow crosses the Web boundary and cleans up", { timeout: 120_000 }, async () => {

@@ -47,7 +47,10 @@ export function FragmentCard({ fragment }: { fragment: Fragment }) {
       ) : null}
       <details className="text-xs text-muted-foreground" data-details>
         <summary>{copy.fragment.details}</summary>
-        <dl className="mt-1 grid grid-cols-[max-content_1fr] gap-x-3">
+        {/* A `1fr` track never narrows below its longest unbroken id, which
+            widened the card past a phone. The value column may shrink to zero
+            and an id breaks anywhere instead. */}
+        <dl className="mt-1 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 wrap-anywhere">
           <dt>{copy.details.ideaId}</dt><dd>{fragment.id}</dd>
           {fragment.thread_id ? <><dt>{copy.details.threadId}</dt><dd>{fragment.thread_id}</dd></> : null}
           {fragment.context_item_id ? (

@@ -898,6 +898,67 @@ def assert_fragment(root: Path) -> dict[str, Any]:
     return {"state": "fragment_saved_verbatim", **after}
 
 
+TELEGRAM_IDEA_TEXT = "Synthetic idea sent from Telegram"
+TELEGRAM_ITEM_ORIGIN = "workflow-telegram-idea"
+TELEGRAM_ITEM_TITLE = "Synthetic research item behind a Telegram idea"
+
+
+def seed_telegram_idea(root: Path) -> dict[str, Any]:
+    """A Telegram idea saved in a thread about a research item.
+
+    Its card's Details then hold every id an idea can carry: the idea, its
+    thread and the item the thread was about when the idea arrived.
+    """
+
+    from cortex_platform.product.control.research_store import research_item_id
+
+    state = _read_state(root)
+    store = ControlStore(_database(root))
+    item_id = research_item_id("idea", TELEGRAM_ITEM_ORIGIN)
+    body = f"# {TELEGRAM_ITEM_TITLE}\n"
+    # Reuses the asset root `adopt-capture-paper` registered. Only the
+    # document's identity is recorded, so no file is written.
+    store.register_research_documents(
+        item={"id": item_id, "kind": "idea", "origin_id": TELEGRAM_ITEM_ORIGIN, "title": TELEGRAM_ITEM_TITLE},
+        documents=[{
+            "title": TELEGRAM_ITEM_TITLE,
+            "asset_root_id": CAPTURE_ROOT_ID,
+            "relative_path": "ideas/telegram-idea.md",
+            "origin_relative_path": "ideas/telegram-idea.md",
+            "media_type": "text/markdown",
+            "byte_length": len(body.encode("utf-8")),
+            "sha256": _digest(body),
+        }],
+        actor_id="fixture",
+        idempotency_key="workflow-telegram-item",
+    )
+    workspace = store.get_workspace(state["workspace_id"])
+    thread = store.open_research_thread(
+        item_id=item_id,
+        workspace_id=workspace["id"],
+        expected_revision=workspace["revision"],
+        actor_id="fixture",
+        idempotency_key="workflow-telegram-thread",
+    ).value
+    fragment = store.create_fragment(
+        text=TELEGRAM_IDEA_TEXT,
+        note="",
+        origin="telegram",
+        thread_id=thread["id"],
+        origin_ref="workflow-telegram-update",
+        actor_id="fixture",
+        idempotency_key="workflow-telegram-idea",
+    ).value
+    if fragment["origin"] != "telegram" or fragment["context_item_id"] != item_id:
+        raise AssertionError("the Telegram idea does not name its thread's research item")
+    return {
+        "state": "telegram_idea_saved",
+        "fragment_id": fragment["id"],
+        "thread_id": thread["id"],
+        "context_item_id": item_id,
+    }
+
+
 def _manifest_counts(store: ControlStore, run_id: str, thread_id: str, workspace_id: str) -> dict[str, int]:
     projection = ResearchWorkflowProjector(store).project(run_id)
     return {
@@ -1009,6 +1070,7 @@ def _parser() -> argparse.ArgumentParser:
     for name in (
         "assert-network-guard", "seed-g0", "advance-source", "advance-lineage", "emit-redacted", "assert-g0", "assert-g1",
         "seed-capture", "adopt-capture-paper", "assert-capture", "record-effects", "assert-fragment",
+        "seed-telegram-idea",
     ):
         command = commands.add_parser(name)
         command.add_argument("--root", required=True)
@@ -1034,6 +1096,7 @@ def main() -> int:
         "assert-capture": assert_capture,
         "record-effects": record_effects,
         "assert-fragment": assert_fragment,
+        "seed-telegram-idea": seed_telegram_idea,
     }
     if arguments.command == "assert-network-guard":
         result = {"state": "network_guarded", "probes": network_guard_probes}

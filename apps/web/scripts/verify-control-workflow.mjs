@@ -61,6 +61,33 @@ const ideaText = "  第一行的想法 🎬\n\n  indented second line  ";
 const ideaNote = "Synthetic idea note";
 const execution = { pids: [], ports: [], root: null, secrets: [] };
 
+// Awaits every operation, then throws the first one to fail, or returns their
+// values in order.
+//
+// `Promise.all` rejects on the first failure while the other operations still
+// run. When one of them is a child process working under a temporary root, the
+// caller's `finally` would remove that root under it, and the child's own
+// failure would never be reported.
+//
+// tests/control-workflow-process.test.mjs evaluates this function's source on
+// its own, so it must not use any other binding of this module.
+async function awaitAllSettled(operations) {
+  let failed = false;
+  let failure;
+  const values = await Promise.all(
+    operations.map((operation) =>
+      Promise.resolve(operation).catch((error) => {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
+      }),
+    ),
+  );
+  if (failed) throw failure;
+  return values;
+}
+
 function outputCollector(description) {
   return { description, full: "", overflow: false, tail: "" };
 }
@@ -388,6 +415,36 @@ async function assertNoOverflow(page, selector = "html") {
     scrollWidth: element.scrollWidth,
   }));
   assert.ok(dimensions.scrollWidth <= dimensions.clientWidth, `${selector} overflowed: ${dimensions.scrollWidth} > ${dimensions.clientWidth}`);
+}
+
+// The Inbox scrolls inside its own section, so a card wider than the phone pans
+// that section sideways and never widens `html`: overflow is measured here.
+const inboxSection = `section[aria-label="${copy.inbox.title}"]`;
+
+// A closed `details` lays out nothing, so the ids it holds can only overflow,
+// and only be measured, once it is open.
+async function openDetails(card) {
+  const details = card.locator("details[data-details]");
+  await details.locator("summary").click();
+  await waitForValue(async () => await details.evaluate((node) => node.open), true);
+}
+
+// The shell's phone floor, as `verify-mobile-pwa.mjs` measures it: 44 CSS
+// pixels below `lg`, for every visible control the selector names.
+async function assertTouchTargets(page, selector, minimum = 44) {
+  const targets = await page.locator(selector).evaluateAll((elements) =>
+    elements
+      .filter((element) => element.checkVisibility({ opacityProperty: true, visibilityProperty: true }))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { label: element.textContent?.trim(), width: rect.width, height: rect.height };
+      }),
+  );
+  assert.ok(targets.length > 0, `${selector} must expose visible touch targets`);
+  for (const target of targets) {
+    assert.ok(target.width >= minimum, `${target.label} is only ${target.width}px wide`);
+    assert.ok(target.height >= minimum, `${target.label} is only ${target.height}px tall`);
+  }
 }
 
 // Below `lg` the shell's rail is a drawer, and this trigger is the only way
@@ -814,9 +871,17 @@ async function main() {
     );
     const cursor = JSON.parse(cursorRecord.body).next_cursor;
     assert.equal(typeof cursor, "string");
-    const ssePromise = captureSse(daemonPort, daemon.token, cursor);
-    summaries.push(await runFixture("emit-redacted", temporaryRoot, capability, secrets, processOutputs));
-    sseBodies.push(await ssePromise);
+    // Awaited together: a stream read parked while the fixture runs has no
+    // handler, so a fixture failure would leave it to reject unhandled when
+    // `finally` stops the daemon, ending the process before cleanup. Both are
+    // settled before either failure is reported: the fixture is a child process
+    // writing under the temporary root, which `finally` removes.
+    const [sseBody, redactedSummary] = await awaitAllSettled([
+      captureSse(daemonPort, daemon.token, cursor),
+      runFixture("emit-redacted", temporaryRoot, capability, secrets, processOutputs),
+    ]);
+    summaries.push(redactedSummary);
+    sseBodies.push(sseBody);
     const redactedRecord = await waitForResponse(
       responseRecords,
       cursorRecord.sequence,
@@ -863,7 +928,11 @@ async function main() {
     await openSource.waitFor();
     await captureCard.getByText(copy.capture.availableInLibrary, { exact: true }).waitFor();
     assert.equal(await captureCard.getByRole("button", { name: copy.inbox.reopen }).count(), 0, "a failed Capture must stay terminal");
-    await assertNoOverflow(activePage);
+    await openDetails(captureCard);
+    await captureCard.getByText(copy.details.librarySource, { exact: true }).waitFor();
+    await assertNoOverflow(activePage, inboxSection);
+    // Both composers, both refresh controls and the Library link.
+    await assertTouchTargets(activePage, `${inboxSection} button`);
     const captureMutations = [];
     const recordMutation = (request) => {
       if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/")) captureMutations.push(request.method());
@@ -917,9 +986,13 @@ async function main() {
     await activePage.getByText(copy.errors.unconfirmed, { exact: true }).waitFor();
     assert.equal(await activePage.evaluate(() => window.__cortexDroppedSaveStatus), 201, "the first save must reach Control and commit");
     assert.equal(await ideaBox.inputValue(), ideaText, "an unconfirmed save must keep the typed idea");
-    const retriedSave = activePage.waitForResponse((response) => response.request().method() === "POST" && response.url() === fragmentsRoute);
-    await activePage.getByRole("button", { name: copy.inbox.saveIdea, exact: true }).click();
-    const retryAnswer = await retriedSave;
+    // The wait starts with the click it waits on, for the same reason as the
+    // stream read above: a failed click must surface as itself. The pending wait
+    // holds nothing `finally` removes, and closing the browser settles it.
+    const [retryAnswer] = await Promise.all([
+      activePage.waitForResponse((response) => response.request().method() === "POST" && response.url() === fragmentsRoute),
+      activePage.getByRole("button", { name: copy.inbox.saveIdea, exact: true }).click(),
+    ]);
     assert.equal(retryAnswer.status(), 201);
     assert.equal(retryAnswer.headers()["idempotency-replayed"], "true", "the retry must replay the committed save");
     await activePage.getByText(copy.notice.ideaSaved, { exact: true }).waitFor();
@@ -930,10 +1003,24 @@ async function main() {
     assert.equal(await shownIdea.textContent(), ideaText);
     assert.equal(await shownIdea.evaluate((node) => getComputedStyle(node).whiteSpace), "pre-wrap", "the idea's spaces and blank line must stay visible");
     assert.equal(await ideaBox.inputValue(), "", "a confirmed save clears the composer");
-    await assertNoOverflow(activePage);
     await quiesceResponses(responseRecords);
     summaries.push(await runFixture("assert-fragment", temporaryRoot, capability, secrets, processOutputs));
     ideaSaved = true;
+
+    // A Telegram idea carries the longest Details an idea card shows: its own
+    // id, its thread and the research item that thread was about, each a
+    // full-length id, one of them under the longest label.
+    const telegramIdea = await runFixture("seed-telegram-idea", temporaryRoot, capability, secrets, processOutputs);
+    summaries.push(telegramIdea);
+    await ideas.getByRole("button", { name: copy.inbox.refreshIdeas, exact: true }).click();
+    const telegramCard = ideaCards.filter({ hasText: copy.fragment.fromTelegram });
+    await telegramCard.waitFor();
+    assert.equal(await ideaCards.count(), 2, "the refreshed list must hold both ideas");
+    await openDetails(telegramCard);
+    for (const id of [telegramIdea.fragment_id, telegramIdea.thread_id, telegramIdea.context_item_id]) {
+      await telegramCard.getByText(id, { exact: true }).waitFor();
+    }
+    await assertNoOverflow(activePage, inboxSection);
 
     const state = await browserState(activePage);
     browserStates.push(state);

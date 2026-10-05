@@ -199,6 +199,15 @@ try {
     await controlPage.goto(`${origin}/?project=ws_mobile&thread=thread_absent`, { waitUntil: "domcontentloaded" });
     await controlPage.getByRole("status", { name: copy.notice.region }).waitFor();
     await assertTouchTargets(controlPage, `button[aria-label="${copy.notice.dismiss}"]`);
+    // The Inbox's commands are thumb targets too. The mock world holds a
+    // pending decision and a pending and an approved capture, so Open, Approve
+    // and Dismiss are measured beside both composers and both refresh controls.
+    await controlPage.goto(`${origin}/?project=ws_mobile&view=inbox`, { waitUntil: "domcontentloaded" });
+    const inbox = controlPage.locator(`section[aria-label="${copy.inbox.title}"]`);
+    await inbox.getByRole("button", { name: copy.inbox.open, exact: true }).waitFor();
+    await inbox.getByRole("button", { name: copy.inbox.approve, exact: true }).waitFor();
+    await inbox.getByRole("article", { name: copy.fragment.label }).first().waitFor();
+    await assertTouchTargets(controlPage, `section[aria-label="${copy.inbox.title}"] button`);
   } finally {
     await controlPage.close();
     await controlContext.close();

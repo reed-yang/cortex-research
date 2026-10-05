@@ -399,6 +399,64 @@ describe("InboxView", () => {
   });
 });
 
+// jsdom lays nothing out, so these read the classes a browser sizes from. The
+// workflow and mobile gates measure the result in a 390 px browser.
+describe("Inbox on a phone", () => {
+  // One world holding every control and every Details list the Inbox renders.
+  async function everyInboxControl() {
+    const control = seeded();
+    const run = control.run("run_1", "thread_1", "waiting_for_decision");
+    control.decision("decision_1", String(run.id), "Allow the import?", [{ id: "approve_once", label: "Approve once" }]);
+    control.source("source_paper", "arxiv:2601.00042", "Synthetic paper");
+    control.capture("capture_pending", "https://example.com/pending", { created_at: "2026-09-06T12:00:00Z" });
+    control.capture("capture_uncertain", "https://example.com/lost", { state: "uncertain", created_at: "2026-09-06T11:00:00Z" });
+    control.capture("capture_failed", "https://arxiv.org/abs/2601.00042", {
+      state: "failed", failure_category: "materialization_failed", available_source_id: "source_paper",
+      created_at: "2026-09-06T10:00:00Z",
+    });
+    control.fragment(`fragment_${"c".repeat(32)}`, "from the bot", {
+      origin: "telegram", thread_id: "thread_1", context_item_id: `ri_${"a".repeat(32)}`,
+    });
+    const user = userEvent.setup();
+    await openInbox(control);
+    await screen.findByText("Allow the import?");
+    await screen.findByText("from the bot");
+    await user.click(await screen.findByRole("button", { name: copy.inbox.reopen }));
+    await screen.findByRole("button", { name: copy.capture.confirmReopen });
+    return screen.getByRole("region", { name: copy.inbox.title });
+  }
+
+  it("gives every Inbox button the shell's 44 px phone floor", async () => {
+    const inbox = await everyInboxControl();
+
+    const buttons = [...inbox.querySelectorAll<HTMLButtonElement>("button")];
+    expect(buttons.map((button) => button.textContent).sort()).toEqual([
+      copy.inbox.saveIdea, copy.inbox.capture, copy.inbox.open, copy.inbox.refreshIdeas, copy.inbox.refresh,
+      copy.inbox.approve, copy.inbox.dismiss, copy.inbox.dismiss, copy.inbox.reopen,
+      copy.capture.confirmReopen, copy.capture.cancelReopen, copy.capture.openSource,
+    ].sort());
+    // Below `lg` the shell's controls are 44 px tall and return to the compact
+    // size at `lg`; the Inbox sets that once for every button inside it.
+    expect(inbox.className).toContain("[&_[data-slot=button]]:min-h-11");
+    expect(inbox.className).toContain("lg:[&_[data-slot=button]]:min-h-7");
+    for (const button of buttons) expect(button.dataset.slot, button.textContent ?? "").toBe("button");
+  });
+
+  it("lets a long id wrap inside every Inbox Details list", async () => {
+    const inbox = await everyInboxControl();
+
+    // One decision, three captures and one idea. A `1fr` track never shrinks
+    // below its longest unbroken id, so the value column has to be allowed to
+    // reach zero and the id to break anywhere.
+    const lists = [...inbox.querySelectorAll("dl")];
+    expect(lists).toHaveLength(5);
+    for (const list of lists) {
+      expect(list.className).toContain("grid-cols-[max-content_minmax(0,1fr)]");
+      expect(list.className).toContain("wrap-anywhere");
+    }
+  });
+});
+
 describe("Inbox ideas", () => {
   const idea = "  第一行的想法 🎬\n\n  indented second line  ";
 

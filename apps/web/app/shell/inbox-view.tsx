@@ -168,7 +168,12 @@ export function InboxView({ state, actions, client }: ViewProps) {
   const refreshing = state.capturesLoading && state.captures.length > 0;
 
   return (
-    <section aria-label={copy.inbox.title} className="flex flex-1 flex-col overflow-y-auto bg-background p-6 text-foreground">
+    // Every button in the Inbox, its cards' included, takes the shell's phone
+    // floor: 44 px tall below `lg`, the compact size from `lg` on.
+    <section
+      aria-label={copy.inbox.title}
+      className="flex flex-1 flex-col overflow-y-auto bg-background p-6 text-foreground [&_[data-slot=button]]:min-h-11 lg:[&_[data-slot=button]]:min-h-7"
+    >
       <div className="mx-auto flex w-full max-w-[44rem] flex-col gap-6">
         <header className="flex flex-col gap-1">
           <h1 className="text-lg font-medium">{copy.inbox.title}</h1>
@@ -212,7 +217,7 @@ export function InboxView({ state, actions, client }: ViewProps) {
                 <p className="text-xs text-muted-foreground">{title ? label.inThread(title) : copy.inbox.inAnotherThread}</p>
                 <details className="text-xs text-muted-foreground" data-details>
                   <summary>{copy.inbox.details}</summary>
-                  <dl className="mt-1 grid grid-cols-[max-content_1fr] gap-x-3">
+                  <dl className="mt-1 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 wrap-anywhere">
                     <dt>{copy.details.decisionId}</dt><dd>{decision.id}</dd>
                     <dt>{copy.details.runId}</dt><dd>{decision.run_id}</dd>
                     <dt>{copy.details.attemptId}</dt><dd>{decision.attempt_id}</dd>
