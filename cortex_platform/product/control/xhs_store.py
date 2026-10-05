@@ -846,6 +846,47 @@ class XhsStore:
         with self._connect() as conn:
             return self._xhs_recommendation(conn, recommendation_id)
 
+    def xhs_save_inputs_sha256(self, note_id: str) -> str:
+        """A digest of the Control state a note's saved version renders.
+
+        A save reads it before it reads that state; its record compares it
+        with the state then, and a change made meanwhile queues the next
+        version.
+        """
+
+        with self._connect() as conn:
+            return self._xhs_save_inputs_sha256(conn, normalize_xhs_id(note_id, "note_id"))
+
+    def _xhs_save_inputs_sha256(self, conn: sqlite3.Connection, note_id: str) -> str:
+        note = self._xhs_note(conn, note_id)
+        blogger = self._xhs_blogger(conn, str(note["user_id"]))
+        state = {
+            "note": [note[name] for name in ("title", "caption", "published_at", "user_id")],
+            "blogger": [blogger["display_name"], blogger["role"]],
+            "images": [
+                [
+                    image[name]
+                    for name in (
+                        "ordinal", "download_state", "download_error", "asset_name",
+                        "ocr_state", "ocr_error", "ocr_flags", "ocr_text_sha256",
+                    )
+                ]
+                for image in self._xhs_images(conn, note_id)
+            ],
+            "recommendations": [
+                [
+                    item[name]
+                    for name in (
+                        "id", "kind", "title", "image_ordinal", "quote", "arxiv_id",
+                        "url", "url_state",
+                    )
+                ]
+                for item in self._xhs_recommendations(conn, note_id)
+            ],
+        }
+        text = json.dumps(state, ensure_ascii=False, separators=(",", ":"), default=str)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
     def list_xhs_recommendations(self, note_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             note_id = normalize_xhs_id(note_id, "note_id")
@@ -1830,6 +1871,10 @@ class XhsStore:
             url_state=result["url_state"],
             url_checked_title=result["checked_title"],
         )
+        # The saved note shows a found link too; a save not yet run includes it.
+        note = self._xhs_note(conn, str(recommendation["note_id"]))
+        if result["url"] is not None and note["state"] in {"identified", "saved"}:
+            self._xhs_queue_save(conn, note)
         return {
             "url_state": result["url_state"],
             "prompt_version": result["prompt_version"],
@@ -1870,6 +1915,10 @@ class XhsStore:
         )
         if cursor.rowcount != 1:
             raise RevisionConflict(self._xhs_note(conn, note_id))
+        # A change made while this version was written, such as a link edit
+        # that found this save already running, goes into the next one.
+        if result.get("inputs_sha256") != self._xhs_save_inputs_sha256(conn, note_id):
+            self._xhs_queue_save(conn, self._xhs_note(conn, note_id))
         return {"version": version, "source_id": source_id, "tree_sha256": result["tree_sha256"]}
 
     def _xhs_apply_blog_import(

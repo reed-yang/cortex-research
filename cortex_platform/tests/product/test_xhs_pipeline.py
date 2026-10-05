@@ -326,6 +326,65 @@ def test_a_link_search_that_finds_nothing_is_not_found_and_a_failure_is_shown(
     assert (sinks["url_state"], sinks["url"]) == ("not_found", None)
 
 
+def test_a_link_found_after_the_first_save_is_saved_in_the_next_version(
+    store: ControlStore, supervisor: PipelineSupervisor, clock, tmp_path: Path
+) -> None:
+    _three_images(supervisor)
+    supervisor.identify[PAPER_TEXT] = [model_items()]
+    found = supervisor.links["Attention Sinks"]
+    supervisor.links["Attention Sinks"] = "transient"
+    drain = pipeline(store, supervisor)
+    drain.pull()
+    drain.drain()
+    assert store.get_xhs_note(note_id(1))["content_version"] == 1
+    assert b"attention-sinks" not in (_version_dir(tmp_path, 1, 1) / "note.md").read_bytes()
+    supervisor.links["Attention Sinks"] = found
+    clock.advance(601)
+    drain.drain()
+    note = store.get_xhs_note(note_id(1))
+    assert (note["state"], note["content_version"]) == ("saved", 2)
+    assert b"https://blog.example/attention-sinks" in (
+        _version_dir(tmp_path, 1, 2) / "note.md"
+    ).read_bytes()
+
+
+def test_a_link_edit_made_while_a_save_runs_is_saved_in_the_next_version(
+    store: ControlStore, supervisor: PipelineSupervisor, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cortex_platform.product.xhs import drain as drain_module
+
+    note = _saved(store, supervisor)
+    streaming = next(
+        r for r in store.list_xhs_recommendations(note_id(1)) if r["title"] == "Efficient Streaming"
+    )
+
+    def edit(url: str, key: str) -> None:
+        current = store.get_xhs_recommendation(streaming["id"])
+        store.set_xhs_recommendation_link(
+            note_source_id=note["source_id"], recommendation_id=streaming["id"], url=url,
+            expected_revision=current["revision"], actor_id=ACTOR, idempotency_key=key,
+        )
+
+    edit("https://blog.example/edited-a", "link-edit-first-0001")
+    real = drain_module.write_version
+    edited: list[bool] = []
+
+    def edit_meanwhile(parent, version, files, *, guard=None):
+        digest = real(parent, version, files, guard=guard)
+        if not edited:
+            # Written, not yet registered: the second edit finds this save running.
+            edited.append(True)
+            edit("https://blog.example/edited-b", "link-edit-second-001")
+        return digest
+
+    monkeypatch.setattr(drain_module, "write_version", edit_meanwhile)
+    pipeline(store, supervisor).drain()
+    assert store.get_xhs_note(note_id(1))["content_version"] == 3
+    assert b"edited-a" in (_version_dir(tmp_path, 1, 2) / "note.md").read_bytes()
+    assert b"edited-b" in (_version_dir(tmp_path, 1, 3) / "note.md").read_bytes()
+
+
 # -- versions, retries and crashes ---------------------------------------------------
 
 

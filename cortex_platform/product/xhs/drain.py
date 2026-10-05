@@ -906,6 +906,9 @@ class XhsDrain:
     ) -> dict[str, Any]:
         """Write `<note_id>/v<version>/` and describe it for the save record."""
 
+        # Read first: a change after it, even one this render includes, makes
+        # the record queue the next version.
+        inputs_sha256 = self.store.xhs_save_inputs_sha256(note_id)
         note = self.store.get_xhs_note(note_id)
         blogger = self.store.get_xhs_blogger(note["user_id"])
         images = self.store.list_xhs_note_images(note_id)
@@ -937,6 +940,7 @@ class XhsDrain:
         return {
             "version": version,
             "tree_sha256": digest,
+            "inputs_sha256": inputs_sha256,
             "title": source_title(note_title(note), f"XHS note {note_id}"),
             "metadata": {
                 "note_id": note_id,
