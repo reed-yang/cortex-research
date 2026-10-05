@@ -271,6 +271,61 @@ def test_xhs_status_route_reports_without_paths(
     assert get(_api(store), "/api/v1/xhs/status?verbose=1").status == 400
 
 
+def test_source_routes_and_status_redact_provider_text_as_the_note_route_does(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    leaked = "api_key=synthetic-only-review-value"
+    with store._transaction() as conn:
+        conn.execute(
+            "UPDATE sources SET official_title = ? WHERE id = ?",
+            (f"Notes {leaked}", saved["source_id"]),
+        )
+        conn.execute(
+            "UPDATE xhs_notes SET title = ? WHERE source_id = ?",
+            (f"Notes {leaked}", saved["source_id"]),
+        )
+        conn.execute(
+            "UPDATE xhs_bloggers SET display_name = ? WHERE user_id = ?", (leaked, USER)
+        )
+    settings = XhsSettings(enabled=True)
+    api = _api(store, xhs_settings=settings)
+    listed = get(api, "/api/v1/sources?kind=xhs_note").payload["items"]
+    assert [item["official_title"] for item in listed] == ["[redacted]"]
+    detail = get(api, f"/api/v1/sources/{saved['source_id']}").payload
+    assert detail["official_title"] == "[redacted]"
+    note = get(api, f"/api/v1/sources/{saved['source_id']}/note").payload
+    assert note["title"] == "[redacted]"
+    status = get(api, "/api/v1/xhs/status").payload
+    assert "[redacted]" in [b["display_name"] for b in status["bloggers"]]
+    for payload in (listed, detail, note, status):
+        assert "synthetic-only-review-value" not in json.dumps(payload)
+
+
+def test_xhs_status_is_not_enabled_while_a_root_is_not_ready(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    from cortex_platform.product.engine.schedules import XHS_DRAIN_JOB, XHS_PULL_JOB
+
+    for job_key in (XHS_PULL_JOB, XHS_DRAIN_JOB):
+        row = store.get_research_schedule(job_key)
+        store.set_research_schedule_enabled(
+            job_key=job_key, enabled=True, expected_revision=row["revision"],
+            actor_id=ACTOR, idempotency_key=f"arm-schedule-{job_key}",
+        )
+    api = _api(store, xhs_settings=XhsSettings(enabled=True))
+    assert get(api, "/api/v1/xhs/status").payload["enabled"] is True
+    root = store.get_asset_root("blogs")
+    store.update_asset_root(
+        root_id="blogs", private_path=root.private_path, max_bytes=root.max_bytes,
+        enabled=False, expected_revision=root.revision, actor_id=ACTOR,
+        idempotency_key="disable-blogs-root",
+    )
+    status = get(api, "/api/v1/xhs/status").payload
+    assert (status["enabled"], status["roots_ready"], status["refusal"]) == (
+        False, False, "roots_not_ready",
+    )
+
+
 # -- import ------------------------------------------------------------------------
 
 

@@ -37,6 +37,7 @@ from ..control import (
 )
 from ..sources import SourceResolver, canonicalize_arxiv_id, canonicalize_doi
 from ..sources.identity import xhs_note_permalink
+from ..sources.models import CONTENT_SOURCE_KINDS
 from .events import _SENSITIVE_TEXT_PATTERNS, project_public_decision, project_public_event
 from .research import ResearchWorkflowProjector
 
@@ -723,7 +724,10 @@ class ControlAPI:
             return APIResponse(
                 200,
                 {
-                    "items": self._public_value(self.store.list_sources(kind=kind)),
+                    "items": [
+                        self._public_source(source)
+                        for source in self.store.list_sources(kind=kind)
+                    ],
                     "next_cursor": None,
                 },
             )
@@ -780,7 +784,7 @@ class ControlAPI:
         match = re.fullmatch(r"/api/v1/sources/([^/]+)", path)
         if match:
             return APIResponse(
-                200, self._public_value(self.store.get_source(match.group(1)))
+                200, self._public_source(self.store.get_source(match.group(1)))
             )
 
         if path == "/api/v1/artifacts":
@@ -1630,6 +1634,16 @@ class ControlAPI:
             body=body,
         )
 
+    @classmethod
+    def _public_source(cls, source: Mapping[str, Any]) -> Any:
+        """A source record; a note's or blog's title comes from a provider, so
+        it is redacted as the note and document routes redact it."""
+
+        value = cls._public_value(dict(source))
+        if value.get("source_kind") in CONTENT_SOURCE_KINDS and "official_title" in value:
+            value["official_title"] = cls._public_source_text(value["official_title"])
+        return value
+
     @staticmethod
     def _public_source_text(value: Any) -> Any:
         if not isinstance(value, str):
@@ -1772,9 +1786,14 @@ class ControlAPI:
         status = xhs_status(self.store, self._xhs_settings)
         return {
             **status,
-            "enabled": status["enabled_in_config"]
+            # Scanning runs only when nothing refuses and both rows are armed.
+            "enabled": status["refusal"] is None
             and all(row["enabled"] for row in status["schedules"].values()),
             "roots_ready": all(state == "ready" for state in status["roots"].values()),
+            "bloggers": [
+                {**row, "display_name": self._public_source_text(row["display_name"])}
+                for row in status["bloggers"]
+            ],
         }
 
     @staticmethod
