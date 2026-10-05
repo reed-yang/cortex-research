@@ -178,7 +178,9 @@ def test_stop_interrupts_slow_event_writer_and_all_handlers_exit(
         control_token=token,
         stop_requested=stop,
         control_api=ControlAPI(store, access_token=token),
-        event_stream_write_timeout=0.2,
+        # Longer than the observation and the shutdown wait below, so the writer
+        # stays blocked on the client that never reads and only stop can end it.
+        event_stream_write_timeout=10.0,
         event_stream_shutdown_timeout=2.0,
     )
     serving = threading.Thread(target=server.serve_forever, daemon=True)
