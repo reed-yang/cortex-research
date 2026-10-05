@@ -434,7 +434,8 @@ class IdentifyHandler(TaskHandler):
     def finish(self, drain, task, engine):
         inputs = drain.identify_inputs(task["payload"])
         if inputs is None:
-            raise ValueError("the note changed while it was identified")
+            # A retry moved the note on meanwhile; its own identification follows.
+            return {"stale": True}
         caption, transcriptions = inputs
         if (
             engine["prompt_version"] != identify.PROMPT_VERSION

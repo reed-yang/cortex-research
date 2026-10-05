@@ -1681,9 +1681,12 @@ class XhsStore:
 
         note_id = normalize_xhs_id(task["payload"]["note_id"], "note_id")
         note = self._xhs_note(conn, note_id)
-        if note["state"] != "ocr_done" or task["payload"][
-            "input_sha256"
-        ] != self._xhs_identify_input(note, self._xhs_images(conn, note_id)):
+        if (
+            result.get("stale")
+            or note["state"] != "ocr_done"
+            or task["payload"]["input_sha256"]
+            != self._xhs_identify_input(note, self._xhs_images(conn, note_id))
+        ):
             return {"stale": True}
         recommendation_ids: list[str] = []
         for item in result["items"]:

@@ -71,6 +71,8 @@ class PipelineSupervisor(ScriptedSupervisor):
             pairs = [(entry["image"], entry["text"]) for entry in payload["transcriptions"]]
             key = pairs[0][1] if pairs else payload["caption"]
             answer = self.identify[key].pop(0)
+            if callable(answer):
+                answer = answer()
             if not isinstance(answer, str):
                 outcome = identify.identify(payload["caption"], pairs, answer)
                 answer = {
@@ -368,6 +370,33 @@ def test_an_image_that_fails_again_after_a_retry_reuses_its_identification(
     note = store.get_xhs_note(note_id(1))
     assert (note["state"], note["content_version"]) == ("saved", 2)
     assert supervisor.operations().count("xhs_identify") == calls
+
+
+def test_a_retry_during_identification_makes_its_answer_stale(
+    store: ControlStore, supervisor: PipelineSupervisor
+) -> None:
+    _three_images(supervisor)
+    supervisor.ocr[hashlib.sha256(png(2)).hexdigest()] = ("第二张 image two", [])
+
+    def retry_meanwhile() -> list[dict[str, Any]]:
+        supervisor.downloads[_url("file-b")] = png(2)
+        note = store.get_xhs_note(note_id(1))
+        store.retry_xhs_image(
+            note_id=note_id(1), ordinal=2, expected_revision=note["revision"],
+            actor_id=ACTOR, idempotency_key="retry-during-00001",
+        )
+        return model_items()
+
+    supervisor.identify[PAPER_TEXT] = [retry_meanwhile, model_items()]
+    drain = pipeline(store, supervisor)
+    drain.pull()
+    drain.drain()
+    results = [task["result"] for task in tasks(store, "identify")]
+    assert len(results) == 2 and {"stale": True} in results
+    assert [result for result in results if result.get("recommendations")]
+    note = store.get_xhs_note(note_id(1))
+    assert (note["state"], note["content_version"], note["last_error"]) == ("saved", 1, None)
+    assert store.xhs_usage()["gpt"] == 3  # two identifications and one link search
 
 
 def test_a_crash_between_the_file_write_and_the_registration_reuses_the_version(
