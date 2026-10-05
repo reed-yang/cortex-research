@@ -71,9 +71,11 @@ carries its SHA-256. Classes:
 - `external`: URLs with a scheme such as `https:` or `data:`; never fetched.
   `non_asset`: anchors and other local links, which are not resolved.
 - `unsupported`: `srcset`, CSS `url()`, other HTML asset attributes, HTML
-  tags that never complete, destinations the scanner cannot parse, other
-  `page=`/`bbox=` forms, and a block comment without `-->` that hides
-  asset-looking text up to the end of the file.
+  tags that never complete, destinations the scanner cannot parse (including a
+  `](...)` destination left without an opening bracket, as when a figure
+  caption contains an interval such as `(0, 1]`), other `page=`/`bbox=` forms,
+  and a block comment without `-->` that hides asset-looking text up to the end
+  of the file.
 
 The scanner supports inline links and images (angle destinations, titles,
 escaped parentheses and up to 32 levels of balanced parentheses, as in cmark),

@@ -277,6 +277,53 @@ def test_unparsable_asset_forms_are_reported_as_unsupported(text, forms):
     assert [(u.form, u.snippet) for u in unsupported] == forms
 
 
+@pytest.mark.parametrize(("text", "snippet"), [
+    # Ingestion writes '![{caption}]({rel})' with the raw figcaption text. An
+    # interval in the caption pairs '![' with its own ']', so the real '](' has
+    # no opener and CommonMark renders the whole construct as text.
+    ("![Accuracy for λ ∈ (0, 1] across seeds.](assets/fig3.png)\n", "assets/fig3.png"),
+    ("![Panel A [1, 2]; range (0, 1] in Panel B.](./assets/fig4.png)\n", "./assets/fig4.png"),
+    ("A citation [3] ](assets/fig5.png) without an opener.\n", "assets/fig5.png"),
+    ("Set {x | x ∈ [0, 1]}](assets/fig6.png).\n", "assets/fig6.png"),
+    ("Caption ends with a backslash \\](assets/fig7.png)\n", "assets/fig7.png"),
+    ("![Rate (0, 1]](page=3,bbox=[1,2,3,4])\n", "page=3,bbox=[1,2,3,4]"),
+])
+def test_a_destination_left_without_an_opening_bracket_is_unsupported(text, snippet):
+    data, refs, unsupported = _scan(text)
+
+    assert refs == ()
+    assert [(u.form, u.line, u.snippet) for u in unsupported] == [
+        ("unparsed_markdown_destination", 1, snippet)]
+    start = data.index(snippet.encode())
+    assert (unsupported[0].byte_start, unsupported[0].byte_end) == (
+        start, start + len(snippet.encode()))
+    assert unsupported[0].column == text.index(snippet) + 1
+
+
+@pytest.mark.parametrize("text", [
+    "Inline `](assets/code.png)` and ``x ](assets/code2.png)``.\n",
+    "```\n![Rate (0, 1]](assets/fenced.png)\n```\n",
+    "<!-- ![Rate (0, 1]](assets/comment.png) -->\n",
+    "Prose with a stray ] and a link [x](https://example.org) ](not-an-asset).\n",
+])
+def test_code_and_non_asset_destinations_without_an_opener_stay_quiet(text):
+    _, refs, unsupported = _scan(text)
+
+    assert unsupported == ()
+    assert all(r.raw_target == "https://example.org" for r in refs)
+
+
+def test_a_bracket_inside_a_code_span_does_not_break_the_caption():
+    # The ']' of the interval sits in a code span, so the image still parses
+    # and no destination is reported twice.
+    text = "![Accuracy for `(0, 1]` across seeds.](assets/fig3.png)\n"
+    data, refs, unsupported = _scan(text)
+
+    assert unsupported == ()
+    assert [(r.syntax, r.raw_target) for r in refs] == [("markdown_image", "assets/fig3.png")]
+    assert refs[0].byte_start == data.index(b"assets/fig3.png")
+
+
 def test_prose_comparisons_and_closed_comments_are_not_unsupported():
     text = ("Values x <y and z.\n![](assets/a.png)\n"
             "<!-- closed\n\n![](assets/hidden.png)\n-->\n![](assets/b.png)\n")
@@ -309,7 +356,9 @@ def test_long_paragraphs_with_unmatched_brackets_and_backticks_scan_in_linear_ti
 @pytest.mark.parametrize("body", [
     "[x](" * 50_000, "[x](a(" * 33_000, "[x](<a " * 28_000, "``x <!-- " * 22_000,
     "<b x=" * 40_000, "[" * 100_000 + "]" * 100_000,
-], ids=["open-paren", "nested-paren", "angle", "backticks-comment", "tag", "nested-brackets"])
+    "](x " * 50_000, "](" * 50_000 + "assets/a.png",
+], ids=["open-paren", "nested-paren", "angle", "backticks-comment", "tag", "nested-brackets",
+        "orphan-close", "orphan-close-asset"])
 def test_repeated_malformed_constructs_scan_in_linear_time(body):
     text = body + "\n\n![x](assets/end.png)\n"
     started = time.perf_counter()
@@ -584,6 +633,21 @@ def test_references_after_markup_edge_cases_reach_the_report(tmp_path, capsys):
         ("missing", 9, "figures/l9.png", None),
         ("missing", 16, "assets/l18.png", None),
     ]
+
+
+def test_an_ingested_caption_with_an_interval_is_a_finding_not_a_clean_file(tmp_path, capsys):
+    body = ("## Results\n\n"
+            "![Accuracy for λ ∈ (0, 1] across seeds.](assets/fig3.png)\n\n"
+            "![Loss curve.](assets/fig4.png)\n")
+    corpus = _corpus(tmp_path)
+    _paper(corpus, "mu", {"full_text.md": body}, assets=["assets/fig4.png"])
+    code, report, _ = _run(capsys, "--corpus", str(corpus))
+
+    record = _file(report, "mu/full_text.md")
+    assert code == 0
+    assert record["occurrences"] == _counts(present=1, unsupported=1)
+    assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
+        ("unsupported", "unparsed_markdown_destination", 3, "assets/fig3.png")]
 
 
 def test_symlinks_and_unreadable_inputs_are_reported_with_nonzero_status(tmp_path, capsys):

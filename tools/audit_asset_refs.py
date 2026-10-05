@@ -629,6 +629,11 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
         unsupported.append(UnsupportedForm(form, line, column, source.byte(start),
                                            source.byte(end), source.text[start:end]))
 
+    def tail_end(after: int) -> int:
+        """End of the text after '(' that a failed destination is judged by."""
+        position = bisect_left(closers, after)
+        return min(source.line_end(after), closers[position] if position < len(closers) else size)
+
     for comment in blocks.unclosed_comments:
         if _ASSET_LOOKING.search(source.text, comment + 4):
             unsupported_form("unclosed_html_comment", comment, source.line_end(comment))
@@ -693,9 +698,7 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
                 reference(f"markdown_{kind}", at, placeholder.start(1), placeholder.end(1), None)
                 mark(after, placeholder.end())
                 continue
-            position = bisect_left(closers, after)
-            end = min(source.line_end(after),
-                      closers[position] if position < len(closers) else size)
+            end = tail_end(after)
             if _PSEUDO.match(text, after + 1, end):
                 unsupported_form("unrecognized_pseudo_destination", after + 1, end)
                 mark(after, end)
@@ -726,6 +729,25 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
         if definition is not None:
             reference(f"markdown_reference_{kind}", at, definition[0], definition[1], None,
                       definition[2])
+
+    # A ']' that pairs inside the label, such as an interval "(0, 1]" in an
+    # ingested figure caption, leaves the real "](" without an opening bracket,
+    # and CommonMark renders the construct as text. Every "](" that no parsed
+    # construct consumed is judged like a failed inline destination, including
+    # one after an escaped ']', so such a reference is reported, never hidden.
+    clean = None
+    for match in re.finditer(r"\]\(", text):
+        after = match.end() - 1
+        if consumed[after]:
+            continue
+        end = tail_end(after)
+        if clean and clean[0] == end and clean[1] <= after + 1:
+            continue
+        if _PSEUDO.match(text, after + 1, end) or _ASSET_LOOKING.search(text, after + 1, end):
+            unsupported_form("unparsed_markdown_destination", after + 1, end)
+            mark(after, end)
+        else:
+            clean = (end, after + 1)
 
     tags: list[tuple[int, int]] = []
     for tag in _TAG.finditer(text):
