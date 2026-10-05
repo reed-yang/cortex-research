@@ -946,6 +946,7 @@ def seed_telegram_idea(root: Path) -> dict[str, Any]:
     """
 
     from cortex_platform.product.control.research_store import research_item_id
+    from cortex_platform.product.sources.reader import ROOT_ID
 
     state = _read_state(root)
     store = ControlStore(_database(root))
@@ -957,7 +958,7 @@ def seed_telegram_idea(root: Path) -> dict[str, Any]:
         item={"id": item_id, "kind": "idea", "origin_id": TELEGRAM_ITEM_ORIGIN, "title": TELEGRAM_ITEM_TITLE},
         documents=[{
             "title": TELEGRAM_ITEM_TITLE,
-            "asset_root_id": CAPTURE_ROOT_ID,
+            "asset_root_id": ROOT_ID,
             "relative_path": "ideas/telegram-idea.md",
             "origin_relative_path": "ideas/telegram-idea.md",
             "media_type": "text/markdown",
