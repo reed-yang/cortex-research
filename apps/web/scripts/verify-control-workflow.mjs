@@ -390,6 +390,36 @@ async function assertNoOverflow(page, selector = "html") {
   assert.ok(dimensions.scrollWidth <= dimensions.clientWidth, `${selector} overflowed: ${dimensions.scrollWidth} > ${dimensions.clientWidth}`);
 }
 
+// The Inbox scrolls inside its own section, so a card wider than the phone pans
+// that section sideways and never widens `html`: overflow is measured here.
+const inboxSection = `section[aria-label="${copy.inbox.title}"]`;
+
+// A closed `details` lays out nothing, so the ids it holds can only overflow,
+// and only be measured, once it is open.
+async function openDetails(card) {
+  const details = card.locator("details[data-details]");
+  await details.locator("summary").click();
+  await waitForValue(async () => await details.evaluate((node) => node.open), true);
+}
+
+// The shell's phone floor, as `verify-mobile-pwa.mjs` measures it: 44 CSS
+// pixels below `lg`, for every visible control the selector names.
+async function assertTouchTargets(page, selector, minimum = 44) {
+  const targets = await page.locator(selector).evaluateAll((elements) =>
+    elements
+      .filter((element) => element.checkVisibility({ opacityProperty: true, visibilityProperty: true }))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { label: element.textContent?.trim(), width: rect.width, height: rect.height };
+      }),
+  );
+  assert.ok(targets.length > 0, `${selector} must expose visible touch targets`);
+  for (const target of targets) {
+    assert.ok(target.width >= minimum, `${target.label} is only ${target.width}px wide`);
+    assert.ok(target.height >= minimum, `${target.label} is only ${target.height}px tall`);
+  }
+}
+
 // Below `lg` the shell's rail is a drawer, and this trigger is the only way
 // into it: the projects, the thread list and the Library/Inbox/Status entries
 // are all unreachable on a phone without it.
@@ -863,7 +893,11 @@ async function main() {
     await openSource.waitFor();
     await captureCard.getByText(copy.capture.availableInLibrary, { exact: true }).waitFor();
     assert.equal(await captureCard.getByRole("button", { name: copy.inbox.reopen }).count(), 0, "a failed Capture must stay terminal");
-    await assertNoOverflow(activePage);
+    await openDetails(captureCard);
+    await captureCard.getByText(copy.details.librarySource, { exact: true }).waitFor();
+    await assertNoOverflow(activePage, inboxSection);
+    // Both composers, both refresh controls and the Library link.
+    await assertTouchTargets(activePage, `${inboxSection} button`);
     const captureMutations = [];
     const recordMutation = (request) => {
       if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/")) captureMutations.push(request.method());
@@ -930,10 +964,24 @@ async function main() {
     assert.equal(await shownIdea.textContent(), ideaText);
     assert.equal(await shownIdea.evaluate((node) => getComputedStyle(node).whiteSpace), "pre-wrap", "the idea's spaces and blank line must stay visible");
     assert.equal(await ideaBox.inputValue(), "", "a confirmed save clears the composer");
-    await assertNoOverflow(activePage);
     await quiesceResponses(responseRecords);
     summaries.push(await runFixture("assert-fragment", temporaryRoot, capability, secrets, processOutputs));
     ideaSaved = true;
+
+    // A Telegram idea carries the longest Details an idea card shows: its own
+    // id, its thread and the research item that thread was about, each a
+    // full-length id, one of them under the longest label.
+    const telegramIdea = await runFixture("seed-telegram-idea", temporaryRoot, capability, secrets, processOutputs);
+    summaries.push(telegramIdea);
+    await ideas.getByRole("button", { name: copy.inbox.refreshIdeas, exact: true }).click();
+    const telegramCard = ideaCards.filter({ hasText: copy.fragment.fromTelegram });
+    await telegramCard.waitFor();
+    assert.equal(await ideaCards.count(), 2, "the refreshed list must hold both ideas");
+    await openDetails(telegramCard);
+    for (const id of [telegramIdea.fragment_id, telegramIdea.thread_id, telegramIdea.context_item_id]) {
+      await telegramCard.getByText(id, { exact: true }).waitFor();
+    }
+    await assertNoOverflow(activePage, inboxSection);
 
     const state = await browserState(activePage);
     browserStates.push(state);

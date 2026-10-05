@@ -127,7 +127,9 @@ export function CaptureCard({
       {/* Everything a support conversation needs and the screen does not. */}
       <details className="text-xs text-muted-foreground" data-details>
         <summary>{copy.capture.details}</summary>
-        <dl className="mt-1 grid grid-cols-[max-content_1fr] gap-x-3">
+        {/* Ids are unbroken, so the value column may shrink and an id breaks
+            anywhere rather than widening the card past a phone. */}
+        <dl className="mt-1 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 wrap-anywhere">
           <dt>{copy.details.captureId}</dt><dd>{capture.id}</dd>
           <dt>{copy.details.state}</dt><dd>{capture.state}</dd>
           <dt>{copy.details.revision}</dt><dd>{capture.revision}</dd>
