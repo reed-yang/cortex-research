@@ -21,6 +21,12 @@ roadmap and release records. Read the applicable runbook before changing a bound
   Separate captures may reuse an identical committed adoption manifest only
   within the same corpus root and with matching ready source bindings. Bulk
   adoption retains its original idempotency and conflict rules.
+  The profile also hosts the XHS plugin's provider clients (`provider_http`,
+  `xhs_client`, `image_ocr`, `responses_client`, `blog_fetch`). Only
+  engine-child handlers import them, lazily; the nine bridge modules never do,
+  and `trafilatura` stays forbidden for those nine. Image OCR for XHS is
+  in-product; PDF OCR stays an operator skill. The pure identification rules
+  live in `product/xhs/`.
 - `product/readings/` owns opt-in external publication and its separate journal.
   Keep Capture outcomes independent, preserve existing notes and require
   provenance/hash matches for generated-file updates. External writes belong

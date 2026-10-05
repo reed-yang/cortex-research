@@ -44,6 +44,12 @@ Paths abbreviated `product/` are relative to `cortex_platform/`.
   operator-accepted skill whose package digest still matches; uv never runs
   inside an effect. A paper that needs an unavailable capability is refused as
   `capability_unavailable` before any corpus write.
+- PDF OCR stays the operator skill's. First-party image OCR for XHS carousel
+  images is in-product: the research profile also hosts the XHS, OCR,
+  Responses and blog provider clients, which only engine-child handlers import
+  and the nine arXiv bridge modules never do. Each provider operation receives
+  only its own credentials, never opens `research.db`, and writes only under
+  the one asset root its caller binds, or nowhere.
 
 Executable authorities: `product/research/`, `product/sources/`,
 `product/artifacts/`, `product/skills.py`, `product/engine/bindings.py`,
