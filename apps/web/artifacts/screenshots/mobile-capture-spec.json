@@ -8,15 +8,15 @@
   "screenshots": {
     "mobile-control-decision.png": {
       "scenario": "persisted-control-decision",
-      "sha256": "79e183cd8fa125fd4fd6e3dcf2dcafc763891e6b3910646bf9e17e6936cff894"
+      "sha256": "d35b8431f02764be32103712cbac365f5789938bc8a42ce576af16b1ef28a76f"
     },
     "mobile-g0-offline.png": {
       "scenario": "g0-offline-decision",
-      "sha256": "4ed19881998e2f72d9bcfecd6d110a8b53930cfbea39b62d1ded47ecb60c5bd2"
+      "sha256": "cb75786e75f5688ffff4311bbee00b93b19cacb7c285a811f860e0d5ed781a4c"
     },
     "mobile-g1-artifact.png": {
       "scenario": "g1-architecture-artifact",
-      "sha256": "342a61b638ba0fb887da4e32668a2294b9e4f5153ea9e4c1cc75e3b92aadfcab"
+      "sha256": "ad3150b7f3bf5cc2d9466e61d27d2e0a0fa81824abbea111e4586238da9ec7fa"
     }
   }
 }
