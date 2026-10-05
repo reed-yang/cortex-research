@@ -287,6 +287,13 @@ def test_unparsable_asset_forms_are_reported_as_unsupported(text, forms):
     ("Set {x | x ∈ [0, 1]}](assets/fig6.png).\n", "assets/fig6.png"),
     ("Caption ends with a backslash \\](assets/fig7.png)\n", "assets/fig7.png"),
     ("![Rate (0, 1]](page=3,bbox=[1,2,3,4])\n", "page=3,bbox=[1,2,3,4]"),
+    # An earlier stray '](' whose text is clean ends at the same ')', so its
+    # cached result must not hide a later pseudo destination.
+    ("A stray ](see text ![Bound (-2, 3]](page=7,bbox=[5,6,7,8])\n", "page=7,bbox=[5,6,7,8]"),
+    ("A stray ](see text ![Bound (-2, 3]](bbox=[5,6,7,8])\n", "bbox=[5,6,7,8]"),
+    ("A stray ](see text ![Bound (-2, 3]](PAGE=7)\n", "PAGE=7"),
+    # A '](' inside a reported destination is not reported again.
+    ("Two strays ](a ](assets/fig8.png)\n", "a ](assets/fig8.png"),
 ])
 def test_a_destination_left_without_an_opening_bracket_is_unsupported(text, snippet):
     data, refs, unsupported = _scan(text)
@@ -311,6 +318,27 @@ def test_code_and_non_asset_destinations_without_an_opener_stay_quiet(text):
 
     assert unsupported == ()
     assert all(r.raw_target == "https://example.org" for r in refs)
+
+
+@pytest.mark.parametrize(("text", "refs", "forms"), [
+    # Without an opener the '](' is text, so the raw HTML and CSS after it
+    # keep the classification their own scanners give them.
+    ('Range (-2, 3]](see <img src="assets/present.png">)\n',
+     [("html_img", "assets/present.png")], []),
+    ('Range (-2, 3]](see <a href="assets/absent.svg">figure</a>)\n',
+     [("html_a", "assets/absent.svg")], []),
+    ('Range (-2, 3]](see <span style="background: url(assets/bg.png)">x</span>)\n',
+     [], [("css_url", "assets/bg.png")]),
+    ("Range (-2, 3]](see url(assets/bg.png) )\n", [], [("css_url", "assets/bg.png")]),
+    # A '](' inside a tag attribute is not Markdown.
+    ('<img alt="Range (0, 1]](assets/alt.png)" src="assets/present.png">\n',
+     [("html_img", "assets/present.png")], []),
+])
+def test_html_and_css_after_a_destination_without_an_opener_keep_their_class(text, refs, forms):
+    _, references, unsupported = _scan(text)
+
+    assert [(r.syntax, r.raw_target) for r in references] == refs
+    assert [(u.form, u.snippet) for u in unsupported] == forms
 
 
 def test_a_bracket_inside_a_code_span_does_not_break_the_caption():
@@ -648,6 +676,21 @@ def test_an_ingested_caption_with_an_interval_is_a_finding_not_a_clean_file(tmp_
     assert record["occurrences"] == _counts(present=1, unsupported=1)
     assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
         ("unsupported", "unparsed_markdown_destination", 3, "assets/fig3.png")]
+
+
+def test_tags_after_a_destination_without_an_opener_are_classified_in_the_report(tmp_path, capsys):
+    body = ("## Results\n\n"
+            'Range (-2, 3]](see <img src="assets/present.png">)\n\n'
+            'Range (-2, 3]](see <a href="assets/absent.svg">figure</a>)\n')
+    corpus = _corpus(tmp_path)
+    _paper(corpus, "nu", {"full_text.md": body}, assets=["assets/present.png"])
+    code, report, _ = _run(capsys, "--corpus", str(corpus))
+
+    record = _file(report, "nu/full_text.md")
+    assert code == 0
+    assert record["occurrences"] == _counts(present=1, missing=1)
+    assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
+        ("missing", "html_a", 5, "assets/absent.svg")]
 
 
 def test_symlinks_and_unreadable_inputs_are_reported_with_nonzero_status(tmp_path, capsys):

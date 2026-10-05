@@ -629,10 +629,10 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
         unsupported.append(UnsupportedForm(form, line, column, source.byte(start),
                                            source.byte(end), source.text[start:end]))
 
-    def tail_end(after: int) -> int:
+    def tail_end(after: int, ends: list[int]) -> int:
         """End of the text after '(' that a failed destination is judged by."""
-        position = bisect_left(closers, after)
-        return min(source.line_end(after), closers[position] if position < len(closers) else size)
+        position = bisect_left(ends, after)
+        return min(source.line_end(after), ends[position] if position < len(ends) else size)
 
     for comment in blocks.unclosed_comments:
         if _ASSET_LOOKING.search(source.text, comment + 4):
@@ -698,7 +698,7 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
                 reference(f"markdown_{kind}", at, placeholder.start(1), placeholder.end(1), None)
                 mark(after, placeholder.end())
                 continue
-            end = tail_end(after)
+            end = tail_end(after, closers)
             if _PSEUDO.match(text, after + 1, end):
                 unsupported_form("unrecognized_pseudo_destination", after + 1, end)
                 mark(after, end)
@@ -732,25 +732,34 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
 
     # A ']' that pairs inside the label, such as an interval "(0, 1]" in an
     # ingested figure caption, leaves the real "](" without an opening bracket,
-    # and CommonMark renders the construct as text. Every "](" that no parsed
-    # construct consumed is judged like a failed inline destination, including
-    # one after an escaped ']', so such a reference is reported, never hidden.
-    clean = None
-    for match in re.finditer(r"\]\(", text):
+    # and CommonMark renders the construct as text. Every "](" outside parsed
+    # constructs is judged like a failed inline destination, including one
+    # after an escaped ']', so such a reference is reported, never hidden.
+    # Raw HTML tags and CSS url() in that text stay with their own scanners
+    # below: they are blanked for this judgment and nothing here is consumed.
+    tag_matches = list(_TAG.finditer(text))
+    css_matches = list(_CSS_URL.finditer(text))
+    judged = _mask(text, [*(run.span() for run in re.finditer(rb"\x01+", consumed)),
+                          *(m.span() for m in (*tag_matches, *css_matches)
+                            if not consumed[m.start()])])
+    judged_closers = [match.start() for match in re.finditer(r"\)", judged)]
+    clean, reported = None, 0
+    for match in re.finditer(r"\]\(", judged):
         after = match.end() - 1
-        if consumed[after]:
-            continue
-        end = tail_end(after)
-        if clean and clean[0] == end and clean[1] <= after + 1:
-            continue
-        if _PSEUDO.match(text, after + 1, end) or _ASSET_LOOKING.search(text, after + 1, end):
-            unsupported_form("unparsed_markdown_destination", after + 1, end)
-            mark(after, end)
-        else:
-            clean = (end, after + 1)
+        if after < reported:
+            continue   # inside a destination reported here already
+        end = tail_end(after, judged_closers)
+        if not _PSEUDO.match(judged, after + 1, end):
+            if clean and clean[0] == end and clean[1] <= after + 1:
+                continue
+            if not _ASSET_LOOKING.search(judged, after + 1, end):
+                clean = (end, after + 1)
+                continue
+        unsupported_form("unparsed_markdown_destination", after + 1, end)
+        reported = end
 
     tags: list[tuple[int, int]] = []
-    for tag in _TAG.finditer(text):
+    for tag in tag_matches:
         tags.append(tag.span())
         if consumed[tag.start()]:
             continue
@@ -789,7 +798,7 @@ def scan_markdown(data: bytes) -> tuple[tuple[AssetReference, ...], tuple[Unsupp
                 stop -= 1
             unsupported_form("unparsed_html_tag", at, stop)
 
-    for css in _CSS_URL.finditer(text):
+    for css in css_matches:
         if not consumed[css.start()] and _ASSET_LOOKING.search(css.group(2)):
             unsupported_form("css_url", css.start(2), css.end(2))
 

@@ -73,7 +73,8 @@ carries its SHA-256. Classes:
 - `unsupported`: `srcset`, CSS `url()`, other HTML asset attributes, HTML
   tags that never complete, destinations the scanner cannot parse (including a
   `](...)` destination left without an opening bracket, as when a figure
-  caption contains an interval such as `(0, 1]`), other `page=`/`bbox=` forms,
+  caption contains an interval such as `(0, 1]`; HTML tags and CSS `url()`
+  in that text keep their own classes), other `page=`/`bbox=` forms,
   and a block comment without `-->` that hides asset-looking text up to the end
   of the file.
 
