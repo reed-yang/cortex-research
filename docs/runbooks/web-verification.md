@@ -13,7 +13,7 @@ Browser-free and the only tier hosted CI runs. Roughly 8-10 s warm.
 and `verify:shell-screenshots` (committed PNG digests and geometry, decoded
 without a browser), `test:screenshots`, `verify:pwa` (icons and manifest
 contract), `test:selection` (suite selection and the browser-verifier roster),
-`test:access-identity`, `test:ui` (26 vitest/jsdom files, 511 tests).
+`test:access-identity`, `test:ui` (27 vitest/jsdom files, 625 tests).
 
 Needs: Node 22.13+ (26.0.0 here) and `npm ci` in `apps/web`. Nothing else.
 
@@ -59,6 +59,25 @@ real Control process and checks that Preview renders its stored notes, that the
 stored figure loads through the gateway with its image headers and that a
 missing figure shows its placeholder. `verify-markdown-math.mjs` checks Library
 Preview math, figure sizing and Copy source against the mock Control.
+
+XHS notes and blogs are covered only against synthetic data; no real XHS
+image, caption or ID is committed. In the fast tier,
+`tests/control-gateway.test.ts` checks the gateway allowlist (the `kind`
+query, the note, links and XHS status reads, and the exact import, link and
+image-retry bodies), `tests/control-client.test.ts` the decoders and the
+client's identity checks, and `tests/shell/xhs-sources.test.tsx` the Library
+kind filter, the blog record, "Recommended in", the Status line and the XHS
+note record against `FakeControl`: staging then approving each pending paper,
+per-row outcomes when an approval fails, a reused Capture, a refused import,
+link edits including one that lost to a newer row, and image retries. `tests/shell/copy-audit.test.tsx` opens the note
+record. The mock Control (`scripts/mock-control-server.mjs`) serves a
+synthetic note with generated slides, a blog and the XHS status; the shell
+screenshots include the Library and an `xhs-note` scene in both schemes.
+
+Not covered: `verify-control-workflow.mjs` does not open an XHS note against a
+real Control process, and the committed `status-*` screenshots predate the XHS
+line. No test calls TikHub, an OCR provider, the Responses endpoint, Jina or a
+blog site.
 
 A capture script rewrites committed evidence, so it stays out of the release
 chain by design and the roster guard enforces that. Never run one to make a

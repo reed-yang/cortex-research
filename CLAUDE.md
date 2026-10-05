@@ -9,7 +9,10 @@ roadmap and release records. Read the applicable runbook before changing a bound
 
 - `cortex_platform/product/` owns Control state, API, orchestration, transport,
   sources, artifacts and research contexts. Preserve transaction and command
-  idempotency boundaries when extracting helpers.
+  idempotency boundaries when extracting helpers. `cortex_platform/` imports
+  only the standard library (root `pyproject.toml`, runtime closure proof);
+  third-party code, provider HTTP clients included, lives in the research
+  profile and is imported only inside engine-child handlers.
 - `profiles/research/src/cortex_research/` is the retained arXiv ingestion and
   indexing bridge. The directory name does not imply multi-profile support.
   Metadata uses the product-bound abs page directly; the export API is a
@@ -25,8 +28,11 @@ roadmap and release records. Read the applicable runbook before changing a bound
   `xhs_client`, `image_ocr`, `responses_client`, `blog_fetch`). Only
   engine-child handlers import them, lazily; the nine bridge modules never do,
   and `trafilatura` stays forbidden for those nine. Image OCR for XHS is
-  in-product; PDF OCR stays an operator skill. The pure identification rules
-  live in `product/xhs/`.
+  in-product; PDF OCR stays an operator skill. The plugin's jobs, result
+  checks, identification rules and saved-version layout live in
+  `product/xhs/`, its Control commands in `product/control/xhs_store.py`.
+  Notes and blogs are Library sources only, never research evidence or
+  readings publications; signed image URLs stay in private task rows.
 - `product/readings/` owns opt-in external publication and its separate journal.
   Keep Capture outcomes independent, preserve existing notes and require
   provenance/hash matches for generated-file updates. External writes belong

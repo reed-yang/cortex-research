@@ -49,11 +49,30 @@ Paths abbreviated `product/` are relative to `cortex_platform/`.
   Responses and blog provider clients, which only engine-child handlers import
   and the nine arXiv bridge modules never do. Each provider operation receives
   only its own credentials, never opens `research.db`, and writes only under
-  the one asset root its caller binds, or nowhere.
+  the one asset root its caller binds, or nowhere. `cortex_platform/` itself
+  imports only the standard library.
+- The XHS plugin is a first-party, opt-in acquisition path. It runs only from
+  the `xhs-pull` and `xhs-drain` schedule rows, which migration 21 seeds
+  disabled, under the dispatch gate, with `[xhs] enabled` and both of its asset
+  roots ready. Provider I/O happens in engine children outside SQLite
+  transactions; each result is checked again in cortexd and recorded in one
+  transaction fenced by the task revision. Daily caps bound provider calls.
+- OCR text is stored verbatim and model output is stored separately as
+  identified recommendations; a model failure never yields an empty list.
+  cortexd re-runs the rules and the verbatim filter on its own copy instead of
+  trusting a child's items. Signed image URLs stay in private task rows; raw
+  provider answers stay in private `raw/` and `ocr/` files that no route serves.
+- `xhs_note` and `blog` sources resolve through their latest content binding
+  under an enabled `xhs-notes` or `blogs` root, outside the research corpus,
+  and are never research evidence, Library search results or readings
+  publications: publication requires the paper kind. Importing a recommended
+  paper stages an ordinary Capture that still needs approval; a blog import
+  fetches only a recommended link, through the public-address fetch policy.
 
 Executable authorities: `product/research/`, `product/sources/`,
 `product/artifacts/`, `product/skills.py`, `product/engine/bindings.py`,
-`apps/web/app/control/` and their corresponding tests.
+`product/xhs/`, `product/control/xhs_store.py`, `apps/web/app/control/` and
+their corresponding tests.
 
 ## Runtime, transport and exposure
 
