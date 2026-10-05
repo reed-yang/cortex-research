@@ -817,6 +817,10 @@ def test_unsupported_grounding_layouts_are_unknown(text):
      ["\nConcluded.\n\n"]),
     # A blank Limitations section is skipped.
     ("# Paper\n\n## Limitations\n\n## Conclusion\n\nConcluded.\n", ["\nConcluded.\n"]),
+    # Selection counts a nested heading line as text, so a Limitations section
+    # holding only a sub-heading is still the packet's window; its coverage
+    # body excludes heading lines and is empty, without falling back.
+    ("# Paper\n\n## Limitations\n\n### Scope\n\n## Conclusion\n\nConcluded.\n", []),
     # No candidate section is a known negative.
     ("# Paper\n\n## Method\n\nBody.\n", []),
 ])

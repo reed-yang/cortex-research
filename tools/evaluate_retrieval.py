@@ -653,7 +653,8 @@ def author_section_ranges(raw: bytes) -> dict:
 
     That is the first Limitations section before References, else the first
     Conclusion, as research/evidence.py chooses it. No such section is a known
-    negative.
+    negative. Selection counts nested heading lines as text and the body here
+    does not, so a selected section holding only sub-headings has no body.
     """
     heads = _evidence._headings(raw)
     window = _evidence._author_section(raw, heads)

@@ -159,10 +159,13 @@ target body:
   packet builder selects from `full_text.md`: the first heading containing
   `limitation` before a heading with the word `references` or `bibliography`,
   otherwise the first containing `conclusion`. The first heading (the document
-  title) and same-level repeats of it are skipped, and so is a section without
-  body text. The section runs to the next heading
-  of the same or a higher level, without nested heading lines. A paper without
-  such a section is a known negative.
+  title) and same-level repeats of it are skipped, and so is a candidate whose
+  text after the heading line is blank up to the next heading of the same or a
+  higher level. That selection test counts nested heading lines as text. The
+  coverage body runs to the same end without nested heading lines, so a
+  selected section that holds only sub-headings reports `false` instead of
+  falling back to a later Conclusion. A paper without such a section is a known
+  negative.
 - `indexed_results_section`, `indexed_limitations_section`: the full-text
   section name of the packet's own search hit contains `result` or
   `limitation` and the excerpt keeps a body after the generated
