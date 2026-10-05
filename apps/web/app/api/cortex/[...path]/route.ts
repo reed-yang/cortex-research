@@ -26,7 +26,11 @@ const GET_ROUTES = [
   new RegExp(`^sources\\/${ID}\\/content$`),
   new RegExp(`^sources\\/${ID}\\/document$`),
   new RegExp(`^sources\\/${ID}\\/asset$`),
+  // An XHS note's own projection, and the recommendation links of any source.
+  new RegExp(`^sources\\/${ID}\\/note$`),
+  new RegExp(`^sources\\/${ID}\\/links$`),
   new RegExp(`^sources\\/${ID}$`),
+  /^xhs\/status$/,
   /^events$/,
   /^decisions$/,
   /^captures$/,
@@ -37,6 +41,8 @@ const GET_ROUTES = [
 ];
 
 const SOURCE_CONTENT_KINDS = ["notes", "full_text", "grounding"];
+// The Library's kind filter: the three kinds Control's source list accepts.
+const SOURCE_KINDS = ["paper", "blog", "xhs_note"];
 const SOURCE_DOCUMENT_ROUTE = new RegExp(`^sources\\/${ID}\\/document$`);
 const SOURCE_ASSET_ROUTE = new RegExp(`^sources\\/${ID}\\/asset$`);
 // The one binary body this gateway passes on: a figure from a source's stored
@@ -69,6 +75,11 @@ const POST_ROUTES = [
   /^captures$/,
   new RegExp(`^captures\\/${ID}\\/(?:approve|dismiss|reopen)$`),
   /^fragments$/,
+  // XHS recommendation commands, each scoped to the note source it belongs to.
+  // An image ordinal is 1 to 100, the carousel bound Control stores.
+  new RegExp(`^sources\\/${ID}\\/recommendations\\/import$`),
+  new RegExp(`^sources\\/${ID}\\/recommendations\\/${ID}\\/link$`),
+  new RegExp(`^sources\\/${ID}\\/images\\/(?:[1-9][0-9]?|100)\\/retry$`),
 ];
 
 type RouteContext = { params: Promise<{ path: string[] }> };
@@ -121,6 +132,10 @@ function validQuery(path: string, searchParams: URLSearchParams): boolean {
       (!searchParams.has("kind") || (once("kind") && ["idea", "exploration", "project"].includes(searchParams.get("kind") ?? ""))) &&
       (!searchParams.has("status") || (once("status") && /^[a-z_]{1,40}$/.test(searchParams.get("status") ?? ""))) &&
       (!searchParams.has("offset") || (once("offset") && /^(0|[1-9][0-9]*)$/.test(offset ?? "") && Number.isSafeInteger(Number(offset))));
+  }
+  if (path === "sources") {
+    return only("kind") &&
+      (!searchParams.has("kind") || (once("kind") && SOURCE_KINDS.includes(searchParams.get("kind") ?? "")));
   }
   if (path === "sources/search") {
     const q = searchParams.get("q")?.trim() ?? "";
@@ -252,6 +267,36 @@ function hasExactResearchThreadBody(body: string): boolean {
     typeof value.expected_revision === "number" && Number.isSafeInteger(value.expected_revision) && value.expected_revision >= 0;
 }
 
+function isRevision(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+// One import names 1 to 100 distinct recommendations of one note, each in the
+// identifier shape the routes use, and the note revision they were read at.
+function hasExactRecommendationImportBody(body: string): boolean {
+  const decoded = exactObjectBody(body, ["recommendation_ids", "expected_revision"]);
+  if (!decoded) return false;
+  const ids = decoded.recommendation_ids;
+  return Array.isArray(ids) && ids.length >= 1 && ids.length <= 100 &&
+    ids.every((id) => typeof id === "string" && new RegExp(`^${ID}$`).test(id)) &&
+    new Set(ids).size === ids.length && isRevision(decoded.expected_revision);
+}
+
+// An operator link is one string within Control's 2,000 code point bound and
+// without control characters; Control validates and normalizes the URL itself.
+function hasExactRecommendationLinkBody(body: string): boolean {
+  const decoded = exactObjectBody(body, ["url", "expected_revision"]);
+  if (!decoded || typeof decoded.url !== "string") return false;
+  const length = [...decoded.url].length;
+  return length >= 1 && length <= 2_000 && !/[\u0000-\u001f\u007f]/.test(decoded.url) &&
+    isRevision(decoded.expected_revision);
+}
+
+function hasExactImageRetryBody(body: string): boolean {
+  const decoded = exactObjectBody(body, ["expected_revision"]);
+  return decoded !== null && isRevision(decoded.expected_revision);
+}
+
 const EXACT_BODY_ROUTES: Array<[RegExp, (body: string) => boolean, string]> = [
   [/^research-items\/ri_[a-f0-9]{32}\/thread$/, hasExactResearchThreadBody, "The research conversation body is invalid"],
   [new RegExp(`^source-intents\\/${ID}\\/resolve$`), hasExactResolveBody, "The resolve command body is invalid"],
@@ -263,6 +308,9 @@ const EXACT_BODY_ROUTES: Array<[RegExp, (body: string) => boolean, string]> = [
   [new RegExp(`^workspaces\\/${ID}\\/rename$`), hasExactRenameBody, "The rename command body is invalid"],
   [new RegExp(`^threads\\/${ID}\\/rename$`), hasExactRenameBody, "The rename command body is invalid"],
   [new RegExp(`^threads\\/${ID}\\/(?:archive|unarchive)$`), hasExactRevisionBody, "The archive command body is invalid"],
+  [new RegExp(`^sources\\/${ID}\\/recommendations\\/import$`), hasExactRecommendationImportBody, "The import command body is invalid"],
+  [new RegExp(`^sources\\/${ID}\\/recommendations\\/${ID}\\/link$`), hasExactRecommendationLinkBody, "The link command body is invalid"],
+  [new RegExp(`^sources\\/${ID}\\/images\\/(?:[1-9][0-9]?|100)\\/retry$`), hasExactImageRetryBody, "The image retry body is invalid"],
 ];
 
 async function boundedBody(response: Response, maximum: number): Promise<Uint8Array<ArrayBuffer> | null> {

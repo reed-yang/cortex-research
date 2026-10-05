@@ -1,4 +1,5 @@
 import {
+  CAPTURE_STATES,
   ContractDecodeError,
   boolean as decodeBoolean,
   decodeRun,
@@ -6,9 +7,11 @@ import {
   nullableString,
   object,
   string as decodeString,
+  type CaptureState,
   type Decision,
   type JsonValue,
   type ListEnvelope,
+  type ObjectValue,
   type Run,
 } from "./contracts";
 
@@ -1016,5 +1019,536 @@ export function decodeSourceSearch(value: unknown, path = "source_search"): Sour
         content_sha256: digest,
       };
     }),
+  };
+}
+
+// -- XHS notes, blogs and recommendation links -------------------------------
+//
+// Every projection below pins its whole key set, the way a capture does: an
+// unenumerated field is refused rather than dropped, because these routes sit
+// beside task rows that hold signed image URLs and raw provider answers, and a
+// field that should never have left Control must fail loudly here.
+
+export const SOURCE_KINDS = ["paper", "blog", "xhs_note"] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
+
+export function isSourceKind(value: unknown): value is SourceKind {
+  return (SOURCE_KINDS as readonly unknown[]).includes(value);
+}
+
+export const XHS_NOTE_STATES = [
+  "discovered", "detail_ok", "assets_done", "ocr_done", "identified", "saved", "unsupported", "failed",
+] as const;
+export type XhsNoteState = (typeof XHS_NOTE_STATES)[number];
+const XHS_STEP_STATES = ["pending", "ok", "failed"] as const;
+export type XhsStepState = (typeof XHS_STEP_STATES)[number];
+const XHS_OCR_FLAGS = ["empty", "truncated"] as const;
+export const XHS_RECOMMENDATION_KINDS = ["paper", "blog", "other"] as const;
+export type XhsRecommendationKind = (typeof XHS_RECOMMENDATION_KINDS)[number];
+export const XHS_URL_STATES = [
+  "none", "from_text", "auto_matched", "unverified", "not_found", "operator_set", "failed",
+] as const;
+export type XhsUrlState = (typeof XHS_URL_STATES)[number];
+const XHS_URL_BEARING_STATES: readonly XhsUrlState[] = ["from_text", "auto_matched", "unverified", "operator_set"];
+const XHS_ORIGINS = ["rule", "model", "rule+model"] as const;
+export const XHS_IMPORT_STATES = ["none", "staged", "importing", "imported", "failed"] as const;
+export type XhsImportState = (typeof XHS_IMPORT_STATES)[number];
+const XHS_ROLES = ["curator", "author"] as const;
+export type XhsRole = (typeof XHS_ROLES)[number];
+export const XHS_SCAN_OUTCOMES = ["ok", "no_new_notes", "failed"] as const;
+export type XhsScanOutcome = (typeof XHS_SCAN_OUTCOMES)[number];
+export const XHS_IMPORT_DISPOSITIONS = ["capture_staged", "capture_reused", "blog_import_queued", "refused"] as const;
+export type XhsImportDisposition = (typeof XHS_IMPORT_DISPOSITIONS)[number];
+export const XHS_IMPORT_REFUSALS = ["not_found", "already_imported", "not_importable", "no_url", "no_arxiv_id"] as const;
+export type XhsImportRefusal = (typeof XHS_IMPORT_REFUSALS)[number];
+const XHS_REFUSALS = ["disabled_in_config", "roots_not_ready"] as const;
+export type XhsRefusal = (typeof XHS_REFUSALS)[number];
+const XHS_ROOT_IDS = ["xhs-notes", "blogs"] as const;
+const XHS_ROOT_STATES = ["ready", "disabled", "missing", "overlaps_corpus"] as const;
+const XHS_SCHEDULE_KEYS = ["xhs-pull", "xhs-drain"] as const;
+const XHS_SCHEDULE_OUTCOMES = ["ran", "skipped", "refused", "failed"] as const;
+const XHS_TASK_STATES = ["canceled", "done", "failed", "pending", "running"] as const;
+const XHS_USAGE_PROVIDERS = ["gpt", "ocr", "tikhub"] as const;
+export const XHS_FAILURE_PROVIDERS = ["tikhub", "cdn", "ocr", "gpt", "blog"] as const;
+export type XhsFailureProvider = (typeof XHS_FAILURE_PROVIDERS)[number];
+const XHS_IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
+const XHS_ID = /^[0-9a-f]{24}$/;
+// A failure category as Control stores it: a short snake_case token, never text.
+const XHS_CATEGORY = /^[a-z_]{1,64}$/;
+const XHS_ENGINE = /^[0-9a-z.-]{1,64}$/;
+const XHS_ASSET_PATH = /^assets\/(?:[1-9][0-9]?|100)-[0-9a-f]{12}\.(?:jpg|png|webp|gif)$/;
+const XHS_TASK_ID = /^[\x21-\x7e]{1,300}$/;
+const ARXIV_ID = /^[0-9]{4}\.[0-9]{4,5}$/;
+const PUBLIC_ID = /^[A-Za-z0-9_-]{1,200}$/;
+const MAX_XHS_IMAGES = 100;
+const MAX_XHS_RECOMMENDATIONS = 500;
+const MAX_XHS_IMPORT = 100;
+const MAX_SOURCE_LINKS = 1_000;
+const MAX_XHS_BLOGGERS = 500;
+
+export type XhsNoteHeader = {
+  source_id: string;
+  note_id: string;
+  title: string;
+  state: XhsNoteState;
+  last_error: string | null;
+  content_version: number;
+  revision: number;
+};
+
+export type XhsImage = {
+  ordinal: number;
+  // Relative to the note's latest saved version, for the asset route; null
+  // until the image is downloaded.
+  asset_path: string | null;
+  media_type: string | null;
+  width: number | null;
+  height: number | null;
+  download_state: XhsStepState;
+  download_error: string | null;
+  ocr_state: XhsStepState;
+  ocr_error: string | null;
+  ocr_engine: string | null;
+  ocr_flags: Array<(typeof XHS_OCR_FLAGS)[number]>;
+};
+
+export type XhsRecommendation = {
+  id: string;
+  // Null when the caption, not an image, is the evidence.
+  image_ordinal: number | null;
+  kind: XhsRecommendationKind;
+  title: string;
+  quote: string;
+  arxiv_id: string | null;
+  url: string | null;
+  url_state: XhsUrlState;
+  url_checked_title: string | null;
+  origin: (typeof XHS_ORIGINS)[number];
+  identify_run: string;
+  capture_id: string | null;
+  capture_state: CaptureState | null;
+  capture_revision: number | null;
+  import_state: XhsImportState;
+  imported_source_id: string | null;
+  imported_source_kind: SourceKind | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type XhsNote = XhsNoteHeader & {
+  blogger: { user_id: string; name: string | null; role: XhsRole | null };
+  permalink: string;
+  published_at: string | null;
+  caption: string;
+  caption_complete: boolean;
+  images: XhsImage[];
+  recommendations: XhsRecommendation[];
+};
+
+export type SourceLinkEntry = {
+  source_id: string;
+  source_kind: SourceKind;
+  title: string;
+  image_ordinal: number | null;
+  recommendation_id: string;
+  created_at: string;
+};
+
+export type SourceLinks = {
+  // The notes that recommend this source; only an XHS note recommends.
+  recommended_in: SourceLinkEntry[];
+  // What this source recommends; empty for anything but a note.
+  recommends: SourceLinkEntry[];
+};
+
+export type XhsImportItem = {
+  recommendation_id: string;
+  disposition: XhsImportDisposition;
+  reason: XhsImportRefusal | null;
+  capture_id: string | null;
+  capture_revision: number | null;
+  capture_state: CaptureState | null;
+  recommendation: XhsRecommendation | null;
+};
+
+export type XhsImportResult = { note_source_id: string; items: XhsImportItem[] };
+export type XhsLinkResult = { recommendation: XhsRecommendation };
+export type XhsImageRetryResult = { note: XhsNoteHeader; image: XhsImage };
+
+export type XhsBloggerStatus = {
+  user_id: string;
+  display_name: string | null;
+  role: XhsRole;
+  followed: boolean;
+  last_scan_at: string | null;
+  last_scan_outcome: XhsScanOutcome | null;
+  last_scan_error: string | null;
+  last_new_note_at: string | null;
+};
+
+export type XhsScheduleStatus = {
+  enabled: boolean;
+  revision: number;
+  interval_seconds: number;
+  next_due_at: string | null;
+  last_outcome: (typeof XHS_SCHEDULE_OUTCOMES)[number] | null;
+};
+
+export type XhsStatus = {
+  // Configured, both roots ready and both schedule rows armed.
+  enabled: boolean;
+  enabled_in_config: boolean;
+  roots_ready: boolean;
+  refusal: XhsRefusal | null;
+  roots: Record<(typeof XHS_ROOT_IDS)[number], (typeof XHS_ROOT_STATES)[number]>;
+  schedules: Record<(typeof XHS_SCHEDULE_KEYS)[number], XhsScheduleStatus>;
+  bloggers: XhsBloggerStatus[];
+  tasks: Record<(typeof XHS_TASK_STATES)[number], number>;
+  usage: Record<(typeof XHS_USAGE_PROVIDERS)[number], { calls: number; cap: number }>;
+  last_failures: Record<XhsFailureProvider, string | null>;
+};
+
+function exactRecord(value: unknown, path: string, fields: readonly string[]): ObjectValue {
+  const record = object(value, path);
+  for (const name of Object.keys(record)) {
+    if (!fields.includes(name)) fail(path + "." + name, "unexpected field");
+  }
+  const missing = fields.find((name) => !(name in record));
+  if (missing) fail(path + "." + missing, "expected a field");
+  return record;
+}
+
+function oneOf<T extends string>(value: unknown, path: string, allowed: readonly T[]): T {
+  const decoded = decodeString(value, path);
+  if (!(allowed as readonly string[]).includes(decoded)) fail(path, "unknown value");
+  return decoded as T;
+}
+
+function nullableOneOf<T extends string>(value: unknown, path: string, allowed: readonly T[]): T | null {
+  return value === null ? null : oneOf(value, path, allowed);
+}
+
+function matching(value: unknown, path: string, pattern: RegExp): string {
+  const decoded = decodeString(value, path);
+  if (!pattern.test(decoded)) fail(path, "unexpected shape");
+  return decoded;
+}
+
+function nullableMatching(value: unknown, path: string, pattern: RegExp): string | null {
+  return value === null ? null : matching(value, path, pattern);
+}
+
+function boundedInteger(value: unknown, path: string, minimum: number, maximum: number): number {
+  const decoded = integer(value, path);
+  if (decoded < minimum || decoded > maximum) fail(path, "integer is outside the contract bound");
+  return decoded;
+}
+
+function nullableBoundedInteger(value: unknown, path: string, minimum: number, maximum: number): number | null {
+  return value === null ? null : boundedInteger(value, path, minimum, maximum);
+}
+
+function nullableSourceText(value: unknown, path: string, maximum: number): string | null {
+  return value === null ? null : sourceText(value, path, maximum);
+}
+
+function category(value: unknown, path: string): string | null {
+  return nullableMatching(value, path, XHS_CATEGORY);
+}
+
+// A link shown to the operator: http or https only, never with credentials.
+function publicLink(value: unknown, path: string): string {
+  const text = boundedString(value, path, 2_000);
+  let parsed: URL;
+  try {
+    parsed = new URL(text);
+  } catch {
+    fail(path, "expected an absolute URL");
+  }
+  if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password) {
+    fail(path, "expected an http or https URL without credentials");
+  }
+  return text;
+}
+
+const XHS_NOTE_HEADER_FIELDS = ["source_id", "note_id", "title", "state", "last_error", "content_version", "revision"];
+
+function noteHeader(record: ObjectValue, path: string): XhsNoteHeader {
+  return {
+    source_id: identifier(record.source_id, path + ".source_id"),
+    note_id: matching(record.note_id, path + ".note_id", XHS_ID),
+    title: sourceText(record.title, path + ".title", 500, 0),
+    state: oneOf(record.state, path + ".state", XHS_NOTE_STATES),
+    last_error: category(record.last_error, path + ".last_error"),
+    content_version: positiveInteger(record.content_version, path + ".content_version"),
+    revision: integer(record.revision, path + ".revision"),
+  };
+}
+
+export function decodeXhsNoteHeader(value: unknown, path = "xhs_note"): XhsNoteHeader {
+  return noteHeader(exactRecord(value, path, XHS_NOTE_HEADER_FIELDS), path);
+}
+
+const XHS_IMAGE_FIELDS = [
+  "ordinal", "asset_path", "media_type", "width", "height", "download_state", "download_error",
+  "ocr_state", "ocr_error", "ocr_engine", "ocr_flags",
+];
+
+export function decodeXhsImage(value: unknown, path = "xhs_image"): XhsImage {
+  const record = exactRecord(value, path, XHS_IMAGE_FIELDS);
+  const downloadState = oneOf(record.download_state, path + ".download_state", XHS_STEP_STATES);
+  const ocrState = oneOf(record.ocr_state, path + ".ocr_state", XHS_STEP_STATES);
+  const downloadError = category(record.download_error, path + ".download_error");
+  const ocrError = category(record.ocr_error, path + ".ocr_error");
+  const assetPath = nullableMatching(record.asset_path, path + ".asset_path", XHS_ASSET_PATH);
+  const flags = boundedArray(record.ocr_flags, path + ".ocr_flags", XHS_OCR_FLAGS.length, (item, itemPath) => oneOf(item, itemPath, XHS_OCR_FLAGS));
+  requireUnique(flags, path + ".ocr_flags");
+  // The pairs Control's own table enforces: an error exactly when a step
+  // failed, a file only once it is downloaded, flags only on a transcription.
+  if ((downloadError !== null) !== (downloadState === "failed")) fail(path + ".download_error", "error does not match the download state");
+  if ((ocrError !== null) !== (ocrState === "failed")) fail(path + ".ocr_error", "error does not match the transcription state");
+  if (assetPath !== null && downloadState !== "ok") fail(path + ".asset_path", "an image that is not downloaded has no file");
+  if (flags.length && ocrState !== "ok") fail(path + ".ocr_flags", "flags belong to a transcription");
+  const ordinal = boundedInteger(record.ordinal, path + ".ordinal", 1, MAX_XHS_IMAGES);
+  if (assetPath !== null && !assetPath.startsWith(`assets/${ordinal}-`)) fail(path + ".asset_path", "file belongs to another image");
+  return {
+    ordinal,
+    asset_path: assetPath,
+    media_type: nullableOneOf(record.media_type, path + ".media_type", XHS_IMAGE_MEDIA_TYPES),
+    width: nullableBoundedInteger(record.width, path + ".width", 1, 100_000),
+    height: nullableBoundedInteger(record.height, path + ".height", 1, 100_000),
+    download_state: downloadState,
+    download_error: downloadError,
+    ocr_state: ocrState,
+    ocr_error: ocrError,
+    ocr_engine: nullableMatching(record.ocr_engine, path + ".ocr_engine", XHS_ENGINE),
+    ocr_flags: flags,
+  };
+}
+
+const XHS_RECOMMENDATION_FIELDS = [
+  "id", "image_ordinal", "kind", "title", "quote", "arxiv_id", "url", "url_state", "url_checked_title",
+  "origin", "identify_run", "capture_id", "capture_state", "capture_revision", "import_state",
+  "imported_source_id", "imported_source_kind", "revision", "created_at", "updated_at",
+];
+
+export function decodeXhsRecommendation(value: unknown, path = "xhs_recommendation"): XhsRecommendation {
+  const record = exactRecord(value, path, XHS_RECOMMENDATION_FIELDS);
+  const kind = oneOf(record.kind, path + ".kind", XHS_RECOMMENDATION_KINDS);
+  const arxivId = nullableMatching(record.arxiv_id, path + ".arxiv_id", ARXIV_ID);
+  const url = record.url === null ? null : publicLink(record.url, path + ".url");
+  const urlState = oneOf(record.url_state, path + ".url_state", XHS_URL_STATES);
+  const captureId = record.capture_id === null ? null : identifier(record.capture_id, path + ".capture_id");
+  const captureState = nullableOneOf(record.capture_state, path + ".capture_state", CAPTURE_STATES);
+  const captureRevision = record.capture_revision === null ? null : integer(record.capture_revision, path + ".capture_revision");
+  const importState = oneOf(record.import_state, path + ".import_state", XHS_IMPORT_STATES);
+  const importedId = record.imported_source_id === null ? null : identifier(record.imported_source_id, path + ".imported_source_id");
+  const importedKind = nullableOneOf(record.imported_source_kind, path + ".imported_source_kind", SOURCE_KINDS);
+  if (kind !== "paper" && arxivId !== null) fail(path + ".arxiv_id", "only a paper carries an arXiv identifier");
+  // Control withholds a link that looks sensitive, so a link-bearing state can
+  // arrive without one; a link never arrives under any other state.
+  if (url !== null && !XHS_URL_BEARING_STATES.includes(urlState)) fail(path + ".url", "link does not match its state");
+  if ((captureId === null) !== (captureState === null) || (captureId === null) !== (captureRevision === null)) {
+    fail(path + ".capture_id", "capture state does not match the capture");
+  }
+  if ((importedId !== null) !== (importState === "imported") || (importedId === null) !== (importedKind === null)) {
+    fail(path + ".imported_source_id", "imported source does not match the import state");
+  }
+  return {
+    id: matching(record.id, path + ".id", PUBLIC_ID),
+    image_ordinal: nullableBoundedInteger(record.image_ordinal, path + ".image_ordinal", 1, MAX_XHS_IMAGES),
+    kind,
+    title: sourceText(record.title, path + ".title", 1_000),
+    quote: sourceText(record.quote, path + ".quote", 4_000),
+    arxiv_id: arxivId,
+    url,
+    url_state: urlState,
+    url_checked_title: nullableSourceText(record.url_checked_title, path + ".url_checked_title", 1_000),
+    origin: oneOf(record.origin, path + ".origin", XHS_ORIGINS),
+    identify_run: matching(record.identify_run, path + ".identify_run", XHS_TASK_ID),
+    capture_id: captureId,
+    capture_state: captureState,
+    capture_revision: captureRevision,
+    import_state: importState,
+    imported_source_id: importedId,
+    imported_source_kind: importedKind,
+    revision: integer(record.revision, path + ".revision"),
+    created_at: timestamp(record.created_at, path + ".created_at"),
+    updated_at: timestamp(record.updated_at, path + ".updated_at"),
+  };
+}
+
+export function decodeXhsNote(value: unknown, path = "xhs_note"): XhsNote {
+  const record = exactRecord(value, path, [
+    ...XHS_NOTE_HEADER_FIELDS, "blogger", "permalink", "published_at", "caption", "caption_complete",
+    "images", "recommendations",
+  ]);
+  const header = noteHeader(record, path);
+  const blogger = exactRecord(record.blogger, path + ".blogger", ["user_id", "name", "role"]);
+  // The permalink is derived from the note's own identity and nothing else.
+  const permalink = decodeString(record.permalink, path + ".permalink");
+  if (permalink !== `https://www.xiaohongshu.com/explore/${header.note_id}`) fail(path + ".permalink", "permalink does not name this note");
+  const images = boundedArray(record.images, path + ".images", MAX_XHS_IMAGES, decodeXhsImage);
+  requireCanonicalOrder(images.map((image) => String(image.ordinal).padStart(3, "0")), path + ".images");
+  const recommendations = boundedArray(record.recommendations, path + ".recommendations", MAX_XHS_RECOMMENDATIONS, decodeXhsRecommendation);
+  requireUnique(recommendations.map((item) => item.id), path + ".recommendations");
+  const ordinals = new Set(images.map((image) => image.ordinal));
+  recommendations.forEach((item, index) => {
+    if (item.image_ordinal !== null && !ordinals.has(item.image_ordinal)) {
+      fail(path + ".recommendations[" + index + "].image_ordinal", "recommendation cites an image the note does not have");
+    }
+  });
+  return {
+    ...header,
+    blogger: {
+      user_id: matching(blogger.user_id, path + ".blogger.user_id", XHS_ID),
+      name: nullableSourceText(blogger.name, path + ".blogger.name", 200),
+      role: nullableOneOf(blogger.role, path + ".blogger.role", XHS_ROLES),
+    },
+    permalink,
+    published_at: nullableTimestamp(record.published_at, path + ".published_at"),
+    caption: sourceText(record.caption, path + ".caption", 20_000, 0),
+    caption_complete: decodeBoolean(record.caption_complete, path + ".caption_complete"),
+    images,
+    recommendations,
+  };
+}
+
+function decodeSourceLinkEntry(value: unknown, path: string): SourceLinkEntry {
+  const record = exactRecord(value, path, ["source_id", "source_kind", "title", "image_ordinal", "recommendation_id", "created_at"]);
+  return {
+    source_id: identifier(record.source_id, path + ".source_id"),
+    source_kind: oneOf(record.source_kind, path + ".source_kind", SOURCE_KINDS),
+    title: sourceText(record.title, path + ".title", 2_000),
+    image_ordinal: nullableBoundedInteger(record.image_ordinal, path + ".image_ordinal", 1, MAX_XHS_IMAGES),
+    recommendation_id: matching(record.recommendation_id, path + ".recommendation_id", PUBLIC_ID),
+    created_at: timestamp(record.created_at, path + ".created_at"),
+  };
+}
+
+export function decodeSourceLinks(value: unknown, path = "source_links"): SourceLinks {
+  const record = exactRecord(value, path, ["recommended_in", "recommends"]);
+  const recommendedIn = boundedArray(record.recommended_in, path + ".recommended_in", MAX_SOURCE_LINKS, decodeSourceLinkEntry);
+  const recommends = boundedArray(record.recommends, path + ".recommends", MAX_SOURCE_LINKS, decodeSourceLinkEntry);
+  // A link's from end is always a note, and one recommendation makes one link.
+  recommendedIn.forEach((entry, index) => {
+    if (entry.source_kind !== "xhs_note") fail(path + ".recommended_in[" + index + "].source_kind", "only a note recommends");
+  });
+  requireUnique(recommendedIn.map((entry) => entry.recommendation_id), path + ".recommended_in");
+  requireUnique(recommends.map((entry) => entry.recommendation_id), path + ".recommends");
+  return { recommended_in: recommendedIn, recommends };
+}
+
+function decodeXhsImportItem(value: unknown, path: string): XhsImportItem {
+  const record = exactRecord(value, path, [
+    "recommendation_id", "disposition", "reason", "capture_id", "capture_revision", "capture_state", "recommendation",
+  ]);
+  const recommendationId = matching(record.recommendation_id, path + ".recommendation_id", PUBLIC_ID);
+  const disposition = oneOf(record.disposition, path + ".disposition", XHS_IMPORT_DISPOSITIONS);
+  const reason = nullableOneOf(record.reason, path + ".reason", XHS_IMPORT_REFUSALS);
+  const captureId = record.capture_id === null ? null : identifier(record.capture_id, path + ".capture_id");
+  const captureRevision = record.capture_revision === null ? null : integer(record.capture_revision, path + ".capture_revision");
+  const captureState = nullableOneOf(record.capture_state, path + ".capture_state", CAPTURE_STATES);
+  const recommendation = record.recommendation === null ? null : decodeXhsRecommendation(record.recommendation, path + ".recommendation");
+  if ((disposition === "refused") !== (reason !== null)) fail(path + ".reason", "a refusal, and only a refusal, carries a reason");
+  const staged = disposition === "capture_staged" || disposition === "capture_reused";
+  if (staged !== (captureId !== null) || staged !== (captureRevision !== null) || staged !== (captureState !== null)) {
+    fail(path + ".capture_id", "a Capture is reported exactly for a staged paper");
+  }
+  if (recommendation === null ? disposition !== "refused" : recommendation.id !== recommendationId) {
+    fail(path + ".recommendation", "recommendation does not match the item");
+  }
+  return {
+    recommendation_id: recommendationId,
+    disposition,
+    reason,
+    capture_id: captureId,
+    capture_revision: captureRevision,
+    capture_state: captureState,
+    recommendation,
+  };
+}
+
+export function decodeXhsImportResult(value: unknown, path = "xhs_import"): XhsImportResult {
+  const record = exactRecord(value, path, ["note_source_id", "items"]);
+  const items = boundedArray(record.items, path + ".items", MAX_XHS_IMPORT, decodeXhsImportItem);
+  requireUnique(items.map((item) => item.recommendation_id), path + ".items");
+  return { note_source_id: identifier(record.note_source_id, path + ".note_source_id"), items };
+}
+
+export function decodeXhsLinkResult(value: unknown, path = "xhs_link"): XhsLinkResult {
+  const record = exactRecord(value, path, ["recommendation"]);
+  return { recommendation: decodeXhsRecommendation(record.recommendation, path + ".recommendation") };
+}
+
+export function decodeXhsImageRetryResult(value: unknown, path = "xhs_image_retry"): XhsImageRetryResult {
+  const record = exactRecord(value, path, ["note", "image"]);
+  return {
+    note: decodeXhsNoteHeader(record.note, path + ".note"),
+    image: decodeXhsImage(record.image, path + ".image"),
+  };
+}
+
+function keyedRecord<K extends string, T>(
+  value: unknown,
+  path: string,
+  keys: readonly K[],
+  decoder: (item: unknown, itemPath: string) => T,
+): Record<K, T> {
+  const record = exactRecord(value, path, keys);
+  return Object.fromEntries(keys.map((key) => [key, decoder(record[key], path + "." + key)])) as Record<K, T>;
+}
+
+function decodeXhsBloggerStatus(value: unknown, path: string): XhsBloggerStatus {
+  const record = exactRecord(value, path, [
+    "user_id", "display_name", "role", "followed", "last_scan_at", "last_scan_outcome", "last_scan_error", "last_new_note_at",
+  ]);
+  const scannedAt = nullableTimestamp(record.last_scan_at, path + ".last_scan_at");
+  const outcome = nullableOneOf(record.last_scan_outcome, path + ".last_scan_outcome", XHS_SCAN_OUTCOMES);
+  const error = category(record.last_scan_error, path + ".last_scan_error");
+  // Success, nothing new and failure stay three answers: only a failure has a
+  // category, and only a scan that ran has an outcome.
+  if ((scannedAt === null) !== (outcome === null)) fail(path + ".last_scan_outcome", "outcome does not match the scan time");
+  if ((error !== null) !== (outcome === "failed")) fail(path + ".last_scan_error", "a failed scan, and only a failed scan, carries a category");
+  return {
+    user_id: matching(record.user_id, path + ".user_id", XHS_ID),
+    display_name: nullableSourceText(record.display_name, path + ".display_name", 200),
+    role: oneOf(record.role, path + ".role", XHS_ROLES),
+    followed: decodeBoolean(record.followed, path + ".followed"),
+    last_scan_at: scannedAt,
+    last_scan_outcome: outcome,
+    last_scan_error: error,
+    last_new_note_at: nullableTimestamp(record.last_new_note_at, path + ".last_new_note_at"),
+  };
+}
+
+export function decodeXhsStatus(value: unknown, path = "xhs_status"): XhsStatus {
+  const record = exactRecord(value, path, [
+    "enabled", "enabled_in_config", "roots_ready", "refusal", "roots", "schedules", "bloggers", "tasks", "usage", "last_failures",
+  ]);
+  return {
+    enabled: decodeBoolean(record.enabled, path + ".enabled"),
+    enabled_in_config: decodeBoolean(record.enabled_in_config, path + ".enabled_in_config"),
+    roots_ready: decodeBoolean(record.roots_ready, path + ".roots_ready"),
+    refusal: nullableOneOf(record.refusal, path + ".refusal", XHS_REFUSALS),
+    roots: keyedRecord(record.roots, path + ".roots", XHS_ROOT_IDS, (item, itemPath) => oneOf(item, itemPath, XHS_ROOT_STATES)),
+    schedules: keyedRecord(record.schedules, path + ".schedules", XHS_SCHEDULE_KEYS, (item, itemPath) => {
+      const schedule = exactRecord(item, itemPath, ["enabled", "revision", "interval_seconds", "next_due_at", "last_outcome"]);
+      return {
+        enabled: decodeBoolean(schedule.enabled, itemPath + ".enabled"),
+        revision: integer(schedule.revision, itemPath + ".revision"),
+        interval_seconds: positiveInteger(schedule.interval_seconds, itemPath + ".interval_seconds"),
+        next_due_at: nullableTimestamp(schedule.next_due_at, itemPath + ".next_due_at"),
+        last_outcome: nullableOneOf(schedule.last_outcome, itemPath + ".last_outcome", XHS_SCHEDULE_OUTCOMES),
+      };
+    }),
+    bloggers: boundedArray(record.bloggers, path + ".bloggers", MAX_XHS_BLOGGERS, decodeXhsBloggerStatus),
+    tasks: keyedRecord(record.tasks, path + ".tasks", XHS_TASK_STATES, integer),
+    usage: keyedRecord(record.usage, path + ".usage", XHS_USAGE_PROVIDERS, (item, itemPath) => {
+      const usage = exactRecord(item, itemPath, ["calls", "cap"]);
+      return { calls: integer(usage.calls, itemPath + ".calls"), cap: integer(usage.cap, itemPath + ".cap") };
+    }),
+    last_failures: keyedRecord(record.last_failures, path + ".last_failures", XHS_FAILURE_PROVIDERS, category),
   };
 }

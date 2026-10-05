@@ -32,11 +32,24 @@ import {
   decodeSourceGate,
   decodeSourceContent,
   decodeSourceDocument,
+  decodeSourceLinks,
   decodeSourceSearch,
+  decodeXhsImageRetryResult,
+  decodeXhsImportResult,
+  decodeXhsLinkResult,
+  decodeXhsNote,
+  decodeXhsStatus,
   type SourceContent,
   type SourceContentKind,
   type SourceDocument,
+  type SourceKind,
+  type SourceLinks,
   type SourceSearch,
+  type XhsImageRetryResult,
+  type XhsImportResult,
+  type XhsLinkResult,
+  type XhsNote,
+  type XhsStatus,
   type ArtifactVersionContent,
   type ResearchWorkflowProjection,
   type SourceGateProjection,
@@ -216,8 +229,16 @@ export class CortexControlClient {
     return this.read("/readings", decodeReadingsStatus);
   }
 
-  listSources(): Promise<ListEnvelope<SourceProjection>> {
-    return this.read("/sources", listDecoder(decodeSource));
+  // Every source, or only one kind; Control filters before any limit.
+  listSources(kind?: SourceKind): Promise<ListEnvelope<SourceProjection>> {
+    const query = kind ? `?${new URLSearchParams({ kind })}` : "";
+    return this.read(`/sources${query}`, (value, path = "list") => {
+      const decoded = listDecoder(decodeSource)(value, path);
+      if (kind && decoded.items.some((item) => item.source_kind !== kind)) {
+        throw new ContractDecodeError(path + ".items", "source list holds another kind than the one requested");
+      }
+      return decoded;
+    });
   }
 
   getSource(id: string): Promise<SourceProjection> {
@@ -269,6 +290,33 @@ export class CortexControlClient {
   searchSources(query: string, limit = 10): Promise<SourceSearch> {
     const params = new URLSearchParams({ q: query.trim(), limit: String(limit) });
     return this.read(`/sources/search?${params}`, decodeSourceSearch);
+  }
+
+  // One saved XHS note: its blogger, images and recommendations. Signed image
+  // URLs, raw provider answers and task leases never reach this projection.
+  getXhsNote(sourceId: string, signal?: AbortSignal): Promise<XhsNote> {
+    return this.read(`/sources/${encodeURIComponent(sourceId)}/note`, (value, path = "xhs_note") => {
+      const decoded = decodeXhsNote(value, path);
+      if (decoded.source_id !== sourceId) {
+        throw new ContractDecodeError(path + ".source_id", "note identity does not match the request");
+      }
+      return decoded;
+    }, signal);
+  }
+
+  // The notes that recommend a source, and what a note recommends.
+  getSourceLinks(sourceId: string, signal?: AbortSignal): Promise<SourceLinks> {
+    return this.read(`/sources/${encodeURIComponent(sourceId)}/links`, (value, path = "source_links") => {
+      const decoded = decodeSourceLinks(value, path);
+      if ([...decoded.recommended_in, ...decoded.recommends].some((entry) => entry.source_id === sourceId)) {
+        throw new ContractDecodeError(path, "a source cannot link to itself");
+      }
+      return decoded;
+    }, signal);
+  }
+
+  getXhsStatus(signal?: AbortSignal): Promise<XhsStatus> {
+    return this.read("/xhs/status", decodeXhsStatus, signal);
   }
 
   // R1c: the research catalog. `signal` is carried through to `fetch`, so a
@@ -503,6 +551,66 @@ export class CortexControlClient {
       expected_revision: capture.revision,
       acknowledged: true,
     });
+  }
+
+  // Stages each listed recommendation of one note under one key: a paper as a
+  // pending Capture (approved separately, through `prepareApproveCapture`), a
+  // blog as an import. `expected_revision` is the note's.
+  prepareImportRecommendations(
+    note: { source_id: string; revision: number },
+    recommendationIds: string[],
+  ): PreparedMutation<XhsImportResult> {
+    return this.prepare(
+      `/sources/${encodeURIComponent(note.source_id)}/recommendations/import`,
+      { recommendation_ids: [...recommendationIds], expected_revision: note.revision },
+      (value, path = "xhs_import") => {
+        const decoded = decodeXhsImportResult(value, path);
+        const answered = decoded.items.map((item) => item.recommendation_id);
+        if (
+          decoded.note_source_id !== note.source_id ||
+          answered.length !== recommendationIds.length ||
+          answered.some((id, index) => id !== recommendationIds[index])
+        ) {
+          throw new ContractDecodeError(path, "import answer does not match the request");
+        }
+        return decoded;
+      },
+    );
+  }
+
+  // Replaces one blog recommendation's link with the operator's own;
+  // `expected_revision` is the recommendation's.
+  prepareSetRecommendationLink(
+    noteSourceId: string,
+    recommendation: { id: string; revision: number },
+    url: string,
+  ): PreparedMutation<XhsLinkResult> {
+    return this.prepare(
+      `/sources/${encodeURIComponent(noteSourceId)}/recommendations/${encodeURIComponent(recommendation.id)}/link`,
+      { url, expected_revision: recommendation.revision },
+      (value, path = "xhs_link") => {
+        const decoded = decodeXhsLinkResult(value, path);
+        if (decoded.recommendation.id !== recommendation.id) {
+          throw new ContractDecodeError(path + ".recommendation.id", "recommendation identity does not match the request");
+        }
+        return decoded;
+      },
+    );
+  }
+
+  // Resets one failed image of a saved note; `expected_revision` is the note's.
+  prepareRetryXhsImage(note: { source_id: string; revision: number }, ordinal: number): PreparedMutation<XhsImageRetryResult> {
+    return this.prepare(
+      `/sources/${encodeURIComponent(note.source_id)}/images/${ordinal}/retry`,
+      { expected_revision: note.revision },
+      (value, path = "xhs_image_retry") => {
+        const decoded = decodeXhsImageRetryResult(value, path);
+        if (decoded.note.source_id !== note.source_id || decoded.image.ordinal !== ordinal) {
+          throw new ContractDecodeError(path, "retried image does not match the request");
+        }
+        return decoded;
+      },
+    );
   }
 
   private prepareCaptureDecision(

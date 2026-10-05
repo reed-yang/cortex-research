@@ -1468,3 +1468,137 @@ describe("idea fragment gateway", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 });
+
+describe("XHS note and blog gateway", () => {
+  const read = (requestPath: string) => {
+    const [pathname] = requestPath.split("?");
+    return GET(
+      new NextRequest(`${PUBLIC_ORIGIN}/api/cortex/${requestPath}`, { headers: boundaryHeaders() }),
+      { params: Promise.resolve({ path: pathname!.split("/") }) },
+    );
+  };
+  const send = (path: string[], body: string) => POST(
+    new NextRequest(`${PUBLIC_ORIGIN}/api/cortex/${path.join("/")}`, { method: "POST", headers: mutationHeaders(), body }),
+    { params: Promise.resolve({ path }) },
+  );
+
+  it.each([
+    "sources?kind=paper",
+    "sources?kind=blog",
+    "sources?kind=xhs_note",
+    "sources/source_note/note",
+    "sources/source_blog/links",
+    "xhs/status",
+  ])("forwards %s unchanged", async (requestPath) => {
+    configureControlGateway();
+    const upstream = vi.fn(async () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await read(requestPath);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(String((upstream.mock.calls[0] as unknown[])[0])).toBe(`http://127.0.0.1:8799/api/v1/${requestPath}`);
+  });
+
+  it.each([
+    "sources?kind=web",
+    "sources?kind=paper&kind=blog",
+    "sources?kind=paper&limit=10",
+    "sources?kind=",
+    "sources/source_note/note?verbose=1",
+    "sources/source_note/links?kind=paper",
+    "xhs/status?refresh=1",
+    "xhs/tasks",
+    "xhs/bloggers",
+    "sources/source_note/recommendations",
+    "sources/source_note/images/1",
+  ])("refuses %s before Control", async (requestPath) => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    expect((await read(requestPath)).status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an import", ["sources", "source_note", "recommendations", "import"], { recommendation_ids: ["xhs_rec_1", "xhs_rec_2"], expected_revision: 3 }],
+    ["a hundred imports", ["sources", "source_note", "recommendations", "import"], { recommendation_ids: Array.from({ length: 100 }, (_, i) => `xhs_rec_${i}`), expected_revision: 0 }],
+    ["a link", ["sources", "source_note", "recommendations", "xhs_rec_1", "link"], { url: "https://example.org/博客/post?x=1", expected_revision: 2 }],
+    ["an image retry", ["sources", "source_note", "images", "1", "retry"], { expected_revision: 4 }],
+    ["the last image", ["sources", "source_note", "images", "100", "retry"], { expected_revision: 4 }],
+  ])("forwards %s with its exact body and key", async (_label, path, body) => {
+    configureControlGateway();
+    const upstream = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.body).toBe(JSON.stringify(body));
+      expect(new Headers(init?.headers).get("Idempotency-Key")).toBe("web-research-command-0001");
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await send(path, JSON.stringify(body));
+
+    expect(response.status).toBe(200);
+    expect(String(upstream.mock.calls[0][0])).toBe(`http://127.0.0.1:8799/api/v1/${path.join("/")}`);
+  });
+
+  const importPath = ["sources", "source_note", "recommendations", "import"];
+  const linkPath = ["sources", "source_note", "recommendations", "xhs_rec_1", "link"];
+  const retryPath = ["sources", "source_note", "images", "2", "retry"];
+  it.each([
+    ["an import with no ids", importPath, { recommendation_ids: [], expected_revision: 0 }],
+    ["an import of 101 ids", importPath, { recommendation_ids: Array.from({ length: 101 }, (_, i) => `xhs_rec_${i}`), expected_revision: 0 }],
+    ["a repeated id", importPath, { recommendation_ids: ["xhs_rec_1", "xhs_rec_1"], expected_revision: 0 }],
+    ["an id with a slash", importPath, { recommendation_ids: ["../xhs_rec_1"], expected_revision: 0 }],
+    ["a non-string id", importPath, { recommendation_ids: [7], expected_revision: 0 }],
+    ["an import without a revision", importPath, { recommendation_ids: ["xhs_rec_1"] }],
+    ["an import with an extra field", importPath, { recommendation_ids: ["xhs_rec_1"], expected_revision: 0, approve: true }],
+    ["a string revision", importPath, { recommendation_ids: ["xhs_rec_1"], expected_revision: "0" }],
+    ["an empty link", linkPath, { url: "", expected_revision: 0 }],
+    ["a link with a line break", linkPath, { url: "https://example.org/\nx", expected_revision: 0 }],
+    ["a link over 2,000 code points", linkPath, { url: `https://example.org/${"a".repeat(1_981)}`, expected_revision: 0 }],
+    ["a non-string link", linkPath, { url: null, expected_revision: 0 }],
+    ["a link with an extra field", linkPath, { url: "https://example.org/", expected_revision: 0, state: "operator_set" }],
+    ["a negative revision", retryPath, { expected_revision: -1 }],
+    ["a fractional revision", retryPath, { expected_revision: 1.5 }],
+    ["a retry with an extra field", retryPath, { expected_revision: 1, kind: "ocr" }],
+  ])("refuses %s before Control", async (_label, path, body) => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    const response = await send(path, JSON.stringify(body));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ category: "invalid_request" });
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [["sources", "source_note", "images", "0", "retry"]],
+    [["sources", "source_note", "images", "101", "retry"]],
+    [["sources", "source_note", "images", "01", "retry"]],
+    [["sources", "source_note", "recommendations", "xhs_rec_1", "import"]],
+    [["sources", "source_note", "note"]],
+    [["xhs", "status"]],
+  ])("does not forward a POST to %j", async (path) => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    expect((await send(path, '{"expected_revision":0}')).status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("does not expose the commands through GET", async () => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    for (const path of ["sources/source_note/recommendations/import", "sources/source_note/images/1/retry"]) {
+      expect((await read(path)).status).toBe(404);
+    }
+    expect(upstream).not.toHaveBeenCalled();
+  });
+});
