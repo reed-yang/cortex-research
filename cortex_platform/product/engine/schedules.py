@@ -315,7 +315,9 @@ class ResearchScheduleTick:
             if self._xhs is None:
                 return "refused", 0
             try:
-                return self._xhs.run_job(str(schedule["operation"]))
+                # `drained` counts Captures; the plugin's own count stays its own.
+                outcome, _ = self._xhs.run_job(str(schedule["operation"]))
+                return outcome, 0
             except Exception:  # noqa: BLE001 - one job's failure is not the tick's
                 # A task whose unit escaped keeps its lease until it expires;
                 # the next claim then recovers it as an unknown outcome.
