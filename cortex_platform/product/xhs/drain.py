@@ -9,7 +9,9 @@ transaction fenced by the task revision (`control/xhs_store.py`).
 Each task kind has one handler. A handler builds the child payload from
 Control state and, after the child, checks the answer and writes the note's
 private staging files; the store applies the rows and queues what comes next.
-A kind without a handler is never claimed.
+A kind without a handler is never claimed. `save` and `capture_link` make no
+child call: a save writes the note's next version (`layout.py`) and the store
+registers it; a Capture link waits, unclaimed, until its Capture ends.
 
 The staging directory is `<xhs-notes root>/<note_id>/staging/`: downloaded
 images under their hash, `raw/list.json` and `raw/detail.json` with signed
@@ -24,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -34,13 +37,36 @@ from cortex_platform.product.control.errors import (
     NotFound,
     RevisionConflict,
 )
+from cortex_platform.product.control.xhs_store import (
+    XHS_FAILURE_CATEGORIES,
+    xhs_identify_digest,
+)
 from cortex_platform.product.engine.protocol import PROVIDER_WRITE_ROOTS
+from cortex_platform.product.sources.identity import blog_url_identity
 from cortex_platform.product.workflows.coordinator import EffectPermanentlyRejected
 
+from . import identify
+from .layout import (
+    note_title,
+    render_blog_notes,
+    render_note,
+    render_transcription,
+    write_version,
+)
 from .results import validate_engine
 
 NOTES_ROOT_ID = "xhs-notes"
+BLOGS_ROOT_ID = "blogs"
 STAGING_DIRECTORY = "staging"
+# A staged Capture is looked at again this often until it ends.
+CAPTURE_WAIT_SECONDS = 600
+CAPTURE_TERMINAL_STATES = frozenset({"consumed", "dismissed", "failed"})
+# A blog recommendation whose link may still be searched for.
+RESOLVABLE_URL_STATES = frozenset({"none", "not_found", "failed"})
+# What the store accepts for a recommendation's title and quote.
+_MAX_TITLE = 1_000
+_MAX_QUOTE = 4_000
+_BLOG_FILES = frozenset({"article.md", "raw/page.html", "raw/jina.md"})
 # The TikHub note type of an image note; every other type is unsupported.
 IMAGE_NOTE_TYPE = "normal"
 # Failures after which every later call this tick would fail the same way.
@@ -94,13 +120,30 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 
 
+def _short(value: Any, maximum: int = 500) -> str | None:
+    """A provider-supplied label, trimmed and bounded, or None."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()[:maximum]
+
+
+class Deferred(Exception):
+    """A task waiting on something outside the plugin: it comes back later,
+    without spending an attempt."""
+
+    def __init__(self, seconds: int) -> None:
+        super().__init__(f"deferred for {seconds} s")
+        self.seconds = seconds
+
+
 @dataclass(frozen=True)
 class UnitOutcome:
     """What one claimed task came to.
 
     `outcome` is `done`, `skipped` (nothing left to do), `retry` (backed off),
-    `failed`, `capped` or `released` (returned unrun), or `lost` (the lease
-    passed to another holder before the record).
+    `failed`, `capped`, `released` or `deferred` (returned unrun), or `lost`
+    (the lease passed to another holder before the record).
     """
 
     task_id: str
@@ -372,6 +415,157 @@ ACQUISITION_HANDLERS: tuple[TaskHandler, ...] = (
 )
 
 
+class IdentifyHandler(TaskHandler):
+    kind = "identify"
+    operation = "xhs_identify"
+    provider = "gpt"
+
+    def prepare(self, drain, task):
+        inputs = drain.identify_inputs(task["payload"])
+        if inputs is None:
+            return None
+        caption, transcriptions = inputs
+        return {
+            "caption": caption,
+            "transcriptions": [{"image": image, "text": text} for image, text in transcriptions],
+            **drain.gpt_settings(),
+        }
+
+    def finish(self, drain, task, engine):
+        inputs = drain.identify_inputs(task["payload"])
+        if inputs is None:
+            raise ValueError("the note changed while it was identified")
+        caption, transcriptions = inputs
+        if (
+            engine["prompt_version"] != identify.PROMPT_VERSION
+            or engine["input_sha256"] != identify.input_sha256(caption, transcriptions)
+        ):
+            raise ValueError("identification answers another input")
+        # The child's items are not taken on trust: cortexd re-runs the rules,
+        # the verbatim filter and the merge on its own copy of the input.
+        model_items = identify.parse_model_items(json.dumps({"items": engine["model_items"]}))
+        outcome = identify.identify(caption, transcriptions, model_items)
+        items = [
+            dict(item)
+            for item in outcome.items
+            if 1 <= len(item["title"]) <= _MAX_TITLE and 1 <= len(item["quote"]) <= _MAX_QUOTE
+        ]
+        return {
+            "prompt_version": engine["prompt_version"],
+            "input_sha256": engine["input_sha256"],
+            "response_id": _short(engine.get("response_id")),
+            "model": _short(engine.get("model")),
+            "model_items": outcome.model_items,
+            "dropped": outcome.dropped + len(outcome.items) - len(items),
+            "rule_items": outcome.rule_items,
+            "items": items,
+        }
+
+
+class ResolveHandler(TaskHandler):
+    kind = "resolve"
+    operation = "xhs_resolve_link"
+    provider = "gpt"
+
+    def prepare(self, drain, task):
+        recommendation = drain.store.get_xhs_recommendation(task["payload"]["recommendation_id"])
+        if (
+            recommendation["kind"] != "blog"
+            or recommendation["url_state"] not in RESOLVABLE_URL_STATES
+        ):
+            return None
+        return {"title": recommendation["title"], **drain.gpt_settings()}
+
+    def finish(self, drain, task, engine):
+        if engine["prompt_version"] != identify.LINK_PROMPT_VERSION:
+            raise ValueError("link search answers another prompt")
+        failure = engine["verification_failure"] or {}
+        category = failure.get("category")
+        return {
+            "url": engine["url"],
+            "url_state": engine["url_state"],
+            "checked_title": _short(engine["checked_title"], _MAX_TITLE),
+            "prompt_version": engine["prompt_version"],
+            "response_id": _short(engine.get("response_id")),
+            "verification_failure": category if category in XHS_FAILURE_CATEGORIES else None,
+        }
+
+
+class SaveHandler(TaskHandler):
+    """Write the note's next version from Control state and its staging files."""
+
+    kind = "save"
+    operation = None
+    provider = None
+
+    def prepare(self, drain, task):
+        payload = task["payload"]
+        note = drain.store.get_xhs_note(payload["note_id"])
+        if note["state"] not in {"identified", "saved"} or int(note["content_version"]) >= int(
+            payload["version"]
+        ):
+            return None
+        return {"note_id": note["note_id"], "version": int(payload["version"])}
+
+    def finish(self, drain, task, engine):
+        return drain.write_note_version(engine["note_id"], engine["version"])
+
+
+class BlogImportHandler(TaskHandler):
+    kind = "blog_import"
+    operation = "blog_fetch"
+    provider = None
+
+    def prepare(self, drain, task):
+        recommendation = drain.store.get_xhs_recommendation(task["payload"]["recommendation_id"])
+        if recommendation["import_state"] != "importing":
+            return None
+        if recommendation["kind"] != "blog" or recommendation["url"] is None:
+            raise ValueError("recommendation has no link to import")
+        normalized, authority_id = blog_url_identity(recommendation["url"])
+        staging = drain.blog_staging_dir(authority_id)
+        # A fetch starts clean: no file of an earlier attempt may be claimed.
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        return {"url": normalized, "staging_dir": str(staging)}
+
+    def finish(self, drain, task, engine):
+        recommendation = drain.store.get_xhs_recommendation(task["payload"]["recommendation_id"])
+        if recommendation["url"] is None:
+            raise ValueError("recommendation lost its link")
+        normalized, authority_id = blog_url_identity(recommendation["url"])
+        if (engine["normalized_url"], engine["authority_id"]) != (normalized, authority_id):
+            raise ValueError("blog fetch answers another link")
+        return drain.write_blog_version(recommendation, engine)
+
+
+class CaptureLinkHandler(TaskHandler):
+    """Wait for a staged paper Capture to end, then let the store link it."""
+
+    kind = "capture_link"
+    operation = None
+    provider = None
+
+    def prepare(self, drain, task):
+        capture = drain.store.get_capture(task["payload"]["capture_id"])
+        if capture["state"] not in CAPTURE_TERMINAL_STATES:
+            raise Deferred(CAPTURE_WAIT_SECONDS)
+        return {"capture_id": capture["id"]}
+
+    def finish(self, drain, task, engine):
+        return dict(engine)
+
+
+PIPELINE_HANDLERS: tuple[TaskHandler, ...] = ACQUISITION_HANDLERS + (
+    IdentifyHandler(),
+    ResolveHandler(),
+    SaveHandler(),
+    BlogImportHandler(),
+    CaptureLinkHandler(),
+)
+
+
 class XhsDrain:
     """Run the plugin's scan and drain jobs; cortexd's tick calls `run_job`."""
 
@@ -474,6 +668,8 @@ class XhsDrain:
         handler = self._handlers[str(task["kind"])]
         try:
             payload = handler.prepare(self, task)
+        except Deferred as deferred:
+            return self._defer(task, deferred.seconds)
         except (NotFound, ValueError, KeyError, TypeError):
             return self._fail(task, "invalid_response")
         if payload is None:
@@ -481,8 +677,11 @@ class XhsDrain:
         if handler.operation is None:
             try:
                 result = handler.finish(self, task, payload)
-            except (ValueError, KeyError, TypeError):
+            except (NotFound, ValueError, KeyError, TypeError):
                 return self._fail(task, "invalid_response")
+            except OSError:
+                # A local file write that failed may well succeed later.
+                return self._fail(task, "transient")
             return self._record(task, result)
         provider = handler.provider
         if provider is not None and not self.store.reserve_xhs_usage(
@@ -521,8 +720,10 @@ class XhsDrain:
             try:
                 engine = validate_engine(handler.operation, execution.engine)
                 result = handler.finish(self, task, engine)
-            except (ValueError, KeyError, TypeError):
+            except (NotFound, ValueError, KeyError, TypeError):
                 return self._fail(task, "invalid_response")
+            except OSError:
+                return self._fail(task, "transient")
             return self._record(task, result)
         finally:
             self._supervisor.discard(execution.marker)
@@ -538,6 +739,15 @@ class XhsDrain:
             # The store refused what the answer claims; nothing was applied.
             return self._fail(task, "invalid_response")
         return UnitOutcome(str(task["id"]), str(task["kind"]), "done")
+
+    def _defer(self, task: Mapping[str, Any], seconds: int) -> UnitOutcome:
+        try:
+            self.store.release_xhs_task(
+                task["id"], expected_revision=task["revision"], delay_seconds=seconds
+            )
+        except RevisionConflict:
+            return UnitOutcome(str(task["id"]), str(task["kind"]), "lost")
+        return UnitOutcome(str(task["id"]), str(task["kind"]), "deferred")
 
     def _skip(self, task: Mapping[str, Any]) -> UnitOutcome:
         try:
@@ -594,3 +804,203 @@ class XhsDrain:
             if image["ordinal"] == ordinal:
                 return image
         raise NotFound("xhs note image", f"{note_id}:{ordinal}")
+
+    def gpt_settings(self) -> dict[str, str]:
+        return {
+            "gpt_base": self.settings.gpt_base,
+            "gpt_model": self.settings.gpt_model,
+            "gpt_effort": self.settings.gpt_effort,
+        }
+
+    def transcription(self, note_id: str, image: Mapping[str, Any]) -> str:
+        """An image's verbatim transcription, checked against its recorded hash."""
+
+        path = self.staging_dir(note_id) / "ocr" / f"{int(image['ordinal'])}.md"
+        try:
+            data = path.read_bytes()
+        except OSError:
+            raise ValueError("a transcription is missing") from None
+        if hashlib.sha256(data).hexdigest() != image["ocr_text_sha256"]:
+            raise ValueError("a transcription does not match its hash")
+        return data.decode("utf-8")
+
+    def staged_image(self, note_id: str, image: Mapping[str, Any]) -> bytes:
+        """A downloaded image's bytes, checked against its recorded hash."""
+
+        extension = str(image["asset_name"]).rsplit(".", 1)[-1]
+        path = self.staging_dir(note_id) / f"{image['sha256']}.{extension}"
+        try:
+            data = path.read_bytes()
+        except OSError:
+            raise ValueError("a downloaded image is missing") from None
+        if hashlib.sha256(data).hexdigest() != image["sha256"]:
+            raise ValueError("a downloaded image does not match its hash")
+        return data
+
+    def identify_inputs(
+        self, payload: Mapping[str, Any]
+    ) -> tuple[str, list[tuple[int, str]]] | None:
+        """The caption and each transcription under its original ordinal, or
+        None when the note no longer has the input the task was keyed by.
+
+        Images whose download or OCR failed are left out.
+        """
+
+        note_id = payload["note_id"]
+        note = self.store.get_xhs_note(note_id)
+        if note["state"] != "ocr_done":
+            return None
+        images = [
+            image
+            for image in self.store.list_xhs_note_images(note_id)
+            if image["download_state"] == "ok" and image["ocr_state"] == "ok"
+        ]
+        digest = xhs_identify_digest(
+            note["caption"], [(image["ordinal"], image["ocr_text_sha256"]) for image in images]
+        )
+        if digest != payload["input_sha256"]:
+            return None
+        return note["caption"], [
+            (int(image["ordinal"]), self.transcription(note_id, image)) for image in images
+        ]
+
+    def write_note_version(self, note_id: str, version: int) -> dict[str, Any]:
+        """Write `<note_id>/v<version>/` and describe it for the save record."""
+
+        note = self.store.get_xhs_note(note_id)
+        blogger = self.store.get_xhs_blogger(note["user_id"])
+        images = self.store.list_xhs_note_images(note_id)
+        recommendations = self.store.list_xhs_recommendations(note_id)
+        staging = self.staging_dir(note_id)
+        files: dict[str, bytes] = {}
+        texts: dict[int, str] = {}
+        for image in images:
+            ordinal = int(image["ordinal"])
+            if image["download_state"] != "ok":
+                continue
+            files[f"assets/{image['asset_name']}"] = self.staged_image(note_id, image)
+            if image["ocr_state"] == "ok":
+                texts[ordinal] = self.transcription(note_id, image)
+                raw = staging / "ocr" / f"{ordinal}.json"
+                if raw.is_file():
+                    files[f"ocr/{ordinal}.json"] = raw.read_bytes()
+        for name in ("raw/list.json", "raw/detail.json"):
+            if (staging / name).is_file():
+                files[name] = (staging / name).read_bytes()
+        files["note.md"] = render_note(note, blogger, images, recommendations).encode("utf-8")
+        files["transcription.md"] = render_transcription(images, texts).encode("utf-8")
+        digest = write_version(self.root(NOTES_ROOT_ID) / note_id, version, files)
+        return {
+            "version": version,
+            "tree_sha256": digest,
+            "title": note_title(note)[:_MAX_TITLE],
+            "metadata": {
+                "note_id": note_id,
+                "user_id": note["user_id"],
+                "published_at": note["published_at"],
+                "images": len(images),
+                "failed_images": sum(
+                    1
+                    for image in images
+                    if image["download_state"] == "failed" or image["ocr_state"] == "failed"
+                ),
+                "recommendations": len(recommendations),
+            },
+        }
+
+    def blog_staging_dir(self, authority_id: str) -> Path:
+        if _SHA256_RE.fullmatch(str(authority_id)) is None:
+            raise ValueError("blog identity is invalid")
+        return self.root(BLOGS_ROOT_ID) / authority_id[:16] / STAGING_DIRECTORY
+
+    def write_blog_version(
+        self, recommendation: Mapping[str, Any], engine: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Write the blog's next version: the fetched article and private raw
+        files, and `notes.md` naming every note that recommends it, each with
+        its screenshot copied from the note."""
+
+        authority_id = str(engine["authority_id"])
+        staging = self.blog_staging_dir(authority_id)
+        files: dict[str, bytes] = {}
+        for name, described in engine["files"].items():
+            if name not in _BLOG_FILES:
+                raise ValueError("blog fetch wrote an unexpected file")
+            try:
+                data = (staging / name).read_bytes()
+            except OSError:
+                raise ValueError("a fetched blog file is missing") from None
+            if (hashlib.sha256(data).hexdigest(), len(data)) != (
+                described.get("sha256"),
+                described.get("bytes"),
+            ):
+                raise ValueError("a fetched blog file does not match its hash")
+            files[name] = data
+        metadata = engine["metadata"]
+        # Never claim raw HTML that was not fetched, nor hide Jina's text.
+        if bool(metadata.get("raw_html")) != ("raw/page.html" in files) or bool(
+            metadata.get("raw_jina")
+        ) != ("raw/jina.md" in files):
+            raise ValueError("blog fetch describes its raw files inconsistently")
+        source_id = self.store.content_source_id("blog", authority_id)
+        linked = (
+            [
+                str(link["recommendation_id"])
+                for link in self.store.list_source_links(source_id)["recommended_in"]
+            ]
+            if source_id is not None
+            else []
+        )
+        entries = []
+        for recommendation_id in [*linked, str(recommendation["id"])]:
+            if any(entry["recommendation_id"] == recommendation_id for entry in entries):
+                continue
+            entry = self._recommended_in(recommendation_id, files)
+            entries.append(entry)
+        title = _short(metadata.get("title")) or str(recommendation["title"])
+        files["notes.md"] = render_blog_notes(
+            title=title,
+            normalized_url=str(engine["normalized_url"]),
+            final_url=metadata.get("final_url"),
+            content_source=str(metadata.get("content_source")),
+            recommended_in=entries,
+        ).encode("utf-8")
+        version = self.store.next_content_version("blog", authority_id)
+        digest = write_version(
+            self.root(BLOGS_ROOT_ID) / authority_id[:16], version, files
+        )
+        origin_failure = metadata.get("origin_failure") or {}
+        return {
+            "authority_id": authority_id,
+            "version": version,
+            "tree_sha256": digest,
+            "title": title[:_MAX_TITLE],
+            "metadata": {
+                "normalized_url": engine["normalized_url"],
+                "final_url": _short(metadata.get("final_url"), 2_000),
+                "content_source": metadata.get("content_source"),
+                "author": _short(metadata.get("author")),
+                "date": _short(metadata.get("date")),
+                "characters": metadata.get("characters"),
+                "raw_html": "raw/page.html" in files,
+                "raw_jina": "raw/jina.md" in files,
+                "origin_failure": origin_failure.get("category"),
+            },
+        }
+
+    def _recommended_in(self, recommendation_id: str, files: dict[str, bytes]) -> dict[str, Any]:
+        recommendation = self.store.get_xhs_recommendation(recommendation_id)
+        note = self.store.get_xhs_note(recommendation["note_id"])
+        entry: dict[str, Any] = {
+            "recommendation_id": recommendation_id,
+            "note_title": note_title(note),
+            "image_ordinal": recommendation["image_ordinal"],
+            "quote": recommendation["quote"],
+            "asset_name": None,
+        }
+        if recommendation["image_ordinal"] is not None:
+            image = self.image(note["note_id"], recommendation["image_ordinal"])
+            if image["download_state"] == "ok":
+                files[f"assets/{image['asset_name']}"] = self.staged_image(note["note_id"], image)
+                entry["asset_name"] = image["asset_name"]
+        return entry

@@ -172,11 +172,16 @@ def build_engine_service(
     consumer = CaptureConsumer(store=store, engine=engine, leases=plan)
     holder["consumer"] = consumer
     from ..config import xhs_settings
-    from ..xhs.drain import XhsDrain
+    from ..xhs.drain import PIPELINE_HANDLERS, XhsDrain
 
     # Built always and run only when both plugin rows are armed, `[xhs]
     # enabled` is set and both asset roots are ready.
-    xhs = XhsDrain(store=store, supervisor=supervisor, settings=xhs_settings(config or {}))
+    xhs = XhsDrain(
+        store=store,
+        supervisor=supervisor,
+        settings=xhs_settings(config or {}),
+        handlers=PIPELINE_HANDLERS,
+    )
     return EngineService(
         roots=roots,
         supervisor=supervisor,
