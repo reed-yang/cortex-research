@@ -281,13 +281,24 @@ def test_reference_boundaries_match_whole_words(text, expected):
      "## 1 Introduction\ni\n## 7 Conclusion\nc\n", "## 7 Conclusion\nc\n"),
     ("# Learning from References\n\n# Learning from References † Equal contribution.\n\n"
      "## 1 Introduction\ni\n## 6 Limitations\nl\n## References\nr\n", "## 6 Limitations\nl\n"),
+    # A later level-1 heading such as an appendix does not make the converted title a section.
+    ("# On the Limitations of Synthetic Decoders\n\n"
+     "# On the Limitations of Synthetic Decoders † Work done during an internship.\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nOur own limitation: one benchmark.\n## References\nr\n"
+     "# Appendix\na\n", "## 6 Limitations\nOur own limitation: one benchmark.\n"),
+    ("# Learning from References\n\n# Learning from References † Equal contribution.\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nl\n## References\nr\n# Appendix\na\n", "## 6 Limitations\nl\n"),
     # A level-1 section that ends at the next one, or holds no later heading, stays a section.
     ("# Study of Limitations\n# 1 Introduction\ni\n# 6 Limitations\nl\n", "# 6 Limitations\nl\n"),
     ("# P\n# 1 Introduction\ni\n# 5 Conclusion\nc\n# References\nr\n## A Limitations of the appendix\na\n",
      "# 5 Conclusion\nc\n"),
+    # So does a final level-1 section with subsections after body text under the title.
+    ("# Synthetic study\nintro\n# 6 Limitations\nl\n## 6.1 Data\nd\n## 6.2 Scope\ns\n",
+     "# 6 Limitations\nl\n## 6.1 Data\nd\n## 6.2 Scope\ns\n"),
 ], ids=["title-limitations", "repeated-title-conclusion", "title-references", "level-1-sections", "title-only",
-        "converted-title-thanks", "converted-title-math", "converted-title-references", "level-1-last-section",
-        "level-1-references-with-subsections"])
+        "converted-title-thanks", "converted-title-math", "converted-title-references",
+        "converted-title-before-appendix", "converted-references-title-before-appendix", "level-1-last-section",
+        "level-1-references-with-subsections", "level-1-last-section-with-subsections"])
 def test_the_document_title_is_not_an_author_section(text, expected):
     assert span("full_text", text) == expected
 
@@ -544,17 +555,18 @@ MATH_TITLE = ('<h1 class="ltx_title ltx_title_document">Limitations of <math alt
               '</semantics></math> Decoders</h1>')
 
 
+@pytest.mark.parametrize("appendix", ["", "<h1>Appendix</h1><p>Synthetic appendix.</p>"], ids=["", "appendix"])
 @pytest.mark.parametrize("metadata_title, html_title", [
     ("On the Limitations of Synthetic Decoders", THANKS_TITLE),
     ("Limitations of O(n) Decoders", MATH_TITLE),
 ], ids=["thanks", "math"])
 def test_a_converted_title_that_differs_from_the_metadata_title_is_not_a_section(
-        knowledge, metadata_title, html_title):
+        knowledge, metadata_title, html_title, appendix):
     store, root, *_ = knowledge
     html = (f"<html><body><article>{html_title}"
             "<h2>1 Introduction</h2><p>" + "Synthetic introduction sentence. " * 250 + "</p>"
             "<h2>6 Limitations</h2><p>Our own limitation: one benchmark.</p>"
-            "<h2>References</h2><p>[1] Synthetic reference.</p></article></body></html>")
+            f"<h2>References</h2><p>[1] Synthetic reference.</p>{appendix}</article></body></html>")
     markdown, _ = _html_to_markdown(html)
     assert markdown.startswith("# ") and not markdown.startswith(f"# {metadata_title}\n")
     write_files(root, ENGLISH, full_text=f"# {metadata_title}\n\n{markdown}\n")
