@@ -193,6 +193,23 @@ def test_cookies_are_never_sent_across_redirects() -> None:
     assert seen[1].headers["host"] == "other.example"
 
 
+def test_a_cookie_is_not_replayed_on_a_same_host_redirect() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(
+                302, headers={"location": "/next", "set-cookie": "sid=abc; Path=/"}
+            )
+        return httpx.Response(200, text="done")
+
+    page = fetch(handler)
+    assert page.url == "https://blog.example/next"
+    assert [request.url.host for request in seen] == ["93.184.216.34", "93.184.216.34"]
+    assert all("cookie" not in request.headers for request in seen)
+
+
 def test_a_body_over_the_limit_is_refused() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"x" * 2048)

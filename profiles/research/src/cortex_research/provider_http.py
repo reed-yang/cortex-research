@@ -303,6 +303,9 @@ def safe_get(
             parts = urlsplit(current)
             literal = f"[{address}]" if ":" in address else address
             pinned = urlunsplit((scheme, literal, parts.path or "/", parts.query, ""))
+            # The jar is merged into the request when it is built, so a cookie
+            # the previous hop set has to be gone before this line.
+            http.cookies.clear()
             request = http.build_request(
                 "GET",
                 pinned,
@@ -314,7 +317,7 @@ def safe_get(
                 timeout=deadline.timeout(request_timeout, provider=provider),
                 extensions={"sni_hostname": host} if scheme == "https" else None,
             )
-            http.cookies.clear()
+            request.headers.pop("cookie", None)
             try:
                 response = http.send(request, stream=True)
             except httpx.TimeoutException as error:
