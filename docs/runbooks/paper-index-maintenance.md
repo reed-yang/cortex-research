@@ -71,9 +71,12 @@ carries its SHA-256. Classes:
 - `external`: URLs with a scheme such as `https:` or `data:`; never fetched.
   `non_asset`: anchors and other local links, which are not resolved.
 - `unsupported`: `srcset`, CSS `url()`, other HTML asset attributes, HTML
-  tags that never complete, destinations the scanner cannot parse, other
-  `page=`/`bbox=` forms, and a block comment without `-->` that hides
-  asset-looking text up to the end of the file.
+  tags that never complete, destinations the scanner cannot parse (including a
+  `](...)` destination left without an opening bracket, as when a figure
+  caption contains an interval such as `(0, 1]`; HTML tags and CSS `url()`
+  in that text keep their own classes), other `page=`/`bbox=` forms,
+  and a block comment without `-->` that hides asset-looking text up to the end
+  of the file.
 
 The scanner supports inline links and images (angle destinations, titles,
 escaped parentheses and up to 32 levels of balanced parentheses, as in cmark),
@@ -85,7 +88,10 @@ HTML block or blank line; an HTML tag keeps backticks and `<!--` in its
 attributes; a definition-shaped line inside a paragraph or a footnote is
 scanned as text; and a leading byte order mark is skipped while byte offsets
 still count it. It does not detect autolinks or bare URLs. These
-approximations over-report rather than hide: Markdown inside raw HTML blocks
+approximations over-report rather than hide: a destination that fails to parse
+is judged from where a destination may start, after spaces and one line ending,
+to the first `)` or the line end, or to its own end when balanced parentheses
+or `<...>` carry it further; Markdown inside raw HTML blocks
 and after a closed block comment is scanned as live text; code, comments and
 HTML blocks inside block quotes are not recognized; and a definition-shaped
 line inside a paragraph still resolves uses that no other definition matches.

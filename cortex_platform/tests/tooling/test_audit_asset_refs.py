@@ -277,6 +277,111 @@ def test_unparsable_asset_forms_are_reported_as_unsupported(text, forms):
     assert [(u.form, u.snippet) for u in unsupported] == forms
 
 
+@pytest.mark.parametrize(("text", "snippet"), [
+    # Ingestion writes '![{caption}]({rel})' with the raw figcaption text. An
+    # interval in the caption pairs '![' with its own ']', so the real '](' has
+    # no opener and CommonMark renders the whole construct as text.
+    ("![Accuracy for λ ∈ (0, 1] across seeds.](assets/fig3.png)\n", "assets/fig3.png"),
+    ("![Panel A [1, 2]; range (0, 1] in Panel B.](./assets/fig4.png)\n", "./assets/fig4.png"),
+    ("A citation [3] ](assets/fig5.png) without an opener.\n", "assets/fig5.png"),
+    ("Set {x | x ∈ [0, 1]}](assets/fig6.png).\n", "assets/fig6.png"),
+    ("Caption ends with a backslash \\](assets/fig7.png)\n", "assets/fig7.png"),
+    ("![Rate (0, 1]](page=3,bbox=[1,2,3,4])\n", "page=3,bbox=[1,2,3,4]"),
+    # An earlier stray '](' whose text is clean ends at the same ')', so its
+    # cached result must not hide a later pseudo destination.
+    ("A stray ](see text ![Bound (-2, 3]](page=7,bbox=[5,6,7,8])\n", "page=7,bbox=[5,6,7,8]"),
+    ("A stray ](see text ![Bound (-2, 3]](bbox=[5,6,7,8])\n", "bbox=[5,6,7,8]"),
+    ("A stray ](see text ![Bound (-2, 3]](PAGE=7)\n", "PAGE=7"),
+    # A '](' inside a reported destination is not reported again.
+    ("Two strays ](a ](assets/fig8.png)\n", "a ](assets/fig8.png"),
+])
+def test_a_destination_left_without_an_opening_bracket_is_unsupported(text, snippet):
+    data, refs, unsupported = _scan(text)
+
+    assert refs == ()
+    assert [(u.form, u.line, u.snippet) for u in unsupported] == [
+        ("unparsed_markdown_destination", 1, snippet)]
+    start = data.index(snippet.encode())
+    assert (unsupported[0].byte_start, unsupported[0].byte_end) == (
+        start, start + len(snippet.encode()))
+    assert unsupported[0].column == text.index(snippet) + 1
+
+
+@pytest.mark.parametrize("text", [
+    "Inline `](assets/code.png)` and ``x ](assets/code2.png)``.\n",
+    "```\n![Rate (0, 1]](assets/fenced.png)\n```\n",
+    "<!-- ![Rate (0, 1]](assets/comment.png) -->\n",
+    "Prose with a stray ] and a link [x](https://example.org) ](not-an-asset).\n",
+])
+def test_code_and_non_asset_destinations_without_an_opener_stay_quiet(text):
+    _, refs, unsupported = _scan(text)
+
+    assert unsupported == ()
+    assert all(r.raw_target == "https://example.org" for r in refs)
+
+
+@pytest.mark.parametrize(("text", "refs", "forms"), [
+    # Without an opener the '](' is text, so the raw HTML and CSS after it
+    # keep the classification their own scanners give them.
+    ('Range (-2, 3]](see <img src="assets/present.png">)\n',
+     [("html_img", "assets/present.png")], []),
+    ('Range (-2, 3]](see <a href="assets/absent.svg">figure</a>)\n',
+     [("html_a", "assets/absent.svg")], []),
+    ('Range (-2, 3]](see <span style="background: url(assets/bg.png)">x</span>)\n',
+     [], [("css_url", "assets/bg.png")]),
+    ("Range (-2, 3]](see url(assets/bg.png) )\n", [], [("css_url", "assets/bg.png")]),
+    # A '](' inside a tag attribute is not Markdown.
+    ('<img alt="Range (0, 1]](assets/alt.png)" src="assets/present.png">\n',
+     [("html_img", "assets/present.png")], []),
+])
+def test_html_and_css_after_a_destination_without_an_opener_keep_their_class(text, refs, forms):
+    _, references, unsupported = _scan(text)
+
+    assert [(r.syntax, r.raw_target) for r in references] == refs
+    assert [(u.form, u.snippet) for u in unsupported] == forms
+
+
+@pytest.mark.parametrize(("text", "snippet"), [
+    # Balanced parentheses belong to the destination, so it ends at the last
+    # ')', not the first one.
+    ("![Synthetic score (-1, 2].]((synthetic)/assets/chart.svg)\n",
+     "(synthetic)/assets/chart.svg"),
+    # A destination may start after spaces and one line ending.
+    ("![Synthetic score (-1, 2].](\nassets/chart.svg)\n", "assets/chart.svg"),
+    ("![Synthetic score (-1, 2].](  \n  (v2)/assets/chart.svg)\n", "(v2)/assets/chart.svg"),
+    # A pointy destination may hold an unbalanced ')'.
+    ("![Synthetic score (-1, 2].](<v)2/assets/chart.svg>)\n", "<v)2/assets/chart.svg>"),
+    # The same boundary applies when the brackets pair but the tail fails.
+    ('![Synthetic chart]((synthetic)/assets/chart.svg "open title)\n',
+     "(synthetic)/assets/chart.svg"),
+    ('![Synthetic chart](\nassets/chart.svg "open title)\n', 'assets/chart.svg "open title'),
+    ('![Synthetic chart](<v)2/assets/chart.svg> "open title)\n', "<v)2/assets/chart.svg>"),
+])
+def test_a_failed_destination_is_judged_to_its_own_end(text, snippet):
+    data, refs, unsupported = _scan(text)
+
+    start = text.index(snippet)
+    line = text.count("\n", 0, start) + 1
+    column = start - text.rfind("\n", 0, start)
+    assert refs == ()
+    assert [(u.form, u.line, u.column, u.snippet) for u in unsupported] == [
+        ("unparsed_markdown_destination", line, column, snippet)]
+    byte_start = data.index(snippet.encode())
+    assert (unsupported[0].byte_start, unsupported[0].byte_end) == (
+        byte_start, byte_start + len(snippet.encode()))
+
+
+def test_a_bracket_inside_a_code_span_does_not_break_the_caption():
+    # The ']' of the interval sits in a code span, so the image still parses
+    # and no destination is reported twice.
+    text = "![Accuracy for `(0, 1]` across seeds.](assets/fig3.png)\n"
+    data, refs, unsupported = _scan(text)
+
+    assert unsupported == ()
+    assert [(r.syntax, r.raw_target) for r in refs] == [("markdown_image", "assets/fig3.png")]
+    assert refs[0].byte_start == data.index(b"assets/fig3.png")
+
+
 def test_prose_comparisons_and_closed_comments_are_not_unsupported():
     text = ("Values x <y and z.\n![](assets/a.png)\n"
             "<!-- closed\n\n![](assets/hidden.png)\n-->\n![](assets/b.png)\n")
@@ -309,7 +414,10 @@ def test_long_paragraphs_with_unmatched_brackets_and_backticks_scan_in_linear_ti
 @pytest.mark.parametrize("body", [
     "[x](" * 50_000, "[x](a(" * 33_000, "[x](<a " * 28_000, "``x <!-- " * 22_000,
     "<b x=" * 40_000, "[" * 100_000 + "]" * 100_000,
-], ids=["open-paren", "nested-paren", "angle", "backticks-comment", "tag", "nested-brackets"])
+    "](x " * 50_000, "](" * 50_000 + "assets/a.png",
+    "](" * 50_000 + ")" * 50_000, "](<" * 50_000, "](\n" * 50_000,
+], ids=["open-paren", "nested-paren", "angle", "backticks-comment", "tag", "nested-brackets",
+        "orphan-close", "orphan-close-asset", "orphan-nested", "orphan-angle", "orphan-next-line"])
 def test_repeated_malformed_constructs_scan_in_linear_time(body):
     text = body + "\n\n![x](assets/end.png)\n"
     started = time.perf_counter()
@@ -584,6 +692,52 @@ def test_references_after_markup_edge_cases_reach_the_report(tmp_path, capsys):
         ("missing", 9, "figures/l9.png", None),
         ("missing", 16, "assets/l18.png", None),
     ]
+
+
+def test_an_ingested_caption_with_an_interval_is_a_finding_not_a_clean_file(tmp_path, capsys):
+    body = ("## Results\n\n"
+            "![Accuracy for λ ∈ (0, 1] across seeds.](assets/fig3.png)\n\n"
+            "![Loss curve.](assets/fig4.png)\n")
+    corpus = _corpus(tmp_path)
+    _paper(corpus, "mu", {"full_text.md": body}, assets=["assets/fig4.png"])
+    code, report, _ = _run(capsys, "--corpus", str(corpus))
+
+    record = _file(report, "mu/full_text.md")
+    assert code == 0
+    assert record["occurrences"] == _counts(present=1, unsupported=1)
+    assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
+        ("unsupported", "unparsed_markdown_destination", 3, "assets/fig3.png")]
+
+
+def test_a_caption_destination_with_parentheses_or_a_line_break_is_a_finding(tmp_path, capsys):
+    body = ("## Results\n\n"
+            "![Synthetic score (-1, 2].]((synthetic)/assets/chart.svg)\n\n"
+            "![Synthetic score (-1, 2].](\nassets/chart.svg)\n")
+    corpus = _corpus(tmp_path)
+    _paper(corpus, "xi", {"full_text.md": body})
+    code, report, _ = _run(capsys, "--corpus", str(corpus))
+
+    record = _file(report, "xi/full_text.md")
+    assert code == 0
+    assert record["occurrences"] == _counts(unsupported=2)
+    assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
+        ("unsupported", "unparsed_markdown_destination", 3, "(synthetic)/assets/chart.svg"),
+        ("unsupported", "unparsed_markdown_destination", 6, "assets/chart.svg")]
+
+
+def test_tags_after_a_destination_without_an_opener_are_classified_in_the_report(tmp_path, capsys):
+    body = ("## Results\n\n"
+            'Range (-2, 3]](see <img src="assets/present.png">)\n\n'
+            'Range (-2, 3]](see <a href="assets/absent.svg">figure</a>)\n')
+    corpus = _corpus(tmp_path)
+    _paper(corpus, "nu", {"full_text.md": body}, assets=["assets/present.png"])
+    code, report, _ = _run(capsys, "--corpus", str(corpus))
+
+    record = _file(report, "nu/full_text.md")
+    assert code == 0
+    assert record["occurrences"] == _counts(present=1, missing=1)
+    assert [(f["kind"], f["syntax"], f["line"], f["raw_target"]) for f in record["findings"]] == [
+        ("missing", "html_a", 5, "assets/absent.svg")]
 
 
 def test_symlinks_and_unreadable_inputs_are_reported_with_nonzero_status(tmp_path, capsys):

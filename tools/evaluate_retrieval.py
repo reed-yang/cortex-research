@@ -17,6 +17,7 @@ docs/runbooks/retrieval-evaluation.md.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -24,15 +25,13 @@ import re
 import stat
 import sys
 from contextlib import contextmanager
+from functools import cache
 from json.decoder import scanstring
 from pathlib import Path
 
-from cortex_platform.product.artifacts import materializer as _materializer
 from cortex_platform.product.artifacts.materializer import MaterializerError, _open_directory, _read_regular
 from cortex_platform.product.control import CommandResult
-from cortex_platform.product.research import context as _context
-from cortex_platform.product.research import documents as _documents
-from cortex_platform.product.research import service as _service
+from cortex_platform.product.research import evidence as _evidence
 from cortex_platform.product.research.context import (
     ACTOR,
     ResearchFailure,
@@ -42,10 +41,6 @@ from cortex_platform.product.research.context import (
     validate_snapshot,
 )
 from cortex_platform.product.research.service import ResearchService
-from cortex_platform.product.sources import adoption as _adoption
-from cortex_platform.product.sources import models as _models
-from cortex_platform.product.sources import reader as _reader
-from cortex_platform.product.sources import search as _search
 from cortex_platform.product.sources.models import _ARXIV_AUTHORITY_ID_RE, _DOI_AUTHORITY_ID_RE, _SHA256_RE
 from cortex_platform.product.sources.reader import (
     KINDS,
@@ -72,10 +67,10 @@ LANGUAGES = ("en", "zh", "mixed")
 _READ_CHUNK = 1 << 20
 _NAME_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 _PRIMARY_KINDS = ("notes", "full_text")
-_CODE_MODULES = (
-    sys.modules[__name__], _reader, _search, _adoption, _models, _service, _context,
-    _documents, _materializer,
-)
+_PRODUCT = "cortex_platform.product"
+# Product modules whose static imports, followed transitively, are fingerprinted
+# together with this tool: the packet path and the search path it measures.
+_CODE_ROOTS = (ResearchService.__module__, SourceKnowledgeReader.__module__)
 DEFINITIONS = {
     "k": ("SourceKnowledgeReader.search result slots at limit=k, followed by first-occurrence "
           "canonical-identity deduplication. Slots can be chunks or title hits, so these figures "
@@ -88,10 +83,14 @@ DEFINITIONS = {
     "coverage": ("Retained packet bytes that overlap a non-blank target body: notes ATX headings titled "
                  "exactly 'Key Results'/'Limitations' (casefold), excluding nested heading lines; grounding "
                  "JSON string values, with escapes decoded, under key_results, human.key_results_human, "
-                 "open_threads and human.limitations. Indexed flags use the full-text section named in the "
-                 "generated prefix of the packet's own search hit and may lag files. null means unknown; "
-                 "a share is reported only when every packet source is classifiable. Section-content "
-                 "coverage, not claim support."),
+                 "open_threads and human.limitations, and the Markdown mirror bodies under ATX headings "
+                 "titled exactly 'key_results'/'open_threads'; full_text_author_section, the paper's own "
+                 "Limitations section before References, else its Conclusion, chosen as the packet builder "
+                 "chooses it. Mirror and full_text headings follow the packet builder's heading rules. "
+                 "has_key_results_text and has_limitations_text combine notes and grounding flags only. "
+                 "Indexed flags use the full-text section named in the generated prefix of the packet's own "
+                 "search hit and may lag files. null means unknown; a share is reported only when every "
+                 "packet source is classifiable. Section-content coverage, not claim support."),
 }
 _LOCATOR = re.compile(r"(?P<kind>notes|grounding|full_text):lines:(?P<first>\d+)-(?P<last>\d+):offset:(?P<offset>\d+)")
 _FRONT_MATTER = re.compile(rb"---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
@@ -111,11 +110,15 @@ COVERAGE_FLAGS = (
     "notes_key_results", "notes_limitations", "grounding_key_results", "grounding_key_results_human",
     "grounding_open_threads", "grounding_limitations_human", "indexed_results_section",
     "indexed_limitations_section", "has_key_results_text", "has_limitations_text",
+    "full_text_author_section",
 )
 _AGGREGATES = {
     "has_key_results_text": ("notes_key_results", "grounding_key_results", "grounding_key_results_human"),
     "has_limitations_text": ("notes_limitations", "grounding_open_threads", "grounding_limitations_human"),
 }
+# Pooled across packets in the summary. The author section is reported beside
+# has_limitations_text, not inside it: it may be a Conclusion.
+_POOLED = (*_AGGREGATES, "full_text_author_section")
 _MAX_JSON_DEPTH = 64
 _MAX_AUDIT_PAGES = 4096
 
@@ -571,8 +574,9 @@ def grounding_ranges(raw: bytes) -> dict:
     """Byte ranges of non-blank grounding JSON string values, by coverage target.
 
     Supports one JSON object, optionally fenced as ```json, after optional
-    YAML front matter. Property names, punctuation and the trailing Markdown
-    mirror never count. Any other layout is None (unknown) for every target.
+    YAML front matter. Property names and punctuation never count, and the
+    trailing Markdown mirror is judged by grounding_mirror_ranges. Any other
+    layout is None (unknown) for every target.
     """
     unknown = dict.fromkeys(GROUNDING_TARGETS.values())
     start = 0
@@ -608,6 +612,56 @@ def grounding_ranges(raw: bytes) -> dict:
     for name, first, last in targets:
         found[name].append((offsets[first], offsets[last]))
     return found
+
+
+def _heading_body(raw: bytes, heads: list, index: int) -> list:
+    """Non-blank byte ranges of a packet-builder section after its heading line.
+
+    The section runs to the next heading of the same or a higher level, as the
+    packet builder bounds it; nested heading lines are not body.
+    """
+    def line_end(offset: int) -> int:
+        stop = raw.find(b"\n", offset)
+        return len(raw) if stop < 0 else stop + 1
+
+    end = _evidence._section_end(raw, heads, index)
+    ranges, cursor = [], line_end(heads[index][2])
+    for _, _, offset in heads[index + 1:]:
+        if offset >= end:
+            break
+        ranges.append((cursor, offset))
+        cursor = line_end(offset)
+    ranges.append((cursor, end))
+    return [(first, last) for first, last in ranges if raw[first:last].decode("utf-8").strip()]
+
+
+def grounding_mirror_ranges(raw: bytes) -> dict:
+    """Byte ranges of the grounding Markdown mirror bodies the packet builder selects.
+
+    Headings follow research/evidence.py: ATX titles equal to 'key_results' or
+    'open_threads' after strip().casefold(), outside front matter and fences.
+    The mirror repeats top-level fields only, so the human.* targets are absent.
+    """
+    heads = _evidence._headings(raw)
+    return {title: [segment for index, head in enumerate(heads) if head[1] == title
+                    for segment in _heading_body(raw, heads, index)]
+            for title in _evidence._TITLES["grounding"]}
+
+
+def author_section_ranges(raw: bytes) -> dict:
+    """Byte ranges of the full_text section the packet builder selects as the paper's own.
+
+    That is the first Limitations section before References, else the first
+    Conclusion, as research/evidence.py chooses it. No such section is a known
+    negative. Selection counts nested heading lines as text and the body here
+    does not, so a selected section holding only sub-headings has no body.
+    """
+    heads = _evidence._headings(raw)
+    window = _evidence._author_section(raw, heads)
+    if window is None:
+        return {"author_section": []}
+    index = next(n for n, head in enumerate(heads) if head[2] == window[0])
+    return {"author_section": _heading_body(raw, heads, index)}
 
 
 def _read_complete(reader, source_id: str, kind: str):
@@ -742,30 +796,33 @@ def _indexed_coverage(source: dict, hits: dict) -> dict:
             "indexed_limitations_section": _any_known(limitations)}
 
 
+# Per kind: (range finder, ranges are JSON string bodies) pairs and flag targets.
+# A finder that lacks a target contributes nothing to it.
 _FILE_TARGETS = (
-    ("notes", section_ranges, False,
+    ("notes", ((section_ranges, False),),
      {"notes_key_results": "key_results", "notes_limitations": "limitations"}),
-    ("grounding", grounding_ranges, True,
+    ("grounding", ((grounding_ranges, True), (grounding_mirror_ranges, False)),
      {"grounding_key_results": "key_results", "grounding_key_results_human": "key_results_human",
       "grounding_open_threads": "open_threads", "grounding_limitations_human": "limitations_human"}),
+    ("full_text", ((author_section_ranges, False),), {"full_text_author_section": "author_section"}),
 )
 
 
 def _source_coverage(reader, source: dict, hits: dict, cache: dict) -> dict:
     flags = {}
-    for kind, ranges_of, literal, targets in _FILE_TARGETS:
+    for kind, finders, targets in _FILE_TARGETS:
         evidence = [item for item in source["evidence"] if item["kind"] == kind]
         if not evidence:
             flags.update(dict.fromkeys(targets, False))
             continue
         audited = _audited(reader, source["source_id"], kind, cache)
-        ranges = None if audited is None else ranges_of(audited[0])
+        found = [(None if audited is None else ranges_of(audited[0]), literal) for ranges_of, literal in finders]
         spans = [_located_span(item, audited) for item in evidence]
         for flag, target in targets.items():
-            bounds = None if ranges is None else ranges[target]
             flags[flag] = _any_known(
-                None if span is None or bounds is None else _overlaps(audited[0], span, bounds, literal=literal)
-                for span in spans)
+                None if span is None or ranges is None or ranges[target] is None
+                else _overlaps(audited[0], span, ranges[target], literal=literal)
+                for span in spans for ranges, literal in found if ranges is None or target in ranges)
     flags.update(_indexed_coverage(source, hits))
     for name, parts in _AGGREGATES.items():
         flags[name] = _any_known(flags[part] for part in parts)
@@ -890,7 +947,7 @@ def _summary(rows: list[dict]) -> dict:
             "total": sum(value for value in distinct if value is not None)}
     summary["coverage"] = {name: _share(*(sum(packet["coverage"][name][key] for packet in built)
                                            for key in ("confirmed", "sources", "unknown")))
-                           for name in _AGGREGATES}
+                           for name in _POOLED}
     return summary
 
 
@@ -994,9 +1051,65 @@ def _database_fingerprint(path: Path) -> dict:
     return {"sha256": hasher.hexdigest(), "bytes": size, "sidecars": sidecars}
 
 
+def _product_file(name: str) -> Path | None:
+    """The source file of a product module or package, located without importing it.
+
+    Names are matched against directory listings, so an imported class such as
+    'Provenance' never resolves to 'provenance.py' on a case-insensitive disk.
+    """
+    if name != _PRODUCT and not name.startswith(_PRODUCT + "."):
+        return None
+    parts = name.split(".")[2:]
+    path = Path(sys.modules[_PRODUCT].__file__).parent
+    for index, part in enumerate(parts):
+        try:
+            entries = os.listdir(path)
+        except OSError:
+            return None
+        if index == len(parts) - 1 and part + ".py" in entries:
+            return path / (part + ".py")
+        if part not in entries:
+            return None
+        path = path / part
+    return path / "__init__.py" if (path / "__init__.py").is_file() else None
+
+
+def _product_imports(name: str, path: Path) -> set[str]:
+    """Product modules a module imports anywhere in its source, including inside functions."""
+    package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+    found = set()
+    for node in ast.walk(ast.parse(path.read_bytes(), str(path))):
+        if isinstance(node, ast.Import):
+            candidates = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = package.rsplit(".", node.level - 1)[0] if node.level else ""
+            base = ".".join(part for part in (base, node.module) if part)
+            # "from package import name" may name a submodule.
+            candidates = [base, *(f"{base}.{alias.name}" for alias in node.names)]
+        else:
+            continue
+        for candidate in candidates:
+            if _product_file(candidate):
+                # Importing a module also runs every enclosing package.
+                parts = candidate.split(".")
+                found.update(".".join(parts[:end]) for end in range(2, len(parts) + 1))
+    return found
+
+
+@cache
+def _code_files() -> tuple[tuple[str, Path], ...]:
+    """This tool and every product module reachable from it and _CODE_ROOTS by static imports."""
+    files, pending = {}, [*_CODE_ROOTS, *_product_imports(__name__, Path(__file__))]
+    while pending:
+        name = pending.pop()
+        if name not in files:
+            files[name] = _product_file(name)
+            pending.extend(_product_imports(name, files[name]))
+    return (("tools.evaluate_retrieval", Path(__file__)), *sorted(files.items()))
+
+
 def _code_fingerprint() -> dict:
-    return {module.__name__ if module.__name__ != "__main__" else "tools.evaluate_retrieval":
-            hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest() for module in _CODE_MODULES}
+    return {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in _code_files()}
 
 
 def fingerprint_inputs(control: Path, index: Path, suite: Path, manifest: dict) -> dict:

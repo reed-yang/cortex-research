@@ -9,6 +9,7 @@ tool accepts. All paper titles, identities and queries are synthetic.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import shutil
@@ -17,12 +18,13 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from cortex_platform.product.control import ControlStore
 from cortex_platform.product.engine.digests import content_tree, tree_digest
+from cortex_platform.product.research import evidence
 from cortex_platform.product.research.context import canonical, digest
 from cortex_platform.product.research.service import ResearchService
 from cortex_platform.product.sources.adoption import read_corpus
@@ -39,8 +41,10 @@ from tools.evaluate_retrieval import (
     CheckpointedEvaluationReader,
     EvaluationContextStore,
     SuiteInvalid,
+    author_section_ranges,
     canonical_identity,
     evaluate,
+    grounding_mirror_ranges,
     grounding_ranges,
     load_suite,
     main,
@@ -450,6 +454,27 @@ def test_repeated_frozen_runs_have_identical_reports(checkpointed_suite):
     assert "tools.evaluate_retrieval" in fingerprint["code"]
 
 
+def test_code_fingerprint_covers_every_product_module_prepare_and_search_import():
+    code = tool._code_fingerprint()
+    # Packet contents depend on the derived retrieval query and the evidence
+    # windows; canonical identities depend on the identity helpers.
+    for name in ("research.service", "research.query", "research.evidence", "research.context",
+                 "sources.reader", "sources.search", "sources.identity"):
+        module = importlib.import_module(f"cortex_platform.product.{name}")
+        assert code[module.__name__] == hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+    assert code["tools.evaluate_retrieval"] == hashlib.sha256(Path(tool.__file__).read_bytes()).hexdigest()
+    # Closed under use: any product function, class or module a fingerprinted
+    # module binds comes from a fingerprinted module too.
+    for name in code:
+        module = tool if name == "tools.evaluate_retrieval" else importlib.import_module(name)
+        if Path(module.__file__).name == "__init__.py":
+            continue   # a package also holds every submodule other code loaded
+        for value in vars(module).values():
+            owner = value.__name__ if isinstance(value, ModuleType) else getattr(value, "__module__", None)
+            if isinstance(owner, str) and owner.startswith("cortex_platform.product"):
+                assert owner in code, (name, owner)
+
+
 # -- Snapshot refusals and availability ---------------------------------------
 
 
@@ -750,9 +775,24 @@ def test_grounding_ranges_map_json_values_not_names_or_mirror():
     ranges = grounding_ranges(bare)
     assert body(bare, ranges["key_results"]) == ["R1", "R2"]
     assert ranges["open_threads"] == [] and ranges["limitations_human"] == []
-    # Only the JSON object counts; the trailing Markdown mirror is presentation.
+    # JSON values only; grounding_mirror_ranges judges the trailing Markdown mirror.
     mirrored = (GROUNDING_FRONT + '```json\n{"mechanism": "m"}\n```\n\n## open_threads\n\nMirror only.\n').encode()
     assert grounding_ranges(mirrored)["open_threads"] == []
+    assert body(mirrored, grounding_mirror_ranges(mirrored)["open_threads"]) == ["\nMirror only.\n"]
+
+
+def test_grounding_mirror_ranges_use_the_packet_heading_rules():
+    raw = grounding_sidecar(key_results="Result 结果.", open_threads="").encode()
+    ranges = grounding_mirror_ranges(raw)
+    assert body(raw, ranges["key_results"]) == ["\nResult 结果.\n\n"]
+    assert ranges["open_threads"] == []
+    # Exact casefolded ATX titles outside fences, as evidence-reads selects;
+    # nested heading lines are not body.
+    raw = (GROUNDING_FRONT + "```\n## key_results\nfenced\n```\n## Key_Results ##\n\nCased.\n"
+           "## key results\n\nSpaced.\n## open_threads\n\n### sub\n\nNested.\n").encode()
+    ranges = grounding_mirror_ranges(raw)
+    assert body(raw, ranges["key_results"]) == ["\nCased.\n"]
+    assert body(raw, ranges["open_threads"]) == ["\nNested.\n"]
 
 
 @pytest.mark.parametrize("text", [
@@ -765,6 +805,28 @@ def test_grounding_ranges_map_json_values_not_names_or_mirror():
 ])
 def test_unsupported_grounding_layouts_are_unknown(text):
     assert set(grounding_ranges(text.encode()).values()) == {None}
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    # The first Limitations section before References; the document title
+    # heading is never a candidate, and nested heading lines are not body.
+    ("# Scope Limitations\n\n## 1 Intro\n\nIntro.\n\n## 5 Conclusion\n\nConcluded.\n\n"
+     "## 6 Limitations\n\n### 6.1 Scope\n\nLimited.\n\n## References\n\n[1] Ref.\n", ["\nLimited.\n\n"]),
+    # Conclusion is the fallback; a Limitations section after References is not.
+    ("# Paper\n\n## 5 Conclusion\n\nConcluded.\n\n## References\n\n[1] Ref.\n\n## Limitations\n\nLate.\n",
+     ["\nConcluded.\n\n"]),
+    # A blank Limitations section is skipped.
+    ("# Paper\n\n## Limitations\n\n## Conclusion\n\nConcluded.\n", ["\nConcluded.\n"]),
+    # Selection counts a nested heading line as text, so a Limitations section
+    # holding only a sub-heading is still the packet's window; its coverage
+    # body excludes heading lines and is empty, without falling back.
+    ("# Paper\n\n## Limitations\n\n### Scope\n\n## Conclusion\n\nConcluded.\n", []),
+    # No candidate section is a known negative.
+    ("# Paper\n\n## Method\n\nBody.\n", []),
+])
+def test_author_section_ranges_follow_the_packet_selection(text, expected):
+    raw = text.encode()
+    assert body(raw, author_section_ranges(raw)["author_section"]) == expected
 
 
 def _notes(title: str, sections: str, *, pad: int = 0) -> str:
@@ -788,6 +850,12 @@ def covered(checkpointed_suite):
     (beta / "grounding.md").write_text(grounding_sidecar(
         key_results="Beta grounded result.", open_threads="Beta thread.",
         human={"key_results_human": "", "limitations": "Beta human limit."}), encoding="utf-8")
+    (alpha / "full_text.md").write_text(
+        "# Kestrel Alpha\n\n## 1 Introduction\n\nAlpha intro.\n\n## 6 Limitations\n\n"
+        "Alpha author limitation.\n\n## References\n\n[1] Synthetic reference.\n", encoding="utf-8")
+    (beta / "full_text.md").write_text(
+        "# Kestrel Beta\n\n## 1 Introduction\n\nBeta intro.\n\n## 5 Conclusion\n\nBeta conclusion.\n",
+        encoding="utf-8")
     assert (alpha / "notes.md").read_bytes().index(b"## Key Results") > 4000
     return checkpointed_suite
 
@@ -799,29 +867,70 @@ def test_section_packet_counts_only_retained_section_bodies(covered):
     alpha, beta, gamma = packet["sources"]
     assert [item["kind"] for item in alpha["evidence"]] == ["indexed_passage", "notes", "full_text", "grounding"]
     # The notes window starts at its section headings, past the old 4,000-byte prefix.
-    # The grounding window spans the Markdown mirror, which grounding targets never count.
+    # The grounding window spans the Markdown mirror, whose key_results and
+    # open_threads bodies count; human.* values appear only in the JSON block.
+    # The full_text window is the paper's own Limitations (Alpha) or Conclusion (Beta).
     assert alpha["coverage"] == {
         "notes_key_results": True, "notes_limitations": True,
-        "grounding_key_results": False, "grounding_key_results_human": False,
-        "grounding_open_threads": False, "grounding_limitations_human": False,
+        "grounding_key_results": True, "grounding_key_results_human": False,
+        "grounding_open_threads": True, "grounding_limitations_human": False,
         "indexed_results_section": False, "indexed_limitations_section": False,
-        "has_key_results_text": True, "has_limitations_text": True,
+        "has_key_results_text": True, "has_limitations_text": True, "full_text_author_section": True,
     }
     assert beta["coverage"] == {
         "notes_key_results": True, "notes_limitations": True,
-        "grounding_key_results": False, "grounding_key_results_human": False,
-        "grounding_open_threads": False, "grounding_limitations_human": False,
+        "grounding_key_results": True, "grounding_key_results_human": False,
+        "grounding_open_threads": True, "grounding_limitations_human": False,
         "indexed_results_section": False, "indexed_limitations_section": False,
-        "has_key_results_text": True, "has_limitations_text": True,
+        "has_key_results_text": True, "has_limitations_text": True, "full_text_author_section": True,
     }
     assert gamma["canonical_id"] == C and not any(gamma["coverage"].values())
     assert packet["coverage"]["has_key_results_text"] == {
         "confirmed": 2, "sources": 3, "unknown": 0, "share": round(2 / 3, 6),
         "confirmed_lower_bound": round(2 / 3, 6)}
+    assert packet["coverage"]["full_text_author_section"] == packet["coverage"]["has_key_results_text"]
     empty = by_id(report)["en-empty"]["packet"]
     assert empty["coverage"] is None
-    pooled = report["summary"]["overall"]["coverage"]["has_limitations_text"]
+    overall = report["summary"]["overall"]["coverage"]
+    assert list(overall) == ["has_key_results_text", "has_limitations_text", "full_text_author_section"]
+    pooled = overall["has_limitations_text"]
     assert pooled["sources"] >= 2 and pooled["unknown"] == 0
+    assert overall["full_text_author_section"]["confirmed"] >= 2
+
+
+def test_packet_windows_from_the_grounding_mirror_count(covered):
+    reader, row = _source(covered, "20261001-Gamma")
+    raw = grounding_sidecar(key_results="Gamma result.", open_threads="", human={
+        "key_results_human": "Gamma human result.", "limitations": "Gamma human limit."}).encode()
+    (covered.corpus / "20261001-Gamma" / "grounding.md").write_bytes(raw)
+    start, end = evidence._window("grounding", raw, True)
+    assert raw[start:end].startswith(b"## mechanism")
+    flags = _coverage(reader, row, [_window(raw, "grounding", start, end - start)])["sources"][0]
+    assert flags["grounding_key_results"] is True and flags["has_key_results_text"] is True
+    # A blank mirror body is a known negative, and the human values stay in the JSON block.
+    assert flags["grounding_open_threads"] is False
+    assert flags["grounding_key_results_human"] is False and flags["grounding_limitations_human"] is False
+    heading = raw.index(b"## key_results")
+    only = _coverage(reader, row, [_window(raw, "grounding", heading, len(b"## key_results\n"))])
+    assert only["sources"][0]["grounding_key_results"] is False
+
+
+def test_author_section_flag_is_reported_beside_but_outside_has_limitations_text(covered):
+    reader, row = _source(covered, "20261001-Gamma")
+    raw = ("# Gamma Study\n\n## 1 Introduction\n\nGamma intro.\n\n## 6 Limitations\n\n"
+           "Gamma author limitation.\n\n## References\n\n[1] Synthetic reference.\n").encode()
+    (covered.corpus / "20261001-Gamma" / "full_text.md").write_bytes(raw)
+    start, end = evidence._window("full_text", raw, True)
+    window = _window(raw, "full_text", start, end - start)
+    flags = _coverage(reader, row, [window])["sources"][0]
+    assert list(flags)[-2:] == ["has_limitations_text", "full_text_author_section"]
+    assert flags["full_text_author_section"] is True
+    # The aggregate keeps notes and grounding only: the section may be a Conclusion.
+    assert flags["has_limitations_text"] is False
+    prefix = _window(raw, "full_text", 0, raw.index(b"## 6 Limitations"))
+    assert _coverage(reader, row, [prefix])["sources"][0]["full_text_author_section"] is False
+    shifted = _window(raw, "full_text", start, end - start, shift=1)
+    assert _coverage(reader, row, [shifted])["sources"][0]["full_text_author_section"] is None
 
 
 def _source(snapshot, paper_dir):
@@ -914,7 +1023,12 @@ def test_missing_and_unsupported_grounding_audits_are_unknown(covered):
     markdown = (GROUNDING_FRONT + "## key_results\n\nGamma result.\n").encode()
     (covered.corpus / "20261001-Gamma" / "grounding.md").write_bytes(markdown)
     unsupported = _coverage(reader, row, [_window(markdown, "grounding", 0, len(markdown))])["sources"][0]
-    assert unsupported["grounding_key_results"] is None
+    # Without a supported JSON object, only a retained mirror body establishes a flag.
+    assert unsupported["grounding_key_results"] is True
+    assert unsupported["grounding_open_threads"] is None
+    assert unsupported["grounding_limitations_human"] is None
+    front = _coverage(reader, row, [_window(markdown, "grounding", 0, len(GROUNDING_FRONT))])["sources"][0]
+    assert front["grounding_key_results"] is None
     assert unsupported["notes_key_results"] is False
 
 

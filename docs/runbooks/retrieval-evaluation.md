@@ -146,8 +146,26 @@ target body:
   `grounding_open_threads`, `grounding_limitations_human`: string values under
   the top-level `key_results`, `human.key_results_human`, `open_threads` and
   `human.limitations` of one JSON object, optionally fenced as `json`, after
-  optional front matter. Property names and the trailing Markdown mirror never
-  count. JSON escapes are decoded before a value is judged non-blank.
+  optional front matter. Property names never count. JSON escapes are decoded
+  before a value is judged non-blank. `grounding_key_results` and
+  `grounding_open_threads` also count the trailing Markdown mirror, which is
+  where the packet builder takes the grounding window from: the body under an
+  ATX heading titled exactly `key_results` or `open_threads` after
+  `strip().casefold()`, outside front matter and fenced blocks, up to the next
+  heading of the same or a higher level, without nested heading lines. The
+  mirror repeats top-level fields only, so the `human.*` flags come from the
+  JSON object alone.
+- `full_text_author_section`: the body of the paper's own section that the
+  packet builder selects from `full_text.md`: the first heading containing
+  `limitation` before a heading with the word `references` or `bibliography`,
+  otherwise the first containing `conclusion`. The first heading (the document
+  title) and same-level repeats of it are skipped, and so is a candidate whose
+  text after the heading line is blank up to the next heading of the same or a
+  higher level. That selection test counts nested heading lines as text. The
+  coverage body runs to the same end without nested heading lines, so a
+  selected section that holds only sub-headings reports `false` instead of
+  falling back to a later Conclusion. A paper without such a section is a known
+  negative.
 - `indexed_results_section`, `indexed_limitations_section`: the full-text
   section name of the packet's own search hit contains `result` or
   `limitation` and the excerpt keeps a body after the generated
@@ -156,9 +174,12 @@ target body:
   files, and these flags never stand in for notes or grounding coverage.
 
 `has_key_results_text` and `has_limitations_text` combine the notes and
-grounding flags of one source. Each flag is `true`, `false` or `null`
-(unknown). Unknown covers unsupported grounding layouts, numbered, decorated
-or setext near-miss headings, unclosed front matter or fences, unreadable
+grounding flags of one source. `full_text_author_section` is reported and
+pooled next to them but is not part of `has_limitations_text`, because the
+selected section may be a Conclusion. Each flag is `true`, `false` or `null`
+(unknown). Unknown covers the JSON targets of an unsupported grounding layout
+(a retained mirror body still counts), numbered, decorated
+or setext near-miss notes headings, unclosed notes front matter or fences, unreadable
 files, evidence whose locator or hash does not match, a retained span that
 cuts through the JSON escape of a non-blank character without keeping a
 complete one, and an indexed excerpt whose prefix cannot be parsed. Aggregates report the confirmed
@@ -171,7 +192,10 @@ coverage, not a judgment that a passage supports a claim.
 `inputs.fingerprint` records the suite hash, both database hashes and sidecar
 sizes, a manifest digest of every adopted source's directory and supported text
 file availability and hashes (images and other files are excluded), and the
-hashes of the imported product modules. The evaluation repeats the fingerprint
+hashes of this tool and of every `cortex_platform.product` module and package
+that this tool or the modules defining `ResearchService` and
+`SourceKnowledgeReader` import, directly or transitively, including imports
+inside functions. The evaluation repeats the fingerprint
 afterwards; any change sets `inputs.unchanged` to false.
 
 `preflight` counts adopted sources by availability reason (for example
