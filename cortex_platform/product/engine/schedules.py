@@ -260,11 +260,15 @@ class ResearchScheduleTick:
         consumer: CaptureConsumer,
         max_captures_per_tick: int = 1,
         max_jobs_per_tick: int = 5,
+        xhs: Any | None = None,
     ) -> None:
         if not 1 <= max_captures_per_tick <= 20:
             raise ValueError("max_captures_per_tick must be between 1 and 20")
         self._store = store
         self._consumer = consumer
+        # `xhs.drain.XhsDrain`, which runs both plugin jobs. Without it an
+        # armed plugin row is refused rather than run.
+        self._xhs = xhs
         self._max_captures = max_captures_per_tick
         self._max_jobs = max_jobs_per_tick
 
@@ -307,6 +311,15 @@ class ResearchScheduleTick:
         )
 
     def _run_job(self, schedule: Mapping[str, Any]) -> tuple[str, int]:
+        if str(schedule["operation"]) in {"xhs_pull", "xhs_drain"}:
+            if self._xhs is None:
+                return "refused", 0
+            try:
+                return self._xhs.run_job(str(schedule["operation"]))
+            except Exception:  # noqa: BLE001 - one job's failure is not the tick's
+                # A task whose unit escaped keeps its lease until it expires;
+                # the next claim then recovers it as an unknown outcome.
+                return "failed", 0
         if str(schedule["operation"]) != "capture_drain":
             # Unreachable through the store, which refuses to enable a legacy
             # row. Kept as a refusal rather than an assertion because a row
