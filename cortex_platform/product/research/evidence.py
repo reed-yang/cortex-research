@@ -9,6 +9,7 @@ is not evidence about the sections it did not reach.
 """
 
 import hashlib
+import itertools
 import re
 
 from ..sources.reader import MAX_PAGE_BYTES, SourceContentUnavailable
@@ -22,6 +23,7 @@ _ATX = re.compile(rb" {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*")
 _TITLES = {"notes": ("key results", "limitations"), "grounding": ("key_results", "open_threads")}
 #: Whole words, so a title such as "Learned Preferences" is not a reference list.
 _REFERENCES = re.compile(r"\b(?:references|bibliography)\b")
+_WORDS = re.compile(r"[^\W_]+")
 
 
 def _read_file(reader, source_id, kind):
@@ -144,14 +146,22 @@ def _named(raw, heads, titles):
 def _converted_title(raw, heads):
     """Whether the second heading is the converted page's title right after the first.
 
-    Paper ingestion writes the metadata title and then the converted page, whose
-    own title heading comes first at the same level with nothing but blank lines
-    between the two. Its text can differ (a footnote mark, rendered math).
+    Paper ingestion writes the metadata title, which keeps any line break of
+    the export API's title, then the converted page. The converted title is
+    the next heading, at most at the title's level, after only those wrapped
+    title lines and blank lines. Its text can differ (a footnote mark, rendered
+    math), but it repeats more than half of the metadata title's words, which
+    a first section heading such as "6 Limitations" does not.
     """
     if len(heads) < 2 or heads[1][0] > heads[0][0]:
         return False
     title_end = raw.find(b"\n", heads[0][2]) + 1
-    return not raw[title_end:heads[1][2]].strip()
+    lines = raw[title_end:heads[1][2]].decode("utf-8").split("\n")
+    wrapped = list(itertools.takewhile(str.strip, lines))
+    if any(line.strip() for line in lines[len(wrapped):]):
+        return False
+    words = set(_WORDS.findall(" ".join([heads[0][1], *wrapped]).casefold()))
+    return 2 * len(words & set(_WORDS.findall(heads[1][1]))) > len(words)
 
 
 def _author_section(raw, heads):
@@ -161,7 +171,9 @@ def _author_section(raw, heads):
     one). The converted page repeats it at the same level, possibly with
     footnote or math text that makes the two differ. A title's span can be the
     whole paper, so the title, its exact repeats and a converted title right
-    after it are neither candidate sections nor reference boundaries.
+    after it are neither candidate sections nor reference boundaries. A
+    section heading right after the title that does not repeat most of its
+    words stays a section.
     """
     first = 2 if _converted_title(raw, heads) else 1
     sections = [n for n in range(first, len(heads)) if heads[n][:2] != heads[0][:2]]

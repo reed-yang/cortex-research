@@ -3,6 +3,7 @@
 import hashlib
 
 import pytest
+from cortex_research.arxiv_client import parse_atom
 from cortex_research.paper_ingest import _html_to_markdown
 
 from cortex_platform.product.control import ControlStore
@@ -295,10 +296,24 @@ def test_reference_boundaries_match_whole_words(text, expected):
     # So does a final level-1 section with subsections after body text under the title.
     ("# Synthetic study\nintro\n# 6 Limitations\nl\n## 6.1 Data\nd\n## 6.2 Scope\ns\n",
      "# 6 Limitations\nl\n## 6.1 Data\nd\n## 6.2 Scope\ns\n"),
+    # The first level-1 section right after the title is a section when it does not repeat the title.
+    ("# Synthetic paper\n\n# 6 Limitations\nOne synthetic benchmark.\n# 7 Conclusion\nSynthetic conclusion.\n"
+     "# References\nref\n", "# 6 Limitations\nOne synthetic benchmark.\n"),
+    ("# Synthetic paper\n\n# Conclusion\nSynthetic conclusion.\n# References\nref\n",
+     "# Conclusion\nSynthetic conclusion.\n"),
+    # A metadata title can keep the export API's line break; its converted title still repeats it.
+    ("# On the Limitations of Synthetic\n  Decoders\n\n"
+     "# On the Limitations of Synthetic Decoders † Work done during an internship.\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nOur own limitation: one benchmark.\n",
+     "## 6 Limitations\nOur own limitation: one benchmark.\n"),
+    ("# Learning from\n  References\n\n# Learning from References † Equal contribution.\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nl\n## References\nr\n", "## 6 Limitations\nl\n"),
 ], ids=["title-limitations", "repeated-title-conclusion", "title-references", "level-1-sections", "title-only",
         "converted-title-thanks", "converted-title-math", "converted-title-references",
         "converted-title-before-appendix", "converted-references-title-before-appendix", "level-1-last-section",
-        "level-1-references-with-subsections", "level-1-last-section-with-subsections"])
+        "level-1-references-with-subsections", "level-1-last-section-with-subsections",
+        "level-1-limitations-after-title", "level-1-conclusion-after-title",
+        "wrapped-title-thanks", "wrapped-title-references"])
 def test_the_document_title_is_not_an_author_section(text, expected):
     assert span("full_text", text) == expected
 
@@ -546,10 +561,14 @@ def test_a_long_converted_paragraph_keeps_its_limitations_section(knowledge):
     assert len(entry["text"].encode()) == 6_000 and located(entry, root, ENGLISH)
 
 
-THANKS_TITLE = ('<h1 class="ltx_title ltx_title_document">On the Limitations of Synthetic Decoders'
-                '<span class="ltx_note ltx_role_thanks"><sup class="ltx_note_mark">†</sup>'
-                '<span class="ltx_note_outer"><span class="ltx_note_content">Work done during an internship.'
-                '</span></span></span></h1>')
+def thanks_title(title):
+    return (f'<h1 class="ltx_title ltx_title_document">{title}'
+            '<span class="ltx_note ltx_role_thanks"><sup class="ltx_note_mark">†</sup>'
+            '<span class="ltx_note_outer"><span class="ltx_note_content">Work done during an internship.'
+            '</span></span></span></h1>')
+
+
+THANKS_TITLE = thanks_title("On the Limitations of Synthetic Decoders")
 MATH_TITLE = ('<h1 class="ltx_title ltx_title_document">Limitations of <math alttext="\\mathcal{O}(n)">'
               '<semantics><mi>O</mi><annotation encoding="application/x-tex">\\mathcal{O}(n)</annotation>'
               '</semantics></math> Decoders</h1>')
@@ -572,6 +591,42 @@ def test_a_converted_title_that_differs_from_the_metadata_title_is_not_a_section
     write_files(root, ENGLISH, full_text=f"# {metadata_title}\n\n{markdown}\n")
     entry = full_text_entry(store)
     assert entry["text"] == "## 6 Limitations\n\nOur own limitation: one benchmark.\n\n"
+    assert located(entry, root, ENGLISH)
+
+
+ATOM = ('<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+        "<id>http://arxiv.org/abs/2609.00001v1</id><title>{title}</title>"
+        "<summary>Synthetic abstract.</summary></entry></feed>")
+
+
+@pytest.mark.parametrize("wrapped, title", [
+    ("On the Limitations of Synthetic\n  Decoders", "On the Limitations of Synthetic Decoders"),
+    ("Learning from\n  References", "Learning from References"),
+], ids=["limitations", "references"])
+def test_a_wrapped_export_api_title_still_marks_the_converted_title(knowledge, wrapped, title):
+    store, root, *_ = knowledge
+    metadata_title = parse_atom(ATOM.format(title=wrapped))[0]["title"]
+    assert metadata_title == wrapped
+    html = (f"<html><body><article>{thanks_title(title)}"
+            "<h2>1 Introduction</h2><p>" + "Synthetic introduction sentence. " * 250 + "</p>"
+            "<h2>6 Limitations</h2><p>Our own limitation: one benchmark.</p>"
+            "<h2>References</h2><p>[1] Synthetic reference.</p></article></body></html>")
+    markdown, _ = _html_to_markdown(html)
+    write_files(root, ENGLISH, full_text=f"# {metadata_title}\n\n{markdown}\n")
+    entry = full_text_entry(store)
+    assert entry["text"] == "## 6 Limitations\n\nOur own limitation: one benchmark.\n\n"
+    assert located(entry, root, ENGLISH)
+
+
+def test_a_converted_page_without_its_own_title_keeps_its_first_level_1_section(knowledge):
+    store, root, *_ = knowledge
+    html = ("<html><body><article><h1>6 Limitations</h1><p>Our own limitation: one benchmark.</p>"
+            "<h1>7 Conclusion</h1><p>Synthetic conclusion.</p>"
+            "<h1>References</h1><p>[1] Synthetic reference.</p></article></body></html>")
+    markdown, _ = _html_to_markdown(html)
+    write_files(root, ENGLISH, full_text=f"# Synthetic Robust Decoding\n\n{markdown}\n")
+    entry = full_text_entry(store)
+    assert entry["text"] == "# 6 Limitations\n\nOur own limitation: one benchmark.\n\n"
     assert located(entry, root, ENGLISH)
 
 
