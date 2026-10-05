@@ -782,8 +782,11 @@ class XhsStore:
         changes = dict(identified)
         # A link found in the text replaces an unresolved one; a link the
         # search resolved, or the operator set, survives a re-identification.
-        if row["url_state"] in {"none", "from_text"} or (
-            url_state == "from_text" and row["url_state"] != "operator_set"
+        # So does the link a blog is importing or was imported from: its
+        # source link names that page.
+        if row["import_state"] not in {"staged", "importing", "imported"} and (
+            row["url_state"] in {"none", "from_text"}
+            or (url_state == "from_text" and row["url_state"] != "operator_set")
         ):
             changes.update(url=url, url_state=url_state)
         if any(row[name] != value for name, value in changes.items()):

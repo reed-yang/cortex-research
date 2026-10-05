@@ -221,6 +221,28 @@ def test_recommendations_merge_by_key_and_keep_an_operator_link(store: ControlSt
     assert [item["id"] for item in listed] == [blog["id"], paper["id"]]
 
 
+def test_a_reidentification_keeps_the_link_a_blog_imports_from(store: ControlStore) -> None:
+    _follow(store)
+    _note(store)
+
+    def identified(url: str | None, run: str) -> dict:
+        return store._xhs_upsert_recommendation(
+            conn, note_id=NOTE, item_key="title:a-blog:caption", image_ordinal=None,
+            kind="blog", title="Streaming", quote="Streaming",
+            arxiv_id=None, url=url, url_state="from_text" if url else "none",
+            origin="model", identify_run=run,
+        )
+
+    with store._transaction() as conn:
+        blog = identified("https://blog.example/a", "identify:run-1")
+        store._xhs_update_recommendation(
+            conn, blog["id"], expected_revision=blog["revision"], import_state="importing",
+        )
+        for url, run in (("https://blog.example/b", "identify:run-2"), (None, "identify:run-3")):
+            again = identified(url, run)
+            assert (again["url"], again["url_state"]) == ("https://blog.example/a", "from_text")
+
+
 # -- tasks ------------------------------------------------------------------------
 
 
