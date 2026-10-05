@@ -50,6 +50,10 @@ def test_citation_label_groups_are_removed(label):
     # by answers, so it goes, and the destination after it goes with it.
     ("[S1](https://example.test/a(b(c)))", ""), ("[S1, S2](https://example.test/a(b(c)))", ""),
     ("[D2](https://example.test/a(b(c)))", ""), ("[S1-S3](https://example.test/a(b(c)))", ""),
+    # So does a whole link whose text a label bracket starts, and any nesting depth counts.
+    ("[S1 [note]](https://example.test/a(b(c)))", ""), ("[D2 [x]](deep(a(b(c))))", ""),
+    ("[S1](https://example.test/" + "(" * 40 + "deep" + ")" * 40 + ")", ""),
+    ("[memory](https://example.test/" + "(" * 40 + "deep" + ")" * 40 + ")", "memory"),
 ])
 def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept):
     """One table (CL6/RS3): a bracket is dropped whole exactly when an answer cites with it."""
@@ -79,6 +83,13 @@ def test_query_cleanup_reads_labels_and_links_with_the_answer_grammar(text, kept
     # A destination may nest parentheses deeper than the answer grammar reads.
     ("[cache](https://example.org/library(papers(cache))) memory", "cache memory"),
     ("[cache](https://example.test/a(b(c(d)))) memory", "cache memory"),
+    ("cache [S1 [note]](deep(a(b(c)))) memory", "cache memory"),
+    ("[cache](https://example.test/" + "(" * 40 + "deepword" + ")" * 40 + ") memory", "cache memory"),
+    ("[cache]( https://example.test/a(b(c))) memory", "cache memory"),
+    ('[cache](https://example.test/a(b(c)) "Deep title") memory', "cache memory"),
+    ("[cache](https://example.test/a(b(c)) (Deep title)) memory", "cache memory"),
+    # An unbalanced deep destination is prose.
+    ("[cache](https://example.test/open(deep(note) memory", "cache https example test open deep note memory"),
 ])
 def test_ordinary_brackets_stay_and_links_keep_only_their_text(question, expected):
     assert retrieval_query(question) == expected
@@ -99,6 +110,7 @@ def test_numbers_versions_and_years_stay_while_length_requirements_go():
     "3个段落", "3句话", "控制在500字内，", "不超过500字符", "500个字符以内", "字数控制在500以内",
     "字数不超过500字", "在300字以内", "300字的", "300-500字", "300到500字", "in 800-1000 words",
     "800–1000 words", "2 to 3 sentences", "300-word", "2-paragraph", "3-sentence",
+    "500个tokens", "200 个 words", "3个sentences以内",
 ])
 def test_length_requirements_are_removed(requirement):
     assert retrieval_query(f"cache memory {requirement} replacement") == "cache memory replacement"
@@ -112,6 +124,16 @@ def test_length_requirements_are_removed(requirement):
     ("300字内说明推测解码", "说明推测解码"),
     ("a 300-word summary of cache memory", "summary of cache memory"),
     ("an 800-1000-word essay on cache memory", "an essay on cache memory"),
+    # A unit may run straight into an answer verb without a prefix.
+    ("300字总结推测解码", "总结推测解码"), ("200字符介绍缓存", "介绍缓存"),
+    ("3句话概括缓存机制", "概括缓存机制"), ("2段总结推测解码", "总结推测解码"),
+    ("100词解释缓存", "解释缓存"), ("用3段总结推测解码", "总结推测解码"),
+    # 字数 after 请把 or 请将 still starts a requirement.
+    ("请把字数控制在500以内总结推测解码", "请把 总结推测解码"),
+    ("请将字数控制在500以内总结推测解码", "请将 总结推测解码"),
+    ("回答控制在200个words以内 缓存", "回答控制在 缓存"),
+    # 写作文 is 写 with its object, not the compound noun 写作.
+    ("请用300字写作文介绍推测解码", "请 写作文介绍推测解码"), ("300字写作文介绍缓存", "写作文介绍缓存"),
 ])
 def test_length_requirements_inside_a_sentence_are_removed(question, expected):
     assert retrieval_query(question) == expected
@@ -134,6 +156,15 @@ def test_hyphenated_sizes_that_are_not_answer_lengths_stay(question, expected):
     assert retrieval_query(question) == expected
 
 
+@pytest.mark.parametrize("question,expected", [
+    ("2个Token-Merging 方法", "2个Token Merging 方法"),
+    ("2 Token-Merging 方法", "Token Merging 方法"),
+    ("16 points-to-voxel 映射", "16 points to voxel 映射"),
+])
+def test_a_unit_word_that_starts_a_hyphenated_name_stays(question, expected):
+    assert retrieval_query(question) == expected
+
+
 def test_length_words_do_not_cut_into_neighbouring_terms():
     assert retrieval_query("plugin 200 words Net2.1 characters") == "plugin Net2.1"
 
@@ -143,11 +174,19 @@ def test_length_words_do_not_cut_into_neighbouring_terms():
     "500字内存", "第2段", "8字符串匹配", "2段式说明", "3条件介绍", "1024字节的方案",
     # Compound nouns that start with an answer verb, counted topics and spaced ordinals.
     "2段分析法", "3段写作技巧", "常用汉字数3500的统计方法", "统计汉字数3000的语料",
-    "论文第 20段的比较", "第 12条解释",
+    "论文第 20段的比较", "第 12条解释", "8段描述符", "4段描述子", "300字说明书",
 ])
 def test_counts_inside_cjk_compound_terms_are_not_length_requirements(term):
     assert retrieval_query(f"cache {term} memory") == f"cache {term} memory"
+    assert retrieval_query(f"cache 用{term} memory") == f"cache 用{term} memory"
     assert retrieval_query("1024字节缓存 2段式检测") == "1024字节缓存 2段式检测"
+
+
+@pytest.mark.parametrize("question", [
+    "用2段分析法研究缓存", "用3段写作技巧提高摘要质量", "请用2段分析法研究缓存", "300字解释器设计",
+])
+def test_a_compound_term_that_starts_with_an_answer_verb_keeps_its_count(question):
+    assert retrieval_query(question) == question
 
 
 def test_a_prefixed_cjk_requirement_may_run_into_the_next_clause():

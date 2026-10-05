@@ -18,60 +18,47 @@ FORMAT_TERMS = frozenset(
     "markdown latex please summarize summarise".split()
 )
 _LINK_TEXT_PREFIX = re.compile(_LINK_TEXT)
-
-
-def _nested_parentheses(depth):
-    """Destination text without spaces whose parentheses nest at most depth levels."""
-    text = r"[^\s()]*"
-    for _ in range(depth):
-        text = rf"(?:[^\s()]|\({text}\))*"
-    return text
-
-
-#: A destination that nests parentheses deeper than the answer grammar reads,
-#: up to 32 levels, with the same optional title.
-_DEEP_DESTINATION = (
-    rf"\(\s*{_nested_parentheses(32)}"
-    r"(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?\s*\)"
-)
 #: The answer's citation scan (inline link, then label bracket) first, so labels
-#: are read exactly as answers cite. A label bracket takes a deep destination
-#: right after it, and other text before one is read as a link, so no
-#: destination becomes search terms.
-_QUERY_SCAN = re.compile(
-    rf"{_INLINE_LINK}|{_LABEL_BRACKET}(?:{_DEEP_DESTINATION})?|{_LINK_TEXT}{_DEEP_DESTINATION}"
-)
+#: are read exactly as answers cite; then any other link text, which is a link
+#: only when a destination of any depth follows it (_destination_ends).
+_QUERY_SCAN = re.compile(rf"(?P<link>{_INLINE_LINK})|(?P<label>{_LABEL_BRACKET})|{_LINK_TEXT}")
+#: After a destination's balanced text: an optional "...", '...' or (...) title, then ")".
+_TITLE_TAIL = re.compile(r"""(?:\s+(?:"[^"]*"|'[^']*'|\([^()]*\)))?\s*\)""")
+_RUN = re.compile(r"\S+")
+_PARENTHESIS = re.compile(r"[()]")
 # Explicit answer-length requirements only; other numbers, years and versions stay.
 # A count may be a range (800-1000, 300到500, 2 to 3). After a CJK unit the span
-# must end at a length suffix, 的, punctuation, a space or the end of the text, or
-# at 内 before an answer verb (300字内回答). So a count inside a compound term such
-# as 1024字节, 2段式, 2段分析法, 8字符串 or 500字内存 is kept, and so is an ordinal
-# such as 第2段 or 第 2段. An answer verb may follow the unit directly only after a
-# strong CJK length prefix, 字数 or 用 (用300字总结); after a strong prefix the suffix
-# 内 always ends the span, and 字数 may be followed by a bare count (字数控制在500以内).
-# 在, 用 and 字数 start a requirement only at the start of a word or after 请, so
-# 现在, 使用 and 汉字数 keep their characters. A hyphenated English size is a
+# must end at a length suffix, 的, punctuation, a space, the end of the text or an
+# answer verb (300字总结, 300字内回答). So a count inside a compound term such as
+# 1024字节, 2段式, 8字符串 or 500字内存 is kept, and so is an ordinal such as 第2段
+# or 第 2段. A verb that starts a compound noun (分析法, 解释器, 写作, 描述符,
+# 描述子, 说明书) is not an answer verb, so 2段分析法, 3段写作技巧 and 8段描述符
+# keep their counts after 用 as well; 写作文 is still 写 with its object.
+# After a strong prefix the suffix 内 always ends the span, and 字数 may be
+# followed by a bare count (字数控制在500以内). 在, 用 and 字数 start a requirement
+# only at the start of a word or after 请, 把 or 将 (请把字数控制在500以内), so 现在,
+# 使用 and 汉字数 keep their characters. A hyphenated English size is a
 # requirement only for words, sentences, paragraphs and bullets (a 300-word
-# summary), not for model or scale sizes such as a 128-token context.
+# summary), not for model or scale sizes such as a 128-token context, and a unit
+# word that starts a hyphenated name (2 Token-Merging) is not a unit.
 _NUMBER = r"(?<![0-9A-Za-z.第])(?<!第 )\d{1,5}(?:\s*(?:[-–~～到至]|to(?=\s))\s*\d{1,5})?"
 _COUNT = rf"{_NUMBER}\s*(?:个\s*)?"
 _CJK_UNIT = r"(?:段落|句话|字符(?!串)|字|词|句|段|条)"
-_ANSWER_VERB = r"(?:总结|概括|概述|回答|介绍|说明|描述|解释|阐述|分析|论述|讲解|写)"
-_CJK_CLOSE = rf"(?:以内|之内|左右|的|内?(?!\w)|内(?={_ANSWER_VERB}))"
-_BEFORE_VERB = rf"(?={_ANSWER_VERB})"
+_ANSWER_VERB = r"(?:(?:总结|概括|概述|回答|介绍|说明|描述|解释|阐述|分析|论述|讲解|写)(?![法器作符子书])|写(?=作文))"
+_CJK_CLOSE = rf"(?:以内|之内|左右|的|内?(?!\w)|内?(?={_ANSWER_VERB}))"
 _CJK_PREFIX = r"(?:控制在|不超过|不多于|少于)"
-_WORD_START = r"(?:(?<![^\W\d_])|(?<=请))"
+_WORD_START = r"(?:(?<![^\W\d_])|(?<=[请把将]))"
 _ENGLISH_PREFIX = r"(?:\b(?:within|under|in|at most|no more than)\s+)?"
 _LENGTH = re.compile(
-    rf"{_CJK_PREFIX}\s*{_COUNT}{_CJK_UNIT}(?:内|{_CJK_CLOSE}|{_BEFORE_VERB})"
-    rf"|{_WORD_START}字数\s*[:：]?\s*(?:{_CJK_PREFIX}|在)?\s*{_COUNT}{_CJK_UNIT}?(?:{_CJK_CLOSE}|{_BEFORE_VERB})"
-    rf"|{_WORD_START}在\s*{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
-    rf"|{_WORD_START}用\s*{_COUNT}{_CJK_UNIT}(?:{_CJK_CLOSE}|{_BEFORE_VERB})"
+    rf"{_CJK_PREFIX}\s*{_COUNT}{_CJK_UNIT}(?:内|{_CJK_CLOSE})"
+    rf"|{_WORD_START}字数\s*[:：]?\s*(?:{_CJK_PREFIX}|在)?\s*{_COUNT}{_CJK_UNIT}?{_CJK_CLOSE}"
+    rf"|{_WORD_START}[在用]\s*{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
     rf"|{_ENGLISH_PREFIX}{_COUNT}{_CJK_UNIT}{_CJK_CLOSE}"
     rf"|{_ENGLISH_PREFIX}{_NUMBER}"
-    r"(?:\s*(?:words?|characters?|chars?|sentences?|paragraphs?|bullets?|points?|tokens?)"
-    r"|-(?:words?|sentences?|paragraphs?|bullets?))"
-    r"(?![A-Za-z])(?:以内|之内|内|左右)?",
+    r"(?:\s*(?:个\s*)?(?:words?|characters?|chars?|sentences?|paragraphs?|bullets?|points?|tokens?)"
+    r"(?![A-Za-z]|-[A-Za-z])"
+    r"|-(?:words?|sentences?|paragraphs?|bullets?)(?![A-Za-z]))"
+    r"(?:以内|之内|内|左右)?",
     re.IGNORECASE,
 )
 _PIECE = re.compile(r"[^\W_]+(?:\.[0-9]+)*")
@@ -83,20 +70,65 @@ def _normalized(text):
     return " ".join(text.split())
 
 
+def _destination_ends(text):
+    """Where the link destination opened by each "(" ends, at any nesting depth.
+
+    As in the answer grammar, a destination is optional whitespace, text
+    without whitespace whose parentheses balance, an optional "...", '...' or
+    (...) title and ")", but its parentheses may nest to any depth. Maps each
+    "(" that opens one to the index just past its closing ")". One pass.
+    """
+    ends, before_space = {}, None
+    for run in _RUN.finditer(text):
+        # None is a "(" before this run, whose destination starts after whitespace.
+        stack, after_space = [None], None
+        for parenthesis in _PARENTHESIS.finditer(text, run.start(), run.end()):
+            if parenthesis[0] == "(":
+                stack.append(parenthesis.start())
+            elif stack:
+                opener = stack.pop()
+                if opener is None:
+                    after_space = parenthesis.end()
+                else:
+                    ends[opener] = parenthesis.end()
+        if stack and (tail := _TITLE_TAIL.match(text, run.end())):
+            if stack[-1] is None:
+                after_space = tail.end()
+            else:
+                ends[stack[-1]] = tail.end()
+        if before_space is not None and after_space is not None:
+            ends[before_space] = after_space
+        before_space = run.end() - 1 if text[run.end() - 1] == "(" else None
+    return ends
+
+
 def _without_citations(text):
     """Read with the answer's citation scan: label-led brackets go, links keep their text.
 
     A bracket that cited_labels would read as a label group, malformed ones
-    included, is removed with any deeper destination right after it; an inline
-    link, including one whose destination nests
-    parentheses deeper than answers read, is replaced by its text, cleaned the
-    same way, so destinations and titles never become search terms.
+    included, is removed, together with the destination of a link it starts
+    (its text may hold one nested bracket). An inline link, including one whose
+    destination nests parentheses to any depth, is replaced by its text,
+    cleaned the same way, so destinations and titles never become search terms.
+    Other bracketed text stays and is scanned inside.
     """
-    def replace(match):
-        if match[1] is not None:
-            return " "
-        return f" {_without_citations(_LINK_TEXT_PREFIX.match(match[0])[0][1:-1])} "
-    return _QUERY_SCAN.sub(replace, text)
+    ends = _destination_ends(text)
+    kept, position, scan = [], 0, 0
+    while (match := _QUERY_SCAN.search(text, scan)) is not None:
+        link_text = _LINK_TEXT_PREFIX.match(text, match.start())
+        destination = ends.get(link_text.end()) if link_text else None
+        if match["link"] is not None:
+            end, words = match.end(), link_text[0][1:-1]
+        elif match["label"] is not None:
+            end, words = destination or ends.get(match.end(), match.end()), ""
+        elif destination is not None:
+            end, words = destination, link_text[0][1:-1]
+        else:
+            scan = match.start() + 1
+            continue
+        kept += [text[position:match.start()], f" {_without_citations(words)} "]
+        position = scan = end
+    return "".join(kept) + text[position:]
 
 
 def _pieces(text):
