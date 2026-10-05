@@ -272,7 +272,22 @@ def test_reference_boundaries_match_whole_words(text, expected):
     ("# Study of Limitations\na\n# 1 Introduction\ni\n# 6 Limitations\nl\n# References\nr\n",
      "# 6 Limitations\nl\n"),
     ("# Study of Limitations\nOnly a title and text.\n", "# Study of Limitations\nOnly a title and text.\n"),
-], ids=["title-limitations", "repeated-title-conclusion", "title-references", "level-1-sections", "title-only"])
+    # The converted page's own h1 can differ from the metadata title it repeats.
+    ("# On the Limitations of Synthetic Decoders\n\n"
+     "# On the Limitations of Synthetic Decoders † Work done during an internship.\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nOur own limitation: one benchmark.\n",
+     "## 6 Limitations\nOur own limitation: one benchmark.\n"),
+    ("# Conclusion Drift in O(n) Decoders\n\n# Conclusion Drift in $\\mathcal{O}(n)$ Decoders\n\n"
+     "## 1 Introduction\ni\n## 7 Conclusion\nc\n", "## 7 Conclusion\nc\n"),
+    ("# Learning from References\n\n# Learning from References † Equal contribution.\n\n"
+     "## 1 Introduction\ni\n## 6 Limitations\nl\n## References\nr\n", "## 6 Limitations\nl\n"),
+    # A level-1 section that ends at the next one, or holds no later heading, stays a section.
+    ("# Study of Limitations\n# 1 Introduction\ni\n# 6 Limitations\nl\n", "# 6 Limitations\nl\n"),
+    ("# P\n# 1 Introduction\ni\n# 5 Conclusion\nc\n# References\nr\n## A Limitations of the appendix\na\n",
+     "# 5 Conclusion\nc\n"),
+], ids=["title-limitations", "repeated-title-conclusion", "title-references", "level-1-sections", "title-only",
+        "converted-title-thanks", "converted-title-math", "converted-title-references", "level-1-last-section",
+        "level-1-references-with-subsections"])
 def test_the_document_title_is_not_an_author_section(text, expected):
     assert span("full_text", text) == expected
 
@@ -518,6 +533,34 @@ def test_a_long_converted_paragraph_keeps_its_limitations_section(knowledge):
     entry = full_text_entry(store)
     assert entry["text"].startswith("## 6 Limitations\n\nSynthetic caveat sentence about one benchmark.")
     assert len(entry["text"].encode()) == 6_000 and located(entry, root, ENGLISH)
+
+
+THANKS_TITLE = ('<h1 class="ltx_title ltx_title_document">On the Limitations of Synthetic Decoders'
+                '<span class="ltx_note ltx_role_thanks"><sup class="ltx_note_mark">†</sup>'
+                '<span class="ltx_note_outer"><span class="ltx_note_content">Work done during an internship.'
+                '</span></span></span></h1>')
+MATH_TITLE = ('<h1 class="ltx_title ltx_title_document">Limitations of <math alttext="\\mathcal{O}(n)">'
+              '<semantics><mi>O</mi><annotation encoding="application/x-tex">\\mathcal{O}(n)</annotation>'
+              '</semantics></math> Decoders</h1>')
+
+
+@pytest.mark.parametrize("metadata_title, html_title", [
+    ("On the Limitations of Synthetic Decoders", THANKS_TITLE),
+    ("Limitations of O(n) Decoders", MATH_TITLE),
+], ids=["thanks", "math"])
+def test_a_converted_title_that_differs_from_the_metadata_title_is_not_a_section(
+        knowledge, metadata_title, html_title):
+    store, root, *_ = knowledge
+    html = (f"<html><body><article>{html_title}"
+            "<h2>1 Introduction</h2><p>" + "Synthetic introduction sentence. " * 250 + "</p>"
+            "<h2>6 Limitations</h2><p>Our own limitation: one benchmark.</p>"
+            "<h2>References</h2><p>[1] Synthetic reference.</p></article></body></html>")
+    markdown, _ = _html_to_markdown(html)
+    assert markdown.startswith("# ") and not markdown.startswith(f"# {metadata_title}\n")
+    write_files(root, ENGLISH, full_text=f"# {metadata_title}\n\n{markdown}\n")
+    entry = full_text_entry(store)
+    assert entry["text"] == "## 6 Limitations\n\nOur own limitation: one benchmark.\n\n"
+    assert located(entry, root, ENGLISH)
 
 
 @pytest.mark.parametrize("tail", [

@@ -141,16 +141,26 @@ def _named(raw, heads, titles):
     return _section_window(raw, heads, found[0], found[-1], extend=True) if found else None
 
 
+def _spans_the_rest(raw, heads, n):
+    """Whether heading n's section holds every later heading, as a document title's does."""
+    return n + 1 < len(heads) and _section_end(raw, heads, n) == len(raw)
+
+
 def _author_section(raw, heads):
     """The paper's first Limitations section before References, else its Conclusion.
 
     The first heading is taken as the document title (paper ingestion writes
-    one, and the converted page may repeat it at the same level). Its span can
-    be the whole paper, so neither it nor a same-level repeat is a candidate
-    section or a reference boundary.
+    one). The converted page repeats it at the same level, possibly with
+    footnote or math text that makes the two differ. A title's span can be the
+    whole paper, so the title, its exact repeats, and the headings right after
+    it at its level whose section holds every later heading are neither
+    candidate sections nor reference boundaries.
     """
-    sections = [n for n, (level, title, _) in enumerate(heads)
-                if n and (level, title) != heads[0][:2]]
+    first = 1
+    while first < len(heads) and heads[first][0] <= heads[0][0] and (
+            heads[first][:2] == heads[0][:2] or _spans_the_rest(raw, heads, first)):
+        first += 1
+    sections = [n for n in range(first, len(heads)) if heads[n][:2] != heads[0][:2]]
     stop = next((k for k, n in enumerate(sections) if _REFERENCES.search(heads[n][1])), len(sections))
     for word in ("limitation", "conclusion"):
         for n in sections[:stop]:
