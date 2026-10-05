@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { copy, runStateLabel } from "../app/shell/copy.ts";
+import { awaitAllSettled } from "./await-all-settled.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = path.resolve(webRoot, "../..");
@@ -846,8 +847,10 @@ async function main() {
     assert.equal(typeof cursor, "string");
     // Awaited together: a stream read parked while the fixture runs has no
     // handler, so a fixture failure would leave it to reject unhandled when
-    // `finally` stops the daemon, ending the process before cleanup.
-    const [sseBody, redactedSummary] = await Promise.all([
+    // `finally` stops the daemon, ending the process before cleanup. Both are
+    // settled before either failure is reported: the fixture is a child process
+    // writing under the temporary root, which `finally` removes.
+    const [sseBody, redactedSummary] = await awaitAllSettled([
       captureSse(daemonPort, daemon.token, cursor),
       runFixture("emit-redacted", temporaryRoot, capability, secrets, processOutputs),
     ]);
@@ -958,7 +961,8 @@ async function main() {
     assert.equal(await activePage.evaluate(() => window.__cortexDroppedSaveStatus), 201, "the first save must reach Control and commit");
     assert.equal(await ideaBox.inputValue(), ideaText, "an unconfirmed save must keep the typed idea");
     // The wait starts with the click it waits on, for the same reason as the
-    // stream read above: a failed click must surface as itself.
+    // stream read above: a failed click must surface as itself. The pending wait
+    // holds nothing `finally` removes, and closing the browser settles it.
     const [retryAnswer] = await Promise.all([
       activePage.waitForResponse((response) => response.request().method() === "POST" && response.url() === fragmentsRoute),
       activePage.getByRole("button", { name: copy.inbox.saveIdea, exact: true }).click(),
