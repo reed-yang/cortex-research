@@ -17,7 +17,7 @@ walks through the surfaces once it is running.
 Product 0.1.28 uses installation sequence 28 and Control schema 20. The qualified
 Hermes gen10 runtime is supplied separately. See
 [`CHANGELOG.md`](CHANGELOG.md) for changes through 0.1.23 and
-[`docs/releases/`](docs/releases/) for each later release and its validation boundaries.
+[`docs/releases/`](docs/releases/) for later releases and their validation boundaries.
 
 ## Supported operations
 
