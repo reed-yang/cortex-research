@@ -9,6 +9,7 @@ never belongs in a DTO, a log line or a public file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -175,6 +176,40 @@ def _json_text(value: Any, name: str, *, maximum: int) -> str:
     if len(text.encode("utf-8")) > maximum:
         raise ValueError(f"{name} is too large")
     return text
+
+
+def xhs_identify_digest(caption: str, transcriptions: Collection[tuple[int, str]]) -> str:
+    """The input sha256 an `identify` task is keyed by.
+
+    It covers the caption and each transcribed image's ordinal and text hash.
+    A text hash commits to its text, so equal digests mean equal input, and a
+    retried image that changes any transcription gives a new task.
+    """
+
+    value = {
+        "caption": caption,
+        "transcriptions": sorted(
+            [int(ordinal), str(text_sha256)] for ordinal, text_sha256 in transcriptions
+        ),
+    }
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+#: Note states in pipeline order; a retried image moves a note back.
+_NOTE_ORDER = ("detail_ok", "assets_done", "ocr_done", "identified", "saved")
+#: Capture states after which nothing more happens to it.
+_CAPTURE_TERMINAL = frozenset({"consumed", "dismissed", "failed"})
+#: A blog recommendation whose link may still be searched for.
+_RESOLVABLE_URL_STATES = frozenset({"none", "not_found", "failed"})
+#: The task kinds whose failures each provider's Status line reports.
+_XHS_PROVIDER_KINDS: Mapping[str, tuple[str, ...]] = {
+    "tikhub": ("list_page", "detail"),
+    "cdn": ("download",),
+    "ocr": ("ocr",),
+    "gpt": ("identify", "resolve"),
+    "blog": ("blog_import",),
+}
 
 
 class XhsStore:
@@ -672,7 +707,11 @@ class XhsStore:
             )
             return self._xhs_recommendation(conn, recommendation_id)
         changes = dict(identified)
-        if row["url_state"] != "operator_set":
+        # A link found in the text replaces an unresolved one; a link the
+        # search resolved, or the operator set, survives a re-identification.
+        if row["url_state"] in {"none", "from_text"} or (
+            url_state == "from_text" and row["url_state"] != "operator_set"
+        ):
             changes.update(url=url, url_state=url_state)
         if any(row[name] != value for name, value in changes.items()):
             columns = ", ".join(f"{name} = ?" for name in changes)
@@ -941,20 +980,30 @@ class XhsStore:
         )
 
     def release_xhs_task(
-        self, task_id: str, *, expected_revision: int, not_before: str | None = None
+        self,
+        task_id: str,
+        *,
+        expected_revision: int,
+        not_before: str | None = None,
+        delay_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Return a claimed task that never ran, without spending an attempt.
 
-        For a provider at its daily cap, `not_before` is the next UTC day.
+        For a provider at its daily cap, `not_before` is the next UTC day; a
+        task waiting on something else comes back after `delay_seconds`.
         """
 
         with self._transaction() as conn:
             task = self._xhs_running_task(conn, task_id, expected_revision, "pending")
-            next_attempt_at = (
-                self._required_text(not_before, "not_before", maximum=64)
-                if not_before is not None
-                else self._registry_now()
-            )
+            if delay_seconds is not None:
+                _optional_int(delay_seconds, "delay_seconds", minimum=1, maximum=86_400)
+                next_attempt_at = self._format_registry_time(
+                    self._utc_now() + timedelta(seconds=delay_seconds)
+                )
+            elif not_before is not None:
+                next_attempt_at = self._required_text(not_before, "not_before", maximum=64)
+            else:
+                next_attempt_at = self._registry_now()
             conn.execute(
                 """UPDATE xhs_tasks
                    SET state = 'pending', lease_until = NULL, next_attempt_at = ?,
@@ -1160,6 +1209,11 @@ class XhsStore:
                 "detail": self._xhs_apply_detail,
                 "download": self._xhs_apply_download,
                 "ocr": self._xhs_apply_ocr,
+                "identify": self._xhs_apply_identify,
+                "resolve": self._xhs_apply_resolve,
+                "save": self._xhs_apply_save,
+                "blog_import": self._xhs_apply_blog_import,
+                "capture_link": self._xhs_apply_capture_link,
             }.get(str(task["kind"]))
             if apply is None:
                 raise ValueError("xhs task kind records no result")
@@ -1434,6 +1488,23 @@ class XhsStore:
             ).fetchone() is not None:
                 self._xhs_record_scan(conn, user_id=user_id, outcome="failed", error=category)
             return
+        if task["kind"] in {"resolve", "blog_import"}:
+            recommendation_id = payload.get("recommendation_id")
+            if not final or not recommendation_id:
+                return
+            recommendation = self._xhs_recommendation(conn, str(recommendation_id))
+            if task["kind"] == "resolve" and recommendation["url_state"] == "none":
+                # Searched and failed: shown as such, and retryable.
+                self._xhs_update_recommendation(
+                    conn, recommendation["id"], expected_revision=recommendation["revision"],
+                    url=None, url_state="failed",
+                )
+            elif task["kind"] == "blog_import" and recommendation["import_state"] == "importing":
+                self._xhs_update_recommendation(
+                    conn, recommendation["id"], expected_revision=recommendation["revision"],
+                    import_state="failed",
+                )
+            return
         note_id = payload.get("note_id")
         if not final or not note_id or conn.execute(
             "SELECT 1 FROM xhs_notes WHERE note_id = ?", (note_id,)
@@ -1475,6 +1546,13 @@ class XhsStore:
                 ocr_state="failed", ocr_error=category,
             )
             self._xhs_advance_note(conn, note_id)
+        elif task["kind"] in {"identify", "save"}:
+            # The note keeps its stage; identification never becomes an empty
+            # list, and the last saved version stays readable.
+            note = self._xhs_note(conn, note_id)
+            self._xhs_update_note(
+                conn, note_id, expected_revision=note["revision"], last_error=category
+            )
 
     def _xhs_request_refresh(self, conn: sqlite3.Connection, note_id: str) -> bool:
         """Make the note's detail due once more, unless it cannot run again."""
@@ -1540,7 +1618,581 @@ class XhsStore:
             note = self._xhs_update_note(
                 conn, note_id, expected_revision=note["revision"], state="ocr_done"
             )
+            note = self._xhs_queue_identify(conn, note, images)
         return note
+
+    # -- identification, saves and imports ------------------------------------
+
+    @staticmethod
+    def _xhs_identify_input(
+        note: Mapping[str, Any], images: Collection[Mapping[str, Any]]
+    ) -> str:
+        return xhs_identify_digest(
+            str(note["caption"]),
+            [
+                (int(image["ordinal"]), str(image["ocr_text_sha256"]))
+                for image in images
+                if image["download_state"] == "ok" and image["ocr_state"] == "ok"
+            ],
+        )
+
+    def _xhs_queue_identify(
+        self,
+        conn: sqlite3.Connection,
+        note: Mapping[str, Any],
+        images: Collection[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Queue identification for a note whose transcriptions are final.
+
+        The task is keyed by its input. When that exact input was identified
+        already, as after a retried image that failed again, the recorded
+        answer stands and the note goes on to its save.
+        """
+
+        note_id = str(note["note_id"])
+        digest = self._xhs_identify_input(note, images)
+        task, fresh = self._xhs_create_task(
+            conn,
+            kind="identify",
+            subject_key=f"identify:{note_id}:{digest}",
+            payload={"note_id": note_id, "input_sha256": digest},
+        )
+        if fresh or task["state"] in {"pending", "running"}:
+            return dict(note)
+        result = task["result"] or {}
+        if task["state"] == "done" and not result.get("stale") and not result.get("skipped"):
+            note = self._xhs_update_note(
+                conn, note_id, expected_revision=note["revision"], state="identified"
+            )
+            self._xhs_queue_save(conn, note)
+            return note
+        self._xhs_reset_task(conn, str(task["subject_key"]))
+        return dict(note)
+
+    def _xhs_apply_identify(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Upsert the checked recommendations, then queue link searches and the save.
+
+        Each item is keyed by its note and item key, so identifying the same
+        note again updates rows rather than adding them. An answer for input
+        the note no longer has changes nothing.
+        """
+
+        note_id = normalize_xhs_id(task["payload"]["note_id"], "note_id")
+        note = self._xhs_note(conn, note_id)
+        if note["state"] != "ocr_done" or task["payload"][
+            "input_sha256"
+        ] != self._xhs_identify_input(note, self._xhs_images(conn, note_id)):
+            return {"stale": True}
+        recommendation_ids: list[str] = []
+        for item in result["items"]:
+            recommendation = self._xhs_upsert_recommendation(
+                conn,
+                note_id=note_id,
+                item_key=item["item_key"],
+                image_ordinal=item["image"],
+                kind=item["kind"],
+                title=item["title"],
+                quote=item["quote"],
+                arxiv_id=item["arxiv_id"],
+                url=item["url"],
+                url_state=item["url_state"],
+                origin=item["origin"],
+                identify_run=str(task["id"]),
+            )
+            recommendation_ids.append(str(recommendation["id"]))
+            if recommendation["kind"] == "blog" and recommendation["url_state"] == "none":
+                self._xhs_create_task(
+                    conn,
+                    kind="resolve",
+                    subject_key=f"resolve:{recommendation['id']}:1",
+                    payload={"recommendation_id": recommendation["id"]},
+                )
+        note = self._xhs_update_note(
+            conn, note_id, expected_revision=note["revision"], state="identified",
+            last_error=None,
+        )
+        self._xhs_queue_save(conn, note)
+        return {
+            "prompt_version": result["prompt_version"],
+            "input_sha256": result["input_sha256"],
+            "response_id": result["response_id"],
+            "model": result["model"],
+            "model_items": result["model_items"],
+            "dropped": result["dropped"],
+            "rule_items": result["rule_items"],
+            "recommendations": recommendation_ids,
+        }
+
+    def _xhs_apply_resolve(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Set a blog recommendation's link from the search and its check.
+
+        A link that arrived meanwhile, from the operator or the text, wins.
+        """
+
+        recommendation = self._xhs_recommendation(
+            conn, str(task["payload"]["recommendation_id"])
+        )
+        if (
+            recommendation["kind"] != "blog"
+            or recommendation["url_state"] not in _RESOLVABLE_URL_STATES
+        ):
+            return {"stale": True}
+        self._xhs_update_recommendation(
+            conn,
+            str(recommendation["id"]),
+            expected_revision=recommendation["revision"],
+            url=result["url"],
+            url_state=result["url_state"],
+            url_checked_title=result["checked_title"],
+        )
+        return {
+            "url_state": result["url_state"],
+            "prompt_version": result["prompt_version"],
+            "response_id": result["response_id"],
+            "verification_failure": result["verification_failure"],
+        }
+
+    def _xhs_apply_save(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Register the note's source on its first save and bind the version
+        just written, in one transaction. The note becomes `saved`."""
+
+        note_id = normalize_xhs_id(task["payload"]["note_id"], "note_id")
+        note = self._xhs_note(conn, note_id)
+        version = result["version"]
+        if (
+            note["state"] not in {"identified", "saved"}
+            or int(note["content_version"]) + 1 != version
+        ):
+            return {"version": version, "stale": True}
+        source_id = self._register_content_source(
+            conn, source_kind="xhs_note", authority_id=note_id, official_title=result["title"]
+        )
+        self._append_content_binding(
+            conn,
+            source_id=source_id,
+            version=version,
+            tree_sha256=result["tree_sha256"],
+            metadata=result["metadata"],
+        )
+        cursor = conn.execute(
+            """UPDATE xhs_notes
+               SET state = 'saved', source_id = ?, content_version = ?, last_error = NULL,
+                   revision = revision + 1, updated_at = ?
+               WHERE note_id = ? AND revision = ?""",
+            (source_id, version, self._registry_now(), note_id, note["revision"]),
+        )
+        if cursor.rowcount != 1:
+            raise RevisionConflict(self._xhs_note(conn, note_id))
+        return {"version": version, "source_id": source_id, "tree_sha256": result["tree_sha256"]}
+
+    def _xhs_apply_blog_import(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Register or reuse the blog by its URL identity, bind the version
+        written, and link it to the recommending note, all together."""
+
+        recommendation = self._xhs_recommendation(
+            conn, str(task["payload"]["recommendation_id"])
+        )
+        if recommendation["import_state"] != "importing":
+            return {"stale": True}
+        source_id = self._register_content_source(
+            conn,
+            source_kind="blog",
+            authority_id=result["authority_id"],
+            official_title=result["title"],
+        )
+        self._append_content_binding(
+            conn,
+            source_id=source_id,
+            version=result["version"],
+            tree_sha256=result["tree_sha256"],
+            metadata=result["metadata"],
+        )
+        self._xhs_link_recommendation(conn, recommendation, source_id)
+        return {"source_id": source_id, "version": result["version"]}
+
+    def _xhs_apply_capture_link(
+        self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Link each paper recommendation staged as this Capture to the source
+        it produced, or mark its import failed when the Capture did not."""
+
+        capture = self._capture(conn, str(task["payload"]["capture_id"]))
+        if capture["state"] not in _CAPTURE_TERMINAL:
+            raise ValueError("capture is still open")
+        consumed = [str(value) for value in capture["consumed_source_ids"] or []]
+        rows = conn.execute(
+            """SELECT id FROM xhs_recommendations
+               WHERE capture_id = ? AND import_state IN ('staged', 'importing')
+               ORDER BY created_at, id""",
+            (capture["id"],),
+        ).fetchall()
+        linked = failed = 0
+        for row in rows:
+            recommendation = self._xhs_recommendation(conn, str(row["id"]))
+            source_id = (
+                self._xhs_capture_source(conn, recommendation, consumed)
+                if capture["state"] == "consumed"
+                else None
+            )
+            if source_id is None:
+                self._xhs_update_recommendation(
+                    conn, str(recommendation["id"]),
+                    expected_revision=recommendation["revision"], import_state="failed",
+                )
+                failed += 1
+                continue
+            self._xhs_link_recommendation(conn, recommendation, source_id)
+            linked += 1
+        return {"capture_state": capture["state"], "linked": linked, "failed": failed}
+
+    def _xhs_capture_source(
+        self,
+        conn: sqlite3.Connection,
+        recommendation: Mapping[str, Any],
+        consumed: list[str],
+    ) -> str | None:
+        """The paper a consumed Capture produced for this recommendation.
+
+        A single source is the answer; among several, only the one with the
+        recommended arXiv ID is.
+        """
+
+        if len(consumed) == 1:
+            return consumed[0]
+        for source_id in consumed:
+            row = conn.execute(
+                "SELECT authority_id FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+            if row is not None and recommendation["arxiv_id"] and (
+                row["authority_id"] == recommendation["arxiv_id"]
+            ):
+                return source_id
+        return None
+
+    def _xhs_link_recommendation(
+        self, conn: sqlite3.Connection, recommendation: Mapping[str, Any], source_id: str
+    ) -> dict[str, Any]:
+        note = self._xhs_note(conn, str(recommendation["note_id"]))
+        if note["source_id"] is None:
+            raise InvalidTransition("xhs_note_not_saved", "imported")
+        self._insert_source_link(
+            conn,
+            from_source_id=str(note["source_id"]),
+            to_source_id=source_id,
+            recommendation_id=str(recommendation["id"]),
+        )
+        return self._xhs_update_recommendation(
+            conn,
+            str(recommendation["id"]),
+            expected_revision=recommendation["revision"],
+            import_state="imported",
+            imported_source_id=source_id,
+        )
+
+    def _xhs_queue_save(self, conn: sqlite3.Connection, note: Mapping[str, Any]) -> dict[str, Any]:
+        """Queue the note's next version: its first save, or a later change.
+
+        Changes made before that save runs share it; a finished task for the
+        same version is made due again.
+        """
+
+        note_id = str(note["note_id"])
+        version = int(note["content_version"]) + 1
+        task, fresh = self._xhs_create_task(
+            conn,
+            kind="save",
+            subject_key=f"save:{note_id}:{version}",
+            payload={"note_id": note_id, "version": version},
+        )
+        if not fresh and task["state"] in {"done", "failed", "canceled"}:
+            task = self._xhs_reset_task(conn, str(task["subject_key"]))
+        return task
+
+    def _xhs_queue_blog_import(
+        self, conn: sqlite3.Connection, recommendation: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Queue the import of one blog recommendation that has a link.
+
+        For the import command, inside its transaction. An import already
+        queued or running is returned; after a failed one, a new task follows.
+        """
+
+        recommendation_id = str(recommendation["id"])
+        if recommendation["kind"] != "blog" or recommendation["url"] is None:
+            raise InvalidTransition("xhs_recommendation_not_importable", "importing")
+        if recommendation["import_state"] == "imported":
+            raise InvalidTransition("imported", "importing")
+        rows = conn.execute(
+            """SELECT id, state FROM xhs_tasks
+               WHERE kind = 'blog_import' AND subject_key GLOB ?""",
+            (f"blog:{recommendation_id}:*",),
+        ).fetchall()
+        waiting = [row for row in rows if row["state"] in {"pending", "running"}]
+        if waiting:
+            task = self._xhs_task(conn, str(waiting[0]["id"]))
+        else:
+            task, _ = self._xhs_create_task(
+                conn,
+                kind="blog_import",
+                subject_key=f"blog:{recommendation_id}:{len(rows) + 1}",
+                payload={"recommendation_id": recommendation_id},
+            )
+        if recommendation["import_state"] != "importing":
+            self._xhs_update_recommendation(
+                conn, recommendation_id, expected_revision=recommendation["revision"],
+                import_state="importing",
+            )
+        return task
+
+    def _xhs_queue_capture_link(
+        self, conn: sqlite3.Connection, recommendation: Mapping[str, Any], capture_id: str
+    ) -> dict[str, Any]:
+        """Record the Capture staged for a paper recommendation and queue its link.
+
+        For the import command, inside its transaction. One Capture reused by
+        several recommendations has one task, which links them all.
+        """
+
+        recommendation_id = str(recommendation["id"])
+        if recommendation["kind"] != "paper":
+            raise InvalidTransition("xhs_recommendation_not_importable", "staged")
+        if recommendation["import_state"] == "imported":
+            raise InvalidTransition("imported", "staged")
+        capture = self._capture(conn, capture_id)
+        self._xhs_update_recommendation(
+            conn, recommendation_id, expected_revision=recommendation["revision"],
+            capture_id=capture["id"], import_state="staged",
+        )
+        task, fresh = self._xhs_create_task(
+            conn,
+            kind="capture_link",
+            subject_key=f"capture:{capture['id']}",
+            payload={"capture_id": capture["id"]},
+        )
+        if not fresh and task["state"] in {"done", "failed", "canceled"}:
+            task = self._xhs_reset_task(conn, str(task["subject_key"]))
+        return task
+
+    def content_source_id(self, source_kind: str, authority_id: str) -> str | None:
+        """The registered source for one blog or note identity, if any."""
+
+        kind = CONTENT_SOURCE_KINDS.get(source_kind)
+        if kind is None:
+            raise ValueError("source kind has no content bindings")
+        _, _, canonical_id = self._canonical_source_identity(kind.authority, authority_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM sources WHERE canonical_id = ? AND source_kind = ?",
+                (canonical_id, source_kind),
+            ).fetchone()
+            return None if row is None else str(row["id"])
+
+    # -- retries ----------------------------------------------------------------
+
+    def retry_xhs_image(
+        self,
+        *,
+        note_id: str,
+        ordinal: int,
+        expected_revision: int,
+        actor_id: str,
+        idempotency_key: str,
+    ):
+        """Reset one failed image, then its OCR; identification and the save
+        follow, and the save writes a new version.
+
+        `expected_revision` is the note's.
+        """
+
+        note_id = normalize_xhs_id(note_id, "note_id")
+        _optional_int(ordinal, "ordinal", minimum=1, maximum=100)
+        request = {"note_id": note_id, "ordinal": ordinal, "expected_revision": expected_revision}
+        operation = f"INTERNAL:xhs/notes/{note_id}/images/{ordinal}/retry"
+        with self._transaction() as conn:
+            replay = self._receipt(conn, actor_id, operation, idempotency_key, request)
+            if replay:
+                return replay
+            self._expect_revision(self._xhs_note(conn, note_id), expected_revision)
+            self._xhs_retry_image(conn, note_id, int(ordinal))
+            self._audit(conn, "xhs_note", note_id, "xhs.image.retried", {"ordinal": ordinal})
+            value = {
+                "note": self._xhs_note(conn, note_id),
+                "image": self._xhs_image(conn, note_id, int(ordinal)),
+            }
+            return self._save_receipt(
+                conn, actor_id, operation, idempotency_key, request, value, 200
+            )
+
+    def _xhs_retry_image(self, conn: sqlite3.Connection, note_id: str, ordinal: int) -> None:
+        note = self._xhs_note(conn, note_id)
+        image = self._xhs_image(conn, note_id, ordinal)
+        if note["state"] not in _NOTE_ORDER:
+            raise InvalidTransition(str(note["state"]), "retry")
+        cleared: dict[str, Any] = {
+            "ocr_state": "pending",
+            "ocr_error": None,
+            "ocr_engine": None,
+            "ocr_flags": (),
+            "ocr_text_sha256": None,
+        }
+        if image["download_state"] == "failed":
+            row = conn.execute(
+                "SELECT id FROM xhs_tasks WHERE subject_key = ?",
+                (f"download:{note_id}:{ordinal}",),
+            ).fetchone()
+            if row is None:
+                # The detail gave no URL for it: there is nothing to fetch again.
+                raise InvalidTransition("xhs_image_not_retryable", "pending")
+            task = self._xhs_task(conn, str(row["id"]))
+            self._xhs_update_image(
+                conn, note_id, ordinal, expected_revision=image["revision"],
+                download_state="pending", download_error=None, **cleared,
+            )
+            # The signed URL has likely expired; its first expiry earns one
+            # fresh detail, matched by fileid as before.
+            self._xhs_reset_task(
+                conn, str(task["subject_key"]), payload={**task["payload"], "refreshed": False}
+            )
+            stage = "detail_ok"
+        elif image["ocr_state"] == "failed":
+            self._xhs_update_image(
+                conn, note_id, ordinal, expected_revision=image["revision"], **cleared
+            )
+            self._xhs_reset_task(conn, f"ocr:{note_id}:{ordinal}:{image['sha256']}")
+            stage = "assets_done"
+        else:
+            raise InvalidTransition("xhs_image_not_failed", "pending")
+        if _NOTE_ORDER.index(str(note["state"])) > _NOTE_ORDER.index(stage):
+            self._xhs_update_note(
+                conn, note_id, expected_revision=note["revision"], state=stage, last_error=None
+            )
+
+    def retry_failed_xhs_tasks(
+        self,
+        *,
+        kinds: Collection[str] | None = None,
+        actor_id: str,
+        idempotency_key: str,
+    ):
+        """Make every failed task due again, with the rows it was working on.
+
+        A failed image goes through the image retry; a note whose first detail
+        failed goes back to `discovered`; a failed link search or blog import
+        becomes searchable or importable again. A failed task that no longer
+        matches its rows (a stale OCR, a refresh already retried through its
+        images) is skipped.
+        """
+
+        selected = sorted(XHS_TASK_KINDS if kinds is None else set(kinds))
+        if not selected or not set(selected) <= set(XHS_TASK_KINDS):
+            raise ValueError("xhs task kinds are invalid")
+        request = {"kinds": selected}
+        operation = "INTERNAL:xhs/tasks/retry-failed"
+        placeholders = ", ".join("?" for _ in selected)
+        with self._transaction() as conn:
+            replay = self._receipt(conn, actor_id, operation, idempotency_key, request)
+            if replay:
+                return replay
+            rows = conn.execute(
+                f"""SELECT id FROM xhs_tasks WHERE state = 'failed' AND kind IN ({placeholders})
+                    ORDER BY created_at, id""",
+                selected,
+            ).fetchall()
+            retried = {kind: 0 for kind in selected}
+            skipped = 0
+            for row in rows:
+                task = self._xhs_task(conn, str(row["id"]))
+                if task["state"] == "failed" and self._xhs_retry_task(conn, task):
+                    retried[str(task["kind"])] += 1
+                else:
+                    skipped += 1
+            value = {"retried": retried, "skipped": skipped}
+            self._audit(conn, "xhs_tasks", "failed", "xhs.tasks.retried", value)
+            return self._save_receipt(
+                conn, actor_id, operation, idempotency_key, request, value, 200
+            )
+
+    def _xhs_retry_task(self, conn: sqlite3.Connection, task: Mapping[str, Any]) -> bool:
+        kind, payload = str(task["kind"]), task["payload"]
+        if kind in {"download", "ocr"}:
+            note_id, ordinal = str(payload["note_id"]), int(payload["ordinal"])
+            image = self._xhs_image(conn, note_id, ordinal)
+            if kind == "download" and image["download_state"] != "failed":
+                return False
+            if kind == "ocr" and (
+                image["download_state"] != "ok"
+                or image["ocr_state"] != "failed"
+                or image["sha256"] != payload["sha256"]
+            ):
+                return False
+            try:
+                self._xhs_retry_image(conn, note_id, ordinal)
+            except InvalidTransition:
+                return False
+            return True
+        if kind in {"detail", "identify", "save"}:
+            note = self._xhs_note(conn, str(payload["note_id"]))
+            wanted = {
+                "detail": {"failed"},
+                "identify": {"ocr_done"},
+                "save": {"identified", "saved"},
+            }
+            if note["state"] not in wanted[kind]:
+                return False
+            if kind == "save" and int(note["content_version"]) >= int(payload["version"]):
+                return False
+            fields: dict[str, Any] = {"last_error": None}
+            if kind == "detail":
+                fields["state"] = "discovered"
+            self._xhs_update_note(
+                conn, str(note["note_id"]), expected_revision=note["revision"], **fields
+            )
+        elif kind in {"resolve", "blog_import"}:
+            recommendation = self._xhs_recommendation(conn, str(payload["recommendation_id"]))
+            if kind == "resolve":
+                if recommendation["url_state"] != "failed":
+                    return False
+                self._xhs_update_recommendation(
+                    conn, str(recommendation["id"]),
+                    expected_revision=recommendation["revision"], url=None, url_state="none",
+                )
+            else:
+                if recommendation["import_state"] != "failed" or recommendation["url"] is None:
+                    return False
+                self._xhs_update_recommendation(
+                    conn, str(recommendation["id"]),
+                    expected_revision=recommendation["revision"], import_state="importing",
+                )
+        self._xhs_reset_task(conn, str(task["subject_key"]))
+        return True
+
+    def xhs_last_failures(self) -> dict[str, str | None]:
+        """The latest recorded failure category per provider, for Status.
+
+        A task that later succeeds clears its own, so this is the latest
+        failure still standing.
+        """
+
+        with self._connect() as conn:
+            failures: dict[str, str | None] = {}
+            for provider, kinds in _XHS_PROVIDER_KINDS.items():
+                placeholders = ", ".join("?" for _ in kinds)
+                row = conn.execute(
+                    f"""SELECT last_error FROM xhs_tasks
+                        WHERE kind IN ({placeholders}) AND last_error IS NOT NULL
+                        ORDER BY updated_at DESC, id DESC LIMIT 1""",
+                    kinds,
+                ).fetchone()
+                failures[provider] = None if row is None else str(row["last_error"])
+            return failures
 
     # -- usage ----------------------------------------------------------------
 
