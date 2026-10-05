@@ -90,6 +90,22 @@ describe("artifact preview and source", () => {
     expect(screen.getByRole("heading", { name: "Action conditioning" })).toBeTruthy();
   });
 
+  it("lets a caller control the view and give this document its own Markdown components", async () => {
+    const user = userEvent.setup();
+    const changes: string[] = [];
+    const components = { h1: ({ children }: { children?: React.ReactNode }) => <h1 data-override="">{children}</h1> };
+    const props = { content: content(body), onModeChange: (mode: string) => changes.push(mode), components };
+    const view = render(<ArtifactDocument {...props} mode="source" />);
+    expect(screen.getByRole("region", { name: "Markdown source" }).textContent).toBe(body);
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+    expect(changes).toEqual(["preview"]);
+    // The caller owns the choice, so the view waits for it.
+    expect(screen.getByRole("button", { name: "Source" }).getAttribute("aria-pressed")).toBe("true");
+    view.rerender(<ArtifactDocument {...props} mode="preview" />);
+    expect(view.container.querySelector("h1[data-override]")?.textContent).toBe("Action conditioning");
+    expect(view.container.querySelector(".katex")).not.toBeNull();
+  });
+
   it("does not interpret a text/plain document as Markdown", () => {
     const { container } = render(<ArtifactDocument content={content(body, "text/plain")} />);
     expect(screen.queryByRole("button", { name: "Preview" })).toBeNull();

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { BANNED_WORDS, copy, decisionKindLabel, problemSentence, runStateLabel } from "../../app/shell/copy";
@@ -67,6 +67,7 @@ function seeded(): FakeControl {
     available_source_id: "source_11aabbcc", payload_note: "summarize the method",
   });
   control.source("source_11aabbcc", "arxiv:2401.12345", "Memory in long-horizon agents");
+  control.sourceContent("source_11aabbcc", "notes", "# Notes\n\nA stored passage.\n\n![Plot](assets/plot.png)\n");
   // A saved idea is the operator's own words, shown verbatim: they may say
   // "replay" or paste a hash, and the audit must not prohibit that. Its ids --
   // the idea, the bound thread, the item at the time -- stay under Details.
@@ -142,6 +143,14 @@ describe("shell copy audit", () => {
       return node!;
     });
     expect(idea.textContent).toBe(VERBATIM_IDEA);
+
+    // The Library reader around a stored copy: its view controls and the
+    // sentence that names a figure the copy does not hold.
+    await open("library");
+    await userEvent.setup().click(await screen.findByRole("button", { name: /^Memory in long-horizon agents/ }));
+    fireEvent.error(await screen.findByRole("img", { name: "Plot" }));
+    await screen.findByText(copy.reader.figureMissing);
+    check("library reader");
 
     // The dossier too: it is the one screen that holds an item's original
     // identity, its document version and that version's digest.

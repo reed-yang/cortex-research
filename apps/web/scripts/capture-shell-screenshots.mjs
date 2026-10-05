@@ -56,6 +56,14 @@ async function openExtra(page, scene) {
   if (scene.open === "source") {
     await page.getByRole("navigation", { name: copy.library.sources }).getByRole("button").first().click();
     await page.getByText("Evolving memory keeps a long video coherent", { exact: false }).waitFor();
+    // Preview is the reader's default: the shot waits for the math to be
+    // typeset, the stored figure to be decoded and the missing one named.
+    await page.locator(".source-content-reader .katex").first().waitFor();
+    await page.getByText(copy.reader.figureMissing, { exact: true }).waitFor();
+    await page.waitForFunction(() => {
+      const image = document.querySelector('.source-content-reader img[alt="Memory drift by layer"]');
+      return Boolean(image?.complete && image.naturalWidth > 0);
+    });
   }
   if (scene.open === "drawer") {
     await page.getByRole("button", { name: copy.sidebar.openNavigation }).click();

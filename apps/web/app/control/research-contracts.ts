@@ -912,6 +912,18 @@ export type SourceContent = {
   end_line: number;
   next_cursor: string | null;
 };
+// One whole retained document, read once for Preview and Copy source. The text
+// is the same public projection the paged route serves; `content_sha256` names
+// the retained file, not `text`.
+export type SourceDocument = {
+  source_id: string;
+  canonical_id: string;
+  kind: SourceContentKind;
+  text: string;
+  content_sha256: string;
+  retained_bytes: number;
+  redacted: boolean;
+};
 export type SourceSearchResult = {
   source_id: string;
   canonical_id: string;
@@ -924,7 +936,10 @@ export type SourceSearchResult = {
 export type SourceSearch = { query: string; retrieval_mode: string; results: SourceSearchResult[] };
 
 function sourceText(value: unknown, path: string, maximum: number, minimum = 1): string {
-  const text = boundedString(value, path, maximum, minimum);
+  return publicSourceText(boundedString(value, path, maximum, minimum), path);
+}
+
+function publicSourceText(text: string, path: string): string {
   if (/(?:\/Users\/|\/home\/|\/private\/|\/tmp\/|\/etc\/|\/var\/|\/opt\/|\/usr\/|\/root\/|\/Volumes\/|\/workspace\/|[A-Za-z]:\\|file:\/\/)/i.test(text)) {
     fail(path, "private location in source projection");
   }
@@ -951,6 +966,34 @@ export function decodeSourceContent(value: unknown, path = "source_content"): So
     start_line: start,
     end_line: end,
     next_cursor: cursor,
+  };
+}
+
+// The document route refuses a retained file over 2 MiB, and the bound here is
+// the same one in the same unit: UTF-8 bytes, not UTF-16 string length, which
+// would admit a CJK document three times the size the route promises.
+export const MAX_SOURCE_DOCUMENT_BYTES = 2_097_152;
+
+export function decodeSourceDocument(value: unknown, path = "source_document"): SourceDocument {
+  const record = object(value, path);
+  const kind = decodeString(record.kind, path + ".kind");
+  if (!["notes", "full_text", "grounding"].includes(kind)) fail(path + ".kind", "unknown content kind");
+  const text = decodeString(record.text, path + ".text");
+  // Every UTF-16 unit encodes to at least one byte, so an over-long string is
+  // refused before it is encoded.
+  if (text.length > MAX_SOURCE_DOCUMENT_BYTES || new TextEncoder().encode(text).byteLength > MAX_SOURCE_DOCUMENT_BYTES) {
+    fail(path + ".text", "document exceeds 2 MiB");
+  }
+  const retained = integer(record.retained_bytes, path + ".retained_bytes");
+  if (retained > MAX_SOURCE_DOCUMENT_BYTES) fail(path + ".retained_bytes", "document exceeds 2 MiB");
+  return {
+    source_id: identifier(record.source_id, path + ".source_id"),
+    canonical_id: sourceText(record.canonical_id, path + ".canonical_id", 500),
+    kind: kind as SourceContentKind,
+    text: publicSourceText(text, path + ".text"),
+    content_sha256: digest(record.content_sha256, path + ".content_sha256"),
+    retained_bytes: retained,
+    redacted: decodeBoolean(record.redacted, path + ".redacted"),
   };
 }
 

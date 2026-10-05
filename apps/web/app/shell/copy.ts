@@ -245,6 +245,17 @@ export const copy = Object.freeze({
     added: "Added",
     updated: "Updated",
   },
+  // The Library reader's own words around a stored document: Preview, Source
+  // and Copy source are the shared document controls' labels.
+  reader: {
+    loading: "Loading source content…",
+    empty: "This document is empty.",
+    retry: "Retry content",
+    tooLarge: "This document is too large to preview, so it opens as paged source.",
+    copyUnavailable: "The whole document could not be read, so Copy source is unavailable.",
+    figureMissing: "Figure not in the stored copy",
+    imageNotLoaded: "Image not loaded from this reference",
+  },
   status: {
     apiVersion: "API version",
     dispatch: "Runtime dispatch",
@@ -515,6 +526,9 @@ export const label = Object.freeze({
   option: (position: number) => `Option ${position}`,
   unsupportedOption: (position: number) => `Unsupported option ${position}`,
   importedAsMany: (count: number) => `Imported into your library as ${count} sources.`,
+  // A remote image in a stored copy is never loaded; it is offered as a link
+  // that says where it lives.
+  remoteImage: (host: string) => `Image on ${host}`,
   // A reported capability as a sentence: the one written for it, or -- for a
   // key this app has never seen -- the key itself with the words product
   // chrome may not carry dropped before it is read out.

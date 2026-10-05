@@ -5,6 +5,7 @@
 // so a screenshot taken against it is the same bytes on every machine.
 
 import { createServer } from "node:http";
+import { encodeRgbPng } from "./screenshot-contract.mjs";
 
 export const MOCK_CONTROL_TOKEN = "test-only-control-token-000000000000000000";
 
@@ -45,8 +46,34 @@ const decision = { id: "decision_mobile", run_id: run.id, attempt_id: "attempt_m
 const event = { cursor: "djE6Mi5kZXRlcm1pbmlzdGlj", schema_version: 1, id: "event_mobile", run_id: run.id, attempt_id: "attempt_mobile", sequence: 2, type: "decision.required", occurred_at: now, causation_id: null, durability: "durable", payload: { decision_id: decision.id } };
 const failureEvent = { cursor: "djE6MS5kZXRlcm1pbmlzdGlj", schema_version: 1, id: "event_failed", run_id: failedRun.id, attempt_id: "attempt_failed", sequence: 4, type: "run.failed", occurred_at: earlier, causation_id: null, durability: "durable", payload: { failure_category: "managed_worker_unavailable" } };
 
-const NOTES_TEXT = "# Echo-Infinity\n\nEvolving memory keeps a long video coherent by writing only what the\nreconstruction error says is new.\n\n- Preserve causal temporal updates.\n- Measure memory drift before the context is scaled.\n";
-const NOTES_SHA256 = "0ff9d955ff542319ce2792bdaf6b81692d6083a4a105f411c77c6eaa91852035";
+// The notes carry what the Library's Preview has to show: inline math, one
+// figure the stored copy holds and one it does not.
+const NOTES_TEXT = "# Echo-Infinity\n\nEvolving memory keeps a long video coherent by writing only what the\nreconstruction error says is new.\n\n- Preserve causal temporal updates.\n- Measure memory drift before the context is scaled.\n\n" +
+  String.raw`The write gate opens when $e_t = \lVert x_t - \hat{x}_t \rVert_2 > \tau$.` +
+  "\n\n![Memory drift by layer](assets/drift.png)\n\n![Ablation grid](assets/ablation.png)\n";
+const NOTES_SHA256 = "6e8031bcf0c777116bcfa6fdd65cba846ebb637412e43a876fffb9b06bf50ccd";
+
+// A small bar chart drawn in code, so the figure is the same bytes everywhere
+// and no binary fixture is committed.
+function driftFigure() {
+  const width = 480;
+  const height = 200;
+  const pixels = Buffer.alloc(width * height * 3);
+  const fill = (x0, y0, w, h, color) => {
+    for (let y = y0; y < y0 + h; y += 1) {
+      for (let x = x0; x < x0 + w; x += 1) pixels.set(color, (y * width + x) * 3);
+    }
+  };
+  fill(0, 0, width, height, [246, 244, 238]);
+  fill(40, 20, 2, 160, [60, 68, 64]);
+  fill(40, 178, 420, 2, [60, 68, 64]);
+  [38, 64, 90, 118, 132, 150].forEach((value, index) => {
+    fill(64 + index * 66, 178 - value, 40, value, index % 2 ? [53, 105, 88] : [197, 108, 38]);
+  });
+  return encodeRgbPng({ width, height, pixels });
+}
+
+const SOURCE_FIGURES = new Map([["assets/drift.png", driftFigure()]]);
 
 function source(id, authority, authorityId, kind, title, importState, aliases) {
   return {
@@ -119,7 +146,7 @@ const sourceNotes = new Map(sources.map((item) => [item.id, {
   text: NOTES_TEXT,
   content_sha256: NOTES_SHA256,
   start_line: 1,
-  end_line: 7,
+  end_line: 13,
   next_cursor: null,
 }]));
 
@@ -195,6 +222,8 @@ export async function startMockControlServer(port = 8799) {
     const runRoute = /^\/api\/v1\/runs\/([^/]+)(\/research-workflow)?$/.exec(url.pathname);
     const sourceRoute = /^\/api\/v1\/sources\/([^/]+)$/.exec(url.pathname);
     const contentRoute = /^\/api\/v1\/sources\/([^/]+)\/content$/.exec(url.pathname);
+    const documentRoute = /^\/api\/v1\/sources\/([^/]+)\/document$/.exec(url.pathname);
+    const assetRoute = /^\/api\/v1\/sources\/([^/]+)\/asset$/.exec(url.pathname);
     const workspaceId = url.searchParams.get("workspace_id");
     if (request.method !== "GET") {
       send(response, 405, { type: "urn:cortex:problem:invalid_request", title: "Mock is read-only", status: 405, category: "invalid_request", retryable: false, owner: "mock-cortexd" });
@@ -217,6 +246,22 @@ export async function startMockControlServer(port = 8799) {
     else if (sourceRoute && sourcesById.has(sourceRoute[1])) send(response, 200, sourcesById.get(sourceRoute[1]));
     else if (contentRoute && sourceNotes.has(contentRoute[1]) && url.searchParams.get("kind") === "notes") {
       send(response, 200, sourceNotes.get(contentRoute[1]));
+    } else if (documentRoute && sourceNotes.has(documentRoute[1]) && (url.searchParams.get("kind") ?? "notes") === "notes") {
+      const notes = sourceNotes.get(documentRoute[1]);
+      send(response, 200, { source_id: notes.source_id, canonical_id: notes.canonical_id, kind: "notes", text: notes.text, content_sha256: notes.content_sha256, retained_bytes: Buffer.byteLength(notes.text), redacted: false });
+    } else if (assetRoute && sourcesById.has(assetRoute[1])) {
+      const figure = SOURCE_FIGURES.get(url.searchParams.get("path") ?? "");
+      if (!figure) send(response, 404, { type: "urn:cortex:problem:source_asset_unavailable", title: "The figure is not available", status: 404, category: "source_asset_unavailable", retryable: false, owner: "mock-cortexd" });
+      else {
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Length": figure.byteLength,
+          "Content-Type": "image/png",
+          "Cross-Origin-Resource-Policy": "same-origin",
+          "X-Content-Type-Options": "nosniff",
+        });
+        response.end(figure);
+      }
     }
     else if (url.pathname === "/api/v1/captures") send(response, 200, page(captures));
     else if (url.pathname === "/api/v1/fragments") send(response, 200, page(fragments));

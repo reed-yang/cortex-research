@@ -3,6 +3,21 @@ import { CortexControlClient } from "../../app/control/client";
 export const now = "2026-09-06T12:00:00Z";
 type Row = Record<string, unknown>;
 
+// A plain in-memory Storage for a test that needs the browser to remember
+// something. Newer Node releases put their own unconfigured `localStorage` in
+// front of jsdom's, so a test installs this with `vi.stubGlobal` instead.
+export function memoryStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() { return values.size; },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => { values.delete(key); },
+    setItem: (key, value) => { values.set(key, String(value)); },
+  };
+}
+
 export class FakeControl {
   workspaces: Row[] = [];
   threads: Row[] = [];
@@ -17,6 +32,9 @@ export class FakeControl {
   private fragmentReceipts = new Map<string, Row>();
   sources: Row[] = [];
   contents: Row[] = [];
+  // Figures a source's stored copy holds, by `${source_id}:${path}`; a path
+  // missing here is the route's 404, which is how a missing figure looks.
+  assets = new Map<string, { type: string; bytes: Uint8Array<ArrayBuffer> }>();
   research: Record<string, Row> = {};
   // R1c: research items hold their detail fields here; the list route answers
   // with the catalog fields only, exactly as the contract says.
@@ -98,6 +116,9 @@ export class FakeControl {
     const row = { source_id, canonical_id: String(source?.canonical_id ?? "arxiv:0000.00000"), kind, text, content_sha256: "a".repeat(64), start_line: 1, end_line: lines, next_cursor: null, ...extra };
     this.contents.push(row);
     return row;
+  }
+  sourceAsset(source_id: string, path: string, type: string, bytes: Uint8Array<ArrayBuffer>): void {
+    this.assets.set(`${source_id}:${path}`, { type, bytes });
   }
   sourceGate(id: string, run: Row, decision: Row | null, extra: Row = {}): Row {
     return { id, run_id: run.id, attempt_id: run.active_attempt_id, state: "pending", revision: 0, created_at: now, updated_at: now, title_observation: null, locator_observation: null, candidates: [{ id: `${id}_candidate`, claim_kind: "title", canonical_id: "arxiv:2606.04527", official_title: "Echo-Infinity", source_kind: "paper", version: null }], decision, ...extra };
@@ -263,6 +284,22 @@ export class FakeControl {
       const kind = params.get("kind") ?? "notes";
       const page = this.contents.find((c) => c.source_id === m![1] && c.kind === kind);
       return page ? this.json(page) : this.problem(404, "source_content_unavailable");
+    }
+    // The whole document is every page of that kind, in order: the same text
+    // the paged reader shows, read once.
+    m = path.match(/^sources\/([^/]+)\/document$/);
+    if (m) {
+      const kind = params.get("kind") ?? "notes";
+      const pages = this.contents.filter((c) => c.source_id === m![1] && c.kind === kind);
+      if (!pages.length) return this.problem(409, "source_content_unavailable");
+      const text = pages.map((page) => String(page.text)).join("");
+      return this.json({ source_id: m[1], canonical_id: pages[0]!.canonical_id, kind, text, content_sha256: pages[0]!.content_sha256, retained_bytes: new TextEncoder().encode(text).byteLength, redacted: false });
+    }
+    m = path.match(/^sources\/([^/]+)\/asset$/);
+    if (m) {
+      const asset = this.assets.get(`${m[1]}:${params.get("path") ?? ""}`);
+      if (!asset) return this.problem(404, "source_asset_unavailable");
+      return new Response(asset.bytes, { headers: { "Content-Type": asset.type, "Content-Length": String(asset.bytes.byteLength), "Cache-Control": "no-store" } });
     }
     m = path.match(/^sources\/([^/]+)$/);
     if (m) { const s = this.sources.find((x) => x.id === m![1]); return s ? this.json(s) : this.problem(404, "not_found"); }
