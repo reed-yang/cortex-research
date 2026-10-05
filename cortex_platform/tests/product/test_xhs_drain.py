@@ -660,6 +660,29 @@ def test_auth_stops_the_tick_fails_the_task_and_is_not_billed(
     assert store.get_xhs_blogger(USER)["last_scan_error"] == "auth"
 
 
+def test_a_refund_after_utc_midnight_goes_back_to_the_day_it_was_reserved_on(
+    store: ControlStore, supervisor: ScriptedSupervisor, clock: MovableClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor.lists.update({(USER, ""): "auth", (OTHER_USER, ""): page(OTHER_USER, "", [], False)})
+    drain = drain_for(store, supervisor, daily_calls={"tikhub": 1, "ocr": 1000, "gpt": 300})
+    drain.pull()
+    clock.advance(12 * 3600 - 1)
+    run = supervisor.run
+
+    def across_midnight(operation, payload, *, write_roots=None):
+        clock.advance(2)
+        # Another drain's billed call lands on the new day meanwhile.
+        assert store.reserve_xhs_usage("tikhub", cap=1) is True
+        return run(operation, payload, write_roots=write_roots)
+
+    monkeypatch.setattr(supervisor, "run", across_midnight)
+    drain.drain()
+    assert store.xhs_usage("2026-09-01")["tikhub"] == 0
+    assert store.xhs_usage("2026-09-02")["tikhub"] == 1
+    assert store.reserve_xhs_usage("tikhub", cap=1) is False
+
+
 def test_an_unresolvable_credential_is_handled_like_auth(
     store: ControlStore, supervisor: ScriptedSupervisor
 ) -> None:

@@ -714,11 +714,15 @@ class XhsDrain:
                 return self._fail(task, "transient")
             return self._record(task, result)
         provider = handler.provider
-        if provider is not None and not self.store.reserve_xhs_usage(
-            provider, cap=int(self.settings.daily_calls[provider])
-        ):
-            self.store.release_xhs_task(task["id"], expected_revision=task["revision"])
-            return UnitOutcome(str(task["id"]), str(task["kind"]), "capped", provider)
+        # A refund returns the call to the day it was reserved on.
+        reserved_on: str | None = None
+        if provider is not None:
+            reserved_on = self.store.reserve_xhs_usage_day(
+                provider, cap=int(self.settings.daily_calls[provider])
+            )
+            if reserved_on is None:
+                self.store.release_xhs_task(task["id"], expected_revision=task["revision"])
+                return UnitOutcome(str(task["id"]), str(task["kind"]), "capped", provider)
         root_id = PROVIDER_WRITE_ROOTS.get(handler.operation)
         write_roots = (self.root(root_id),) if root_id else None
         try:
@@ -730,14 +734,16 @@ class XhsDrain:
                 # Never started: the task and its reserved call go back.
                 self.store.release_xhs_task(task["id"], expected_revision=task["revision"])
                 if provider is not None:
-                    self.store.refund_xhs_usage(provider)
+                    self.store.refund_xhs_usage(provider, day=reserved_on)
                 return UnitOutcome(
                     str(task["id"]), str(task["kind"]), "released",
                     "runtime_activation_disabled", stop=True,
                 )
             # A credential that does not resolve: as with `auth`, the task
             # fails and the tick stops.
-            return self._fail(task, "auth", refund=provider, stop=True)
+            return self._fail(
+                task, "auth", refund=provider, refund_day=reserved_on, stop=True
+            )
         try:
             if not execution.ok:
                 category = execution.failure_category or "outcome_unknown"
@@ -745,6 +751,7 @@ class XhsDrain:
                     task,
                     category,
                     refund=provider if category in _UNBILLED else None,
+                    refund_day=reserved_on,
                     stop=category in _STOPPING,
                 )
             try:
@@ -796,6 +803,7 @@ class XhsDrain:
         category: str,
         *,
         refund: str | None = None,
+        refund_day: str | None = None,
         stop: bool = False,
     ) -> UnitOutcome:
         try:
@@ -804,6 +812,7 @@ class XhsDrain:
                 expected_revision=task["revision"],
                 category=category,
                 refund=refund,
+                refund_day=refund_day,
             )
         except RevisionConflict:
             return UnitOutcome(str(task["id"]), str(task["kind"]), "lost", category)

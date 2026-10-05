@@ -1361,10 +1361,12 @@ class XhsStore:
         expected_revision: int,
         category: str,
         refund: str | None = None,
+        refund_day: str | None = None,
     ) -> dict[str, Any]:
         """Fail or back off one task, and tell the rows it was working on.
 
-        `refund` names the provider whose reserved call was not billed.
+        `refund` names the provider whose reserved call was not billed, and
+        `refund_day` the UTC day it was reserved on.
         """
 
         with self._transaction() as conn:
@@ -1373,7 +1375,7 @@ class XhsStore:
             )
             self._xhs_apply_failure(conn, task, category)
             if refund is not None:
-                self._xhs_refund_usage(conn, provider=refund)
+                self._xhs_refund_usage(conn, provider=refund, day=refund_day)
             return task
 
     def _xhs_apply_list_page(
@@ -2527,13 +2529,22 @@ class XhsStore:
     # -- usage ----------------------------------------------------------------
 
     def reserve_xhs_usage(self, provider: str, *, cap: int, calls: int = 1) -> bool:
+        return self.reserve_xhs_usage_day(provider, cap=cap, calls=calls) is not None
+
+    def reserve_xhs_usage_day(
+        self, provider: str, *, cap: int, calls: int = 1
+    ) -> str | None:
+        """Reserve as `reserve_xhs_usage` does; answer the UTC day the calls
+        count on, which a refund names, or None when refused."""
+
         with self._transaction() as conn:
             return self._xhs_reserve_usage(conn, provider=provider, cap=cap, calls=calls)
 
     def _xhs_reserve_usage(
         self, conn: sqlite3.Connection, *, provider: str, cap: int, calls: int = 1
-    ) -> bool:
-        """Count `calls` against today's cap, or refuse without counting."""
+    ) -> str | None:
+        """Count `calls` against today's cap and answer the day, or refuse
+        without counting."""
 
         if provider not in XHS_USAGE_PROVIDERS:
             raise ValueError("usage provider is unsupported")
@@ -2545,29 +2556,45 @@ class XhsStore:
         ).fetchone()
         used = int(row["calls"]) if row is not None else 0
         if used + calls > cap:
-            return False
+            return None
         conn.execute(
             """INSERT INTO xhs_usage (day, provider, calls) VALUES (?, ?, ?)
                ON CONFLICT(day, provider) DO UPDATE SET calls = calls + excluded.calls""",
             (day, provider, calls),
         )
-        return True
+        return day
 
-    def refund_xhs_usage(self, provider: str, *, calls: int = 1) -> None:
+    def refund_xhs_usage(
+        self, provider: str, *, calls: int = 1, day: str | None = None
+    ) -> None:
         with self._transaction() as conn:
-            self._xhs_refund_usage(conn, provider=provider, calls=calls)
+            self._xhs_refund_usage(conn, provider=provider, calls=calls, day=day)
 
     def _xhs_refund_usage(
-        self, conn: sqlite3.Connection, *, provider: str, calls: int = 1
+        self,
+        conn: sqlite3.Connection,
+        *,
+        provider: str,
+        calls: int = 1,
+        day: str | None = None,
     ) -> None:
-        """Return reserved calls the provider did not bill, never below zero."""
+        """Return reserved calls the provider did not bill, never below zero.
+
+        `day` is the reservation's: a call reserved before UTC midnight and
+        refused after it is returned to the day it counted on. Without it,
+        today's count is used.
+        """
 
         if provider not in XHS_USAGE_PROVIDERS:
             raise ValueError("usage provider is unsupported")
+        if day is None:
+            day = self._utc_now().date().isoformat()
+        elif not isinstance(day, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day) is None:
+            raise ValueError("usage day is invalid")
         conn.execute(
             """UPDATE xhs_usage SET calls = MAX(0, calls - ?)
                WHERE day = ? AND provider = ?""",
-            (calls, self._utc_now().date().isoformat(), provider),
+            (calls, day, provider),
         )
 
     def xhs_exhausted_providers(self, caps: Mapping[str, int]) -> frozenset[str]:
