@@ -347,6 +347,14 @@ def test_every_gated_table_arrives_at_exactly_the_version_its_gate_names(
         "research_document_versions": control_schema.RESEARCH_ITEMS_MIGRATION,
         "research_thread_items": control_schema.RESEARCH_ITEMS_MIGRATION,
         "idea_fragments": control_schema.IDEA_FRAGMENTS_MIGRATION,
+        "xhs_bloggers": control_schema.XHS_SOURCES_MIGRATION,
+        "xhs_notes": control_schema.XHS_SOURCES_MIGRATION,
+        "xhs_note_images": control_schema.XHS_SOURCES_MIGRATION,
+        "xhs_recommendations": control_schema.XHS_SOURCES_MIGRATION,
+        "source_content_bindings": control_schema.XHS_SOURCES_MIGRATION,
+        "source_links": control_schema.XHS_SOURCES_MIGRATION,
+        "xhs_tasks": control_schema.XHS_SOURCES_MIGRATION,
+        "xhs_usage": control_schema.XHS_SOURCES_MIGRATION,
     }
     for table, version in spec.table_since_schema_version:
         before = tmp_path / f"before-{table}/control.db"

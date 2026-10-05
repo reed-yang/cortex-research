@@ -8,6 +8,7 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 _AUTHORITY_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
@@ -26,6 +27,79 @@ _ENGINE_REF_RE = re.compile(
 )
 _CANONICAL_AUTHORITIES = frozenset({"arxiv", "doi", "sha256"})
 _CLAIM_KINDS = frozenset({"title", "url", "doi", "arxiv", "local_file"})
+_XHS_ID_RE = re.compile(r"[0-9a-f]{24}\Z")
+
+
+@dataclass(frozen=True)
+class ContentSourceKind:
+    """A non-paper source kind, read through `source_content_bindings`.
+
+    Its identity has its own authority, its files live under their own asset
+    root outside the paper corpus, and each of the reader's content kinds maps
+    onto one retained file, or onto none.
+    """
+
+    source_kind: str
+    authority: str
+    root_id: str
+    engine_namespace: str
+    files: Mapping[str, str]
+    #: How many leading characters of the authority ID name the directory.
+    directory_prefix: int
+
+    def engine_ref(self, authority_id: str) -> str:
+        return validate_engine_ref(
+            f"{self.engine_namespace}:{authority_id}", namespace=self.engine_namespace
+        )
+
+    def directory(self, authority_id: str, version: int) -> str:
+        """`<prefix>/v<N>`: one directory per source, one child per version."""
+
+        if type(version) is not int or version < 1:
+            raise ValueError("content version is invalid")
+        return f"{authority_id[: self.directory_prefix]}/v{version}"
+
+
+CONTENT_SOURCE_KINDS: Mapping[str, ContentSourceKind] = MappingProxyType(
+    {
+        "xhs_note": ContentSourceKind(
+            source_kind="xhs_note",
+            authority="xhs",
+            root_id="xhs-notes",
+            engine_namespace="xhs-note",
+            files=MappingProxyType(
+                {"notes": "note.md", "full_text": "transcription.md"}
+            ),
+            directory_prefix=24,
+        ),
+        "blog": ContentSourceKind(
+            source_kind="blog",
+            authority="url",
+            root_id="blogs",
+            engine_namespace="blog",
+            files=MappingProxyType({"notes": "notes.md", "full_text": "article.md"}),
+            directory_prefix=16,
+        ),
+    }
+)
+
+
+def content_source_kind_for_authority(authority: str) -> ContentSourceKind | None:
+    for kind in CONTENT_SOURCE_KINDS.values():
+        if kind.authority == authority:
+            return kind
+    return None
+
+
+def normalize_xhs_id(value: Any, name: str = "XHS identifier") -> str:
+    """One full 24-hex XHS note or user ID, lowercased; never a prefix."""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{name} is invalid")
+    normalized = value.strip().lower()
+    if _XHS_ID_RE.fullmatch(normalized) is None:
+        raise ValueError(f"{name} is invalid")
+    return normalized
 
 
 @dataclass(frozen=True)

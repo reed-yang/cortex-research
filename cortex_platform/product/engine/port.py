@@ -47,7 +47,7 @@ from .supervisor import EffectExecution, ResearchEffectSupervisor
 # manifest commits.
 CAPTURE_SOURCE_PREFIX = "capture-"
 # ⟦AMD-3⟧ fixes the adoption idempotency key to `capture:<id>`. The store
-# refuses it verbatim: `_KEY_RE` (`control/store.py:118`) admits only 16 to 128
+# refuses it verbatim: `_KEY_RE` (`control/store.py:124`) admits only 16 to 128
 # URL-safe characters, so a colon is illegal and a short id is too. The prefix
 # below is the same key in the shape the store accepts -- one commit per
 # capture, derived from nothing but the capture id.

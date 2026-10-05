@@ -13,6 +13,7 @@ by the same call.
 
 Exactly one job is enabled. The thirteen legacy rows beside it exist so the
 inventory is auditable and are `legacy`, an operation the store refuses to arm.
+The two XHS plugin jobs are registered disabled; only the operator arms them.
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ from .capture_consumer import CaptureConsumer, MACHINE_ACTOR, _idempotency_key
 
 CAPTURE_DRAIN_JOB = "capture-drain"
 DEFAULT_CAPTURE_INTERVAL_SECONDS = 300
+XHS_PULL_JOB = "xhs-pull"
+XHS_DRAIN_JOB = "xhs-drain"
+# The first-party XHS plugin: a daily scan and a bounded drain. Migration 21
+# seeds both rows disabled; they are listed here too so the inventory states
+# them, and `cortex xhs enable` is the only thing that arms them.
+XHS_JOBS: tuple[tuple[str, str, int], ...] = (
+    (XHS_PULL_JOB, "xhs_pull", 86_400),
+    (XHS_DRAIN_JOB, "xhs_drain", 300),
+)
 # The thirteen legacy Hermes cron scripts, whose sources stay in the old
 # repository. Represented so the inventory is complete and disabled so an
 # unknown cadence cannot fire.
@@ -151,7 +161,8 @@ def seed_schedules(
     reading: JobsFileReading,
     capture_interval_seconds: int = DEFAULT_CAPTURE_INTERVAL_SECONDS,
 ) -> list[Mapping[str, Any]]:
-    """Land the whole inventory: one enabled job, thirteen legacy rows.
+    """Land the whole inventory: one enabled job, two disabled XHS jobs and
+    thirteen legacy rows.
 
     Idempotent by registration receipt, so a restart re-registers nothing.
     """
@@ -167,6 +178,8 @@ def seed_schedules(
             None,
         )
     ]
+    for job_key, operation, interval in XHS_JOBS:
+        plan.append((job_key, operation, False, interval, "product", None))
     for job_key in LEGACY_JOBS:
         job = migrated.get(job_key)
         if job is not None:

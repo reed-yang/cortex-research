@@ -16,6 +16,8 @@ from cortex_platform.product.engine.bindings import EngineRoots
 from cortex_platform.product.engine.schedules import (
     CAPTURE_DRAIN_JOB,
     LEGACY_JOBS,
+    XHS_DRAIN_JOB,
+    XHS_PULL_JOB,
     JobsFileReading,
     read_live_jobs,
     seed_schedules,
@@ -261,8 +263,8 @@ def test_an_out_of_range_legacy_cadence_does_not_stop_cortexd(
     try:
         assert runner is not None
         rows = {str(item["job_key"]) for item in store.list_research_schedules()}
-        assert rows == {CAPTURE_DRAIN_JOB, *LEGACY_JOBS}
-        assert len(rows) == 14
+        assert rows == {CAPTURE_DRAIN_JOB, XHS_PULL_JOB, XHS_DRAIN_JOB, *LEGACY_JOBS}
+        assert len(rows) == 16
         radar = store.get_research_schedule("radar-scan")
         # Clamped for the row, verbatim for the migrated fact.
         assert int(radar["interval_seconds"]) == 604_800
@@ -294,7 +296,7 @@ def test_a_row_that_cannot_register_is_skipped_not_fatal(
     keys = {str(item["job_key"]) for item in seeded}
     assert CAPTURE_DRAIN_JOB in keys
     assert "radar-scan" not in keys
-    assert len(keys) == 13
+    assert len(keys) == 15
     captured = capsys.readouterr()
     assert "radar-scan" in captured.err
     assert "ValueError" in captured.err

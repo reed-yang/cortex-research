@@ -212,6 +212,7 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
         RESEARCH_ITEMS_MIGRATION,
         RUNTIME_RELEASE_APPROVAL_SCHEMA_VERSION,
         TRANSPORT_ACTIVATION_MIGRATION,
+        XHS_SOURCES_MIGRATION,
     )
 
     home = (home or Path.home()).expanduser().resolve()
@@ -243,6 +244,17 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
                 "research_document_versions",
                 "research_thread_items",
                 "idea_fragments",
+                # Followed bloggers, notes, their images and recommendations,
+                # the plugin queue and usage, and the non-paper content
+                # bindings and links the Library reads through.
+                "xhs_bloggers",
+                "xhs_notes",
+                "xhs_note_images",
+                "xhs_recommendations",
+                "source_content_bindings",
+                "source_links",
+                "xhs_tasks",
+                "xhs_usage",
             ),
             # Each table is required only from the version that creates it: an
             # older snapshot legitimately has none of them, and demanding one
@@ -262,6 +274,14 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
                 ("research_document_versions", RESEARCH_ITEMS_MIGRATION),
                 ("research_thread_items", RESEARCH_ITEMS_MIGRATION),
                 ("idea_fragments", IDEA_FRAGMENTS_MIGRATION),
+                ("xhs_bloggers", XHS_SOURCES_MIGRATION),
+                ("xhs_notes", XHS_SOURCES_MIGRATION),
+                ("xhs_note_images", XHS_SOURCES_MIGRATION),
+                ("xhs_recommendations", XHS_SOURCES_MIGRATION),
+                ("source_content_bindings", XHS_SOURCES_MIGRATION),
+                ("source_links", XHS_SOURCES_MIGRATION),
+                ("xhs_tasks", XHS_SOURCES_MIGRATION),
+                ("xhs_usage", XHS_SOURCES_MIGRATION),
             ),
         ),
         DatabaseSpec(

@@ -64,7 +64,7 @@ RUNTIME_ADAPTER_ID = "hermes"
 RUNTIME_ADAPTER_VERSION = "0.15.0-gen9"
 
 #: A fabricated arXiv identity. The locator grammar admits only arxiv.org and
-#: doi.org (`sources/identity.py:283-289`), so the authority is the real public
+#: doi.org (`sources/identity.py:337-343`), so the authority is the real public
 #: one and the work id is invented; no such paper exists.
 SYNTHETIC_ARXIV_ID = "2601.00001"
 SYNTHETIC_ARXIV_URL = "https://arxiv.org/abs/2601.00001"

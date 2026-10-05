@@ -32,7 +32,415 @@ THREAD_ARCHIVE_MIGRATION = 18
 RESEARCH_ITEMS_MIGRATION = 19
 #: Save-only idea fragments: verbatim operator text that starts no turn or run.
 IDEA_FRAGMENTS_MIGRATION = 20
-SCHEMA_VERSION = IDEA_FRAGMENTS_MIGRATION
+#: XHS notes, blogs and recommendation import: followed bloggers, notes, their
+#: images and recommendations, the plugin's task queue and daily usage, content
+#: bindings for non-paper sources, and source-to-source links.
+XHS_SOURCES_MIGRATION = 21
+SCHEMA_VERSION = XHS_SOURCES_MIGRATION
+
+#: The XHS plugin's durable state. Network and model I/O happen outside every
+#: transaction; each row here records what a finished child operation proved.
+#: Note and user identities are the full 24-hex upstream IDs, never a prefix,
+#: and every image keeps its original carousel ordinal, so one failed image
+#: cannot shift the identity of the ones after it.
+_MIGRATION_XHS_SOURCES = """
+CREATE TABLE xhs_bloggers (
+    user_id TEXT PRIMARY KEY CHECK(
+        length(user_id) = 24 AND user_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    display_name TEXT CHECK(
+        display_name IS NULL OR length(display_name) BETWEEN 1 AND 200
+    ),
+    -- Stored now; it selects research evidence only once packet schema 3 exists.
+    role TEXT NOT NULL CHECK(role IN ('curator', 'author')),
+    followed INTEGER NOT NULL CHECK(followed IN (0, 1)),
+    last_scan_at TEXT,
+    -- Success, success with nothing new, and failure stay three answers: an
+    -- empty list after a provider error is never recorded as no new notes.
+    last_scan_outcome TEXT CHECK(
+        last_scan_outcome IS NULL
+        OR last_scan_outcome IN ('ok', 'no_new_notes', 'failed')
+    ),
+    last_scan_error TEXT CHECK(
+        last_scan_error IS NULL OR (
+            length(last_scan_error) BETWEEN 1 AND 64
+            AND last_scan_error NOT GLOB '*[^a-z_]*'
+        )
+    ),
+    last_new_note_at TEXT,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK((last_scan_at IS NULL) = (last_scan_outcome IS NULL)),
+    CHECK((last_scan_error IS NOT NULL) = (last_scan_outcome IS 'failed'))
+);
+
+CREATE TABLE xhs_notes (
+    note_id TEXT PRIMARY KEY CHECK(
+        length(note_id) = 24 AND note_id NOT GLOB '*[^0-9a-f]*'
+    ),
+    user_id TEXT NOT NULL REFERENCES xhs_bloggers(user_id),
+    note_type TEXT NOT NULL CHECK(
+        length(note_type) BETWEEN 1 AND 32 AND note_type NOT GLOB '*[^a-z_]*'
+    ),
+    state TEXT NOT NULL CHECK(state IN (
+        'discovered', 'detail_ok', 'assets_done', 'ocr_done',
+        'identified', 'saved', 'unsupported', 'failed'
+    )),
+    title TEXT NOT NULL CHECK(length(title) <= 500),
+    caption TEXT NOT NULL CHECK(length(caption) <= 20000),
+    -- A list caption is cut at 100 characters; only the detail one is whole.
+    caption_complete INTEGER NOT NULL CHECK(caption_complete IN (0, 1)),
+    published_at TEXT,
+    evidence_override TEXT CHECK(
+        evidence_override IS NULL OR evidence_override IN ('include', 'exclude')
+    ),
+    last_error TEXT CHECK(
+        last_error IS NULL OR (
+            length(last_error) BETWEEN 1 AND 64
+            AND last_error NOT GLOB '*[^a-z_]*'
+        )
+    ),
+    -- Null until the first save registers the note as a source.
+    source_id TEXT UNIQUE REFERENCES sources(id),
+    content_version INTEGER NOT NULL DEFAULT 0 CHECK(content_version >= 0),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK((source_id IS NULL) = (content_version = 0)),
+    CHECK(state <> 'saved' OR source_id IS NOT NULL)
+);
+CREATE INDEX xhs_notes_user_idx ON xhs_notes(user_id, published_at, note_id);
+CREATE INDEX xhs_notes_state_idx ON xhs_notes(state, updated_at, note_id);
+
+CREATE TABLE xhs_note_images (
+    note_id TEXT NOT NULL REFERENCES xhs_notes(note_id),
+    -- The original 1-based carousel position, never a compacted list index.
+    ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 100),
+    fileid TEXT CHECK(fileid IS NULL OR length(fileid) BETWEEN 1 AND 200),
+    upstream_width INTEGER CHECK(
+        upstream_width IS NULL OR upstream_width BETWEEN 1 AND 100000
+    ),
+    upstream_height INTEGER CHECK(
+        upstream_height IS NULL OR upstream_height BETWEEN 1 AND 100000
+    ),
+    sha256 TEXT CHECK(
+        sha256 IS NULL OR (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*')
+    ),
+    byte_size INTEGER CHECK(byte_size IS NULL OR byte_size BETWEEN 1 AND 20971520),
+    media_type TEXT CHECK(
+        media_type IS NULL
+        OR media_type IN ('image/jpeg', 'image/png', 'image/webp', 'image/gif')
+    ),
+    width INTEGER CHECK(width IS NULL OR width BETWEEN 1 AND 100000),
+    height INTEGER CHECK(height IS NULL OR height BETWEEN 1 AND 100000),
+    asset_name TEXT CHECK(
+        asset_name IS NULL OR (
+            length(asset_name) BETWEEN 1 AND 100
+            AND asset_name NOT GLOB '*[^0-9a-z.-]*'
+            AND asset_name NOT GLOB '*..*'
+        )
+    ),
+    download_state TEXT NOT NULL DEFAULT 'pending'
+        CHECK(download_state IN ('pending', 'ok', 'failed')),
+    download_error TEXT CHECK(
+        download_error IS NULL OR (
+            length(download_error) BETWEEN 1 AND 64
+            AND download_error NOT GLOB '*[^a-z_]*'
+        )
+    ),
+    ocr_state TEXT NOT NULL DEFAULT 'pending'
+        CHECK(ocr_state IN ('pending', 'ok', 'failed')),
+    ocr_error TEXT CHECK(
+        ocr_error IS NULL OR (
+            length(ocr_error) BETWEEN 1 AND 64 AND ocr_error NOT GLOB '*[^a-z_]*'
+        )
+    ),
+    ocr_engine TEXT CHECK(
+        ocr_engine IS NULL OR (
+            length(ocr_engine) BETWEEN 1 AND 64
+            AND ocr_engine NOT GLOB '*[^0-9a-z.-]*'
+        )
+    ),
+    ocr_flags TEXT NOT NULL DEFAULT ''
+        CHECK(ocr_flags IN ('', 'empty', 'truncated', 'empty,truncated')),
+    ocr_text_sha256 TEXT CHECK(
+        ocr_text_sha256 IS NULL OR (
+            length(ocr_text_sha256) = 64
+            AND ocr_text_sha256 NOT GLOB '*[^0-9a-f]*'
+        )
+    ),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(note_id, ordinal),
+    CHECK(
+        download_state <> 'ok' OR (
+            sha256 IS NOT NULL AND byte_size IS NOT NULL
+            AND media_type IS NOT NULL AND asset_name IS NOT NULL
+        )
+    ),
+    CHECK((download_error IS NOT NULL) = (download_state = 'failed')),
+    -- An image is transcribed only after its bytes are retained.
+    CHECK(ocr_state = 'pending' OR download_state = 'ok'),
+    CHECK((ocr_error IS NOT NULL) = (ocr_state = 'failed')),
+    CHECK(
+        ocr_state <> 'ok' OR (ocr_engine IS NOT NULL AND ocr_text_sha256 IS NOT NULL)
+    ),
+    CHECK(ocr_state = 'ok' OR ocr_flags = '')
+);
+
+CREATE TABLE xhs_recommendations (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES xhs_notes(note_id),
+    -- The merge key within one note: an arXiv ID, or a normalized title and
+    -- image, so a re-identification updates a row rather than duplicating it.
+    item_key TEXT NOT NULL CHECK(length(item_key) BETWEEN 1 AND 200),
+    -- Null when the caption, not an image, is the evidence.
+    image_ordinal INTEGER CHECK(
+        image_ordinal IS NULL OR image_ordinal BETWEEN 1 AND 100
+    ),
+    kind TEXT NOT NULL CHECK(kind IN ('paper', 'blog', 'other')),
+    title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 1000),
+    -- Verbatim from the cited transcription or caption; never model prose.
+    quote TEXT NOT NULL CHECK(length(quote) BETWEEN 1 AND 4000),
+    arxiv_id TEXT CHECK(
+        arxiv_id IS NULL OR (
+            length(arxiv_id) BETWEEN 9 AND 10 AND arxiv_id NOT GLOB '*[^0-9.]*'
+        )
+    ),
+    url TEXT CHECK(url IS NULL OR length(url) BETWEEN 1 AND 2000),
+    url_state TEXT NOT NULL DEFAULT 'none' CHECK(url_state IN (
+        'none', 'from_text', 'auto_matched', 'unverified',
+        'not_found', 'operator_set', 'failed'
+    )),
+    url_checked_title TEXT CHECK(
+        url_checked_title IS NULL OR length(url_checked_title) BETWEEN 1 AND 1000
+    ),
+    origin TEXT NOT NULL CHECK(origin IN ('rule', 'model', 'rule+model')),
+    identify_run TEXT NOT NULL CHECK(length(identify_run) BETWEEN 1 AND 300),
+    capture_id TEXT REFERENCES captures(id),
+    import_state TEXT NOT NULL DEFAULT 'none' CHECK(import_state IN (
+        'none', 'staged', 'importing', 'imported', 'failed'
+    )),
+    imported_source_id TEXT REFERENCES sources(id),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(note_id, item_key),
+    FOREIGN KEY(note_id, image_ordinal) REFERENCES xhs_note_images(note_id, ordinal),
+    CHECK(kind = 'paper' OR arxiv_id IS NULL),
+    CHECK(
+        (url IS NOT NULL)
+        = (url_state IN ('from_text', 'auto_matched', 'unverified', 'operator_set'))
+    ),
+    CHECK((import_state = 'imported') = (imported_source_id IS NOT NULL))
+);
+CREATE INDEX xhs_recommendations_note_idx
+    ON xhs_recommendations(note_id, image_ordinal, id);
+CREATE INDEX xhs_recommendations_capture_idx
+    ON xhs_recommendations(capture_id) WHERE capture_id IS NOT NULL;
+
+-- Append-only content versions of a non-paper source. A paper keeps its
+-- adoption join; the reader resolves any other kind through its highest
+-- version here. A version is written once, so changed content is a new row.
+CREATE TABLE source_content_bindings (
+    source_id TEXT NOT NULL REFERENCES sources(id),
+    version INTEGER NOT NULL CHECK(version >= 1),
+    root_id TEXT NOT NULL REFERENCES asset_roots(root_id),
+    directory TEXT NOT NULL CHECK(
+        length(directory) BETWEEN 4 AND 200
+        AND directory NOT GLOB '*[^0-9a-z/]*'
+        AND directory NOT GLOB '/*'
+        AND directory NOT GLOB '*//*'
+    ),
+    tree_sha256 TEXT NOT NULL CHECK(
+        length(tree_sha256) = 64 AND tree_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    metadata_json TEXT NOT NULL CHECK(
+        json_valid(metadata_json)
+        AND length(CAST(metadata_json AS BLOB)) <= 16384
+    ),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(source_id, version),
+    UNIQUE(root_id, directory)
+);
+CREATE TRIGGER source_content_bindings_insert_guard
+BEFORE INSERT ON source_content_bindings
+WHEN NOT EXISTS (
+    SELECT 1 FROM sources s
+    WHERE s.id = NEW.source_id AND s.source_kind IN ('xhs_note', 'blog')
+)
+BEGIN SELECT RAISE(ABORT, 'content bindings are for non-paper sources'); END;
+CREATE TRIGGER source_content_bindings_version_guard
+BEFORE INSERT ON source_content_bindings
+WHEN NEW.version <> 1 + COALESCE(
+    (SELECT MAX(version) FROM source_content_bindings
+     WHERE source_id = NEW.source_id), 0
+)
+BEGIN SELECT RAISE(ABORT, 'content binding versions are contiguous'); END;
+CREATE TRIGGER source_content_bindings_no_update
+BEFORE UPDATE ON source_content_bindings
+BEGIN SELECT RAISE(ABORT, 'content bindings are immutable'); END;
+CREATE TRIGGER source_content_bindings_no_delete
+BEFORE DELETE ON source_content_bindings
+BEGIN SELECT RAISE(ABORT, 'content bindings are immutable'); END;
+
+-- One row per imported recommendation. A paper or blog recommended by several
+-- notes has one source and several links; a link confers no research
+-- eligibility.
+CREATE TABLE source_links (
+    id TEXT PRIMARY KEY,
+    from_source_id TEXT NOT NULL REFERENCES sources(id),
+    to_source_id TEXT NOT NULL REFERENCES sources(id),
+    relation TEXT NOT NULL CHECK(relation = 'recommends'),
+    recommendation_id TEXT NOT NULL UNIQUE REFERENCES xhs_recommendations(id),
+    created_at TEXT NOT NULL,
+    CHECK(from_source_id <> to_source_id)
+);
+CREATE INDEX source_links_from_idx ON source_links(from_source_id, to_source_id, id);
+CREATE INDEX source_links_to_idx ON source_links(to_source_id, from_source_id, id);
+-- The from end is the saved note that holds the recommendation.
+CREATE TRIGGER source_links_insert_guard
+BEFORE INSERT ON source_links
+WHEN NOT EXISTS (
+    SELECT 1 FROM sources s
+    JOIN xhs_notes n ON n.source_id = s.id
+    JOIN xhs_recommendations r ON r.note_id = n.note_id
+    WHERE s.id = NEW.from_source_id AND s.source_kind = 'xhs_note'
+      AND r.id = NEW.recommendation_id
+)
+BEGIN SELECT RAISE(ABORT, 'a recommends link starts at its XHS note'); END;
+CREATE TRIGGER source_links_no_update
+BEFORE UPDATE ON source_links
+BEGIN SELECT RAISE(ABORT, 'source links are immutable'); END;
+CREATE TRIGGER source_links_no_delete
+BEFORE DELETE ON source_links
+BEGIN SELECT RAISE(ABORT, 'source links are immutable'); END;
+
+-- The plugin's queue. `subject_key` makes creation idempotent. The payload is
+-- private: it may hold a signed CDN URL, so no DTO, log or file carries it.
+CREATE TABLE xhs_tasks (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN (
+        'list_page', 'detail', 'download', 'ocr', 'identify', 'resolve',
+        'save', 'blog_import', 'capture_link'
+    )),
+    subject_key TEXT NOT NULL UNIQUE CHECK(length(subject_key) BETWEEN 1 AND 300),
+    payload_json TEXT NOT NULL CHECK(
+        json_valid(payload_json) AND length(CAST(payload_json AS BLOB)) <= 65536
+    ),
+    state TEXT NOT NULL CHECK(state IN (
+        'pending', 'running', 'done', 'failed', 'canceled'
+    )),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+    next_attempt_at TEXT NOT NULL,
+    lease_until TEXT,
+    last_error TEXT CHECK(
+        last_error IS NULL OR (
+            length(last_error) BETWEEN 1 AND 64
+            AND last_error NOT GLOB '*[^a-z_]*'
+        )
+    ),
+    result_json TEXT CHECK(
+        result_json IS NULL OR (
+            json_valid(result_json) AND length(CAST(result_json AS BLOB)) <= 65536
+        )
+    ),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK((state = 'running') = (lease_until IS NOT NULL)),
+    CHECK(state <> 'failed' OR last_error IS NOT NULL)
+);
+CREATE INDEX xhs_tasks_due_idx ON xhs_tasks(state, next_attempt_at, created_at, id);
+CREATE TRIGGER xhs_tasks_delete_guard
+BEFORE DELETE ON xhs_tasks
+BEGIN SELECT RAISE(ABORT, 'xhs task is durable'); END;
+CREATE TRIGGER xhs_tasks_identity_guard
+BEFORE UPDATE ON xhs_tasks
+WHEN NEW.id <> OLD.id OR NEW.kind <> OLD.kind
+  OR NEW.subject_key <> OLD.subject_key OR NEW.created_at <> OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'xhs task identity is immutable'); END;
+
+-- Paid calls per UTC day and provider, for the daily caps.
+CREATE TABLE xhs_usage (
+    day TEXT NOT NULL CHECK(
+        length(day) = 10 AND day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+    ),
+    provider TEXT NOT NULL CHECK(provider IN ('tikhub', 'ocr', 'gpt')),
+    calls INTEGER NOT NULL CHECK(calls >= 0),
+    PRIMARY KEY(day, provider)
+);
+
+-- Admit the two plugin operations. SQLite cannot alter a CHECK, so the table
+-- is rebuilt: every row is copied, then the index and both guard triggers are
+-- recreated exactly. DROP TABLE fires no DELETE trigger.
+CREATE TABLE research_schedules_xhs (
+    job_key TEXT PRIMARY KEY CHECK(length(job_key) BETWEEN 1 AND 100),
+    -- `legacy` is a job that exists on paper and has no product
+    -- implementation: represented so the inventory is complete, never
+    -- runnable.
+    operation TEXT NOT NULL CHECK(
+        operation IN ('capture_drain', 'legacy', 'xhs_pull', 'xhs_drain')
+    ),
+    enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+    interval_seconds INTEGER NOT NULL CHECK(
+        interval_seconds BETWEEN 60 AND 604800
+    ),
+    next_due_at TEXT NOT NULL,
+    last_started_at TEXT,
+    last_finished_at TEXT,
+    last_outcome TEXT CHECK(
+        last_outcome IS NULL
+        OR last_outcome IN ('ran', 'skipped', 'refused', 'failed')
+    ),
+    cadence_source TEXT NOT NULL CHECK(
+        cadence_source IN ('product', 'migrated', 'unknown')
+    ),
+    legacy_schedule TEXT CHECK(
+        legacy_schedule IS NULL OR length(legacy_schedule) <= 200
+    ),
+    revision INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT INTO research_schedules_xhs (
+    job_key, operation, enabled, interval_seconds, next_due_at,
+    last_started_at, last_finished_at, last_outcome, cadence_source,
+    legacy_schedule, revision, created_at, updated_at
+)
+SELECT job_key, operation, enabled, interval_seconds, next_due_at,
+       last_started_at, last_finished_at, last_outcome, cadence_source,
+       legacy_schedule, revision, created_at, updated_at
+FROM research_schedules;
+DROP TABLE research_schedules;
+ALTER TABLE research_schedules_xhs RENAME TO research_schedules;
+CREATE INDEX research_schedules_due_idx
+    ON research_schedules(enabled, next_due_at);
+CREATE TRIGGER research_schedules_delete_guard
+BEFORE DELETE ON research_schedules
+BEGIN SELECT RAISE(ABORT, 'research schedule is durable'); END;
+CREATE TRIGGER research_schedules_identity_guard
+BEFORE UPDATE ON research_schedules
+WHEN NEW.job_key <> OLD.job_key
+  OR NEW.operation <> OLD.operation
+  OR NEW.created_at <> OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'research schedule identity is immutable'); END;
+
+-- Both plugin jobs land disabled; `cortex xhs enable` arms them. Due at once
+-- when armed. The legacy `xhs-pull-scan` row stays inert beside them.
+INSERT OR IGNORE INTO research_schedules (
+    job_key, operation, enabled, interval_seconds, next_due_at,
+    cadence_source, legacy_schedule, created_at, updated_at
+) VALUES
+    ('xhs-pull', 'xhs_pull', 0, 86400, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+     'product', NULL, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+     strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ('xhs-drain', 'xhs_drain', 0, 300, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+     'product', NULL, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+"""
 
 #: Append-only operator text. A fragment is stored verbatim and never changes,
 #: so any later fragment state (admission, archive) needs its own table rather
@@ -2736,6 +3144,7 @@ def migration_scripts() -> tuple[tuple[int, str], ...]:
         (THREAD_ARCHIVE_MIGRATION, _MIGRATION_THREAD_ARCHIVE),
         (RESEARCH_ITEMS_MIGRATION, _MIGRATION_RESEARCH_ITEMS),
         (IDEA_FRAGMENTS_MIGRATION, _MIGRATION_IDEA_FRAGMENTS),
+        (XHS_SOURCES_MIGRATION, _MIGRATION_XHS_SOURCES),
     )
 
 
