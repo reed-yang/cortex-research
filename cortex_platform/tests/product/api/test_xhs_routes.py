@@ -484,6 +484,28 @@ def test_import_checks_the_note_revision_and_its_body(
     assert store.list_captures() == []
 
 
+def test_an_import_chosen_before_a_link_edit_is_refused(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    api = _api(store)
+    sid = saved["source_id"]
+    streaming = _recommendations(store)["Efficient Streaming"]
+    read = get(api, f"/api/v1/sources/{sid}/note").payload
+    edited = post(
+        api, f"/api/v1/sources/{sid}/recommendations/{streaming['id']}/link",
+        {"url": "https://other.example/changed", "expected_revision": streaming["revision"]},
+        "link-edit-elsewhere-01",
+    )
+    assert edited.status == 200
+    stale = post(
+        api, f"/api/v1/sources/{sid}/recommendations/import",
+        {"recommendation_ids": [streaming["id"]], "expected_revision": read["revision"]},
+        "import-after-edit-0001",
+    )
+    assert (stale.status, stale.payload["category"]) == (409, "revision_conflict")
+    assert tasks(store, "blog_import") == []
+
+
 # -- links -------------------------------------------------------------------------
 
 

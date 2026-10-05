@@ -343,6 +343,11 @@ describe("XHS note record", () => {
     expect(within(unlinked).getAllByText(copy.xhs.urlStates.operator_set).length).toBe(2);
     expect(within(unlinked).getByRole("link", { name: "https://blog.example.org/unlinked" })).toBeTruthy();
     expect(within(unlinked).getByRole("checkbox", { name: "Select An unlinked blog" })).toBeTruthy();
+    // The note is read again, so an import names the revision the link moved.
+    await userEvent.click(await within(row(region, "xhs_rec_unlinked")).findByRole("checkbox", { name: "Select An unlinked blog" }));
+    await userEvent.click(within(region).getByRole("button", { name: copy.xhs.importSelected }));
+    await waitFor(() => expect(control.posts.at(-1)?.path).toBe("sources/source_note/recommendations/import"));
+    expect(control.posts.at(-1)?.body).toEqual({ recommendation_ids: ["xhs_rec_unlinked"], expected_revision: 4 });
   });
 
   it("shows the newer row when someone else changed a link first", async () => {

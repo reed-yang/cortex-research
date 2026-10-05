@@ -245,7 +245,7 @@ function LinkEditor({ client, noteSourceId, recommendation, onChanged }: {
   client: CortexControlClient;
   noteSourceId: string;
   recommendation: XhsRecommendation;
-  onChanged: (recommendation: XhsRecommendation | null) => void;
+  onChanged: (recommendation: XhsRecommendation | null, saved?: boolean) => void;
 }) {
   const [value, setValue] = useState(recommendation.url ?? "");
   const [busy, setBusy] = useState(false);
@@ -263,7 +263,7 @@ function LinkEditor({ client, noteSourceId, recommendation, onChanged }: {
     try {
       const { value: answer } = await client.prepareSetRecommendationLink(noteSourceId, recommendation, url).execute();
       setValue(answer.recommendation.url ?? url);
-      onChanged(answer.recommendation);
+      onChanged(answer.recommendation, true);
       setOutcome({ tone: "success", text: copy.xhs.linkSaved });
     } catch (error) {
       let current: XhsRecommendation | null = null;
@@ -307,7 +307,7 @@ function RecommendationRow({ client, note, recommendation, selected, disabled, o
   transcription: Transcription | null;
   onSelect: (selected: boolean) => void;
   onExpand: () => void;
-  onChanged: (recommendation: XhsRecommendation | null) => void;
+  onChanged: (recommendation: XhsRecommendation | null, saved?: boolean) => void;
   onOpenSource: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -472,12 +472,14 @@ function XhsNoteBody({ client, detail, onOpenSource }: SourceRecordProps) {
     );
   }
 
-  function replaceRecommendation(recommendation: XhsRecommendation | null) {
+  function replaceRecommendation(recommendation: XhsRecommendation | null, saved = false) {
     if (!recommendation) { reread(); return; }
     setNote((current) => current && {
       ...current,
       recommendations: current.recommendations.map((item) => item.id === recommendation.id ? recommendation : item),
     });
+    // A saved link moves the note's revision, which an import names.
+    if (saved) reread();
   }
 
   // A staged or reused paper is approved here unless its Capture is already

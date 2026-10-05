@@ -437,6 +437,9 @@ export class FakeControl {
       if (!recommendation) return this.problem(404, "not_found");
       if (body.expected_revision !== recommendation.revision) return this.problem(409, "revision_conflict", recommendation);
       Object.assign(recommendation, { url: body.url, url_state: "operator_set", url_checked_title: null, revision: (recommendation.revision as number) + 1, updated_at: now });
+      // As in Control, a changed link moves the note's revision.
+      const note = this.xhsNotes[m[1]]!;
+      note.revision = (note.revision as number) + 1;
       return this.json({ recommendation });
     }
     m = path.match(/^sources\/([^/]+)\/images\/([0-9]+)\/retry$/);

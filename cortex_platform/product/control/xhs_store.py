@@ -822,7 +822,8 @@ class XhsStore:
             )
         if "import_state" in values and values["import_state"] not in XHS_IMPORT_STATES:
             raise ValueError("import_state is unsupported")
-        return self._xhs_fenced_update(
+        before = self._xhs_recommendation(conn, recommendation_id) if "url" in values else None
+        updated = self._xhs_fenced_update(
             conn,
             table="xhs_recommendations",
             where={"id": recommendation_id},
@@ -830,6 +831,15 @@ class XhsStore:
             values=values,
             current=lambda: self._xhs_recommendation(conn, recommendation_id),
         )
+        if before is not None and before["url"] != updated["url"]:
+            # An import checks the note's revision: a page that chose this
+            # item with its old link is refused rather than importing the new one.
+            conn.execute(
+                """UPDATE xhs_notes SET revision = revision + 1, updated_at = ?
+                   WHERE note_id = ?""",
+                (self._registry_now(), updated["note_id"]),
+            )
+        return updated
 
     @staticmethod
     def _xhs_url_values(url: Any, url_state: Any) -> tuple[str | None, str]:
