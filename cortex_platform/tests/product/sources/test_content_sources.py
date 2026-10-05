@@ -22,6 +22,7 @@ from cortex_platform.product.sources.identity import (
 )
 from cortex_platform.product.sources.reader import (
     SourceAssetInvalid,
+    SourceAssetTooLarge,
     SourceAssetUnavailable,
     SourceContentUnavailable,
     SourceKnowledgeReader,
@@ -275,6 +276,24 @@ def test_assets_come_only_from_the_bound_directory(library) -> None:
             reader.asset(note["id"], path)
     with pytest.raises(SourceAssetUnavailable):
         reader.asset(note["id"], "assets/missing.png")
+
+
+def test_a_note_screenshot_is_served_up_to_the_download_bound(library) -> None:
+    store, reader, roots, note, _, _ = library
+    root = store.get_asset_root("xhs-notes")
+    store.update_asset_root(
+        root_id="xhs-notes", private_path=root.private_path, max_bytes=20 * 1024 * 1024,
+        enabled=True, expected_revision=root.revision, actor_id="operator",
+        idempotency_key="root-notes-larger-0001",
+    )
+    large = png() + b"\0" * (9 * 1024 * 1024)
+    (roots["xhs-notes"] / NOTE / "v1" / "assets" / "2-bbbbbbbbbbbb.png").write_bytes(large)
+    assert reader.asset(note["id"], "assets/2-bbbbbbbbbbbb.png") == ("image/png", large)
+    (roots["xhs-notes"] / NOTE / "v1" / "assets" / "3-cccccccccccc.png").write_bytes(
+        large + b"\0" * (12 * 1024 * 1024)
+    )
+    with pytest.raises(SourceAssetTooLarge):
+        reader.asset(note["id"], "assets/3-cccccccccccc.png")
 
 
 def test_a_binding_that_names_another_sources_directory_is_refused(library) -> None:

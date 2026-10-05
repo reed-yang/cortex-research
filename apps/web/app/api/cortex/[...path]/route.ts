@@ -47,9 +47,10 @@ const SOURCE_DOCUMENT_ROUTE = new RegExp(`^sources\\/${ID}\\/document$`);
 const SOURCE_ASSET_ROUTE = new RegExp(`^sources\\/${ID}\\/asset$`);
 // The one binary body this gateway passes on: a figure from a source's stored
 // copy. Control decides the type by signature and refuses anything else; the
-// gateway holds the same four types and the same 8 MiB bound.
+// gateway holds the same four types and Control's largest bound, 20 MiB for a
+// note or blog screenshot (Control keeps a paper figure at 8 MiB).
 const SOURCE_ASSET_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const MAX_SOURCE_ASSET_BYTES = 8 * 1024 * 1024;
+const MAX_SOURCE_ASSET_BYTES = 20 * 1024 * 1024;
 
 const CAPTURE_STATES = [
   "pending",

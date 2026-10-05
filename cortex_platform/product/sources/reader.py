@@ -30,6 +30,8 @@ MAX_SOURCES = 10_000
 KINDS = {"notes": "notes.md", "full_text": "full_text.md", "grounding": "grounding.md"}
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 MAX_ASSET_BYTES = 8 * 1024 * 1024
+# A note or blog screenshot is served up to the size its download accepts.
+MAX_CONTENT_ASSET_BYTES = 20 * 1024 * 1024
 MAX_ASSET_PATH_BYTES = 512
 _ENCODED_SEPARATOR = re.compile(r"%(?:2f|5c|2e|00)", re.IGNORECASE)
 
@@ -577,7 +579,12 @@ class SourceKnowledgeReader:
                     prefix != paper_dir or source["source_kind"] != "paper"
                 ):
                     raise SourceAssetUnavailable("source asset is unavailable")
-                limit = min(root["max_bytes"], MAX_ASSET_BYTES)
+                limit = min(
+                    root["max_bytes"],
+                    MAX_CONTENT_ASSET_BYTES
+                    if source["source_kind"] in CONTENT_SOURCE_KINDS
+                    else MAX_ASSET_BYTES,
+                )
                 with _directory(root_path.joinpath(paper_dir, "assets", *segments[:-1])) as directory:
                     info = os.stat(segments[-1], dir_fd=directory, follow_symlinks=False)
                     if stat.S_ISREG(info.st_mode) and info.st_size > limit:

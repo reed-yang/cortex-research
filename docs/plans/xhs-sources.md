@@ -216,8 +216,10 @@ The legacy `xhs-pull-scan` rows stay inert.
 - The reader, the document route and the asset route resolve a paper through
   the existing adoption join, unchanged. A `blog` or `xhs_note` resolves through
   its latest `source_content_bindings` row and an enabled root, using the same
-  no-follow reads and post-read authorization recheck. Content kinds stay
-  `notes`, `full_text` and `grounding`, mapped per kind:
+  no-follow reads and post-read authorization recheck. The asset route serves
+  a note or blog screenshot up to 20 MiB, the download's bound, and a paper
+  figure up to 8 MiB as before. Content kinds stay `notes`, `full_text` and
+  `grounding`, mapped per kind:
 
   | Kind | `notes` | `full_text` | `grounding` |
   | --- | --- | --- | --- |
