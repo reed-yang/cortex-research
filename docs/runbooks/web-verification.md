@@ -58,6 +58,13 @@ A capture script rewrites committed evidence, so it stays out of the release
 chain by design and the roster guard enforces that. Never run one to make a
 failing screenshot check pass: investigate the drift first.
 
+`test:mobile` compares exact PNG digests, so they depend on the browser build
+and the host's font rasterization as well as on the page. A new host or browser
+version changes them with no code change. Before re-baselining with
+`npm run capture:mobile`, run the check on an older commit: if that commit
+produces the same new digest and a pixel diff shows only text-edge
+anti-aliasing, the drift is environmental.
+
 ## Hosted CI — `.github/workflows/fast-checks.yml`
 
 The Ubuntu Control job runs `uv sync --frozen`, asserts the checkout
