@@ -608,6 +608,26 @@ def test_capture_link_waits_for_the_capture_then_links_its_paper(
     }
 
 
+def test_waiting_captures_never_use_up_the_drain_budget(
+    store: ControlStore, supervisor: PipelineSupervisor
+) -> None:
+    paper, _ = _paper_capture(store, supervisor)
+    for index in range(2):
+        capture = store.create_capture(
+            payload=f"https://arxiv.org/abs/2601.0004{index + 3}", note="",
+            actor_id=ACTOR, idempotency_key=f"capture-more-00000{index}",
+        ).value
+        with store._transaction() as conn:
+            store._xhs_queue_capture_link(
+                conn, store._xhs_recommendation(conn, paper["id"]), capture["id"]
+            )
+    store.start_xhs_scans(max_pages=1, user_ids=[USER], scan_id="second")
+    report = pipeline(store, supervisor, drain_units_per_tick=1).drain()
+    assert [(unit.kind, unit.outcome) for unit in report.units] == [
+        ("capture_link", "deferred")
+    ] * 3 + [("list_page", "done")]
+
+
 def test_one_capture_reused_by_two_notes_links_both_to_one_paper(
     store: ControlStore, supervisor: PipelineSupervisor
 ) -> None:

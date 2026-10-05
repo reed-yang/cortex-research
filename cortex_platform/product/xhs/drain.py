@@ -635,11 +635,17 @@ class XhsDrain:
         )
 
     def drain(self) -> DrainReport:
-        """Run at most `drain_units_per_tick` due tasks, oldest first."""
+        """Run at most `drain_units_per_tick` due tasks, oldest first.
+
+        A deferred task (a Capture still open) is not a unit: it only reads
+        Control state and comes back later, so staged Captures waiting for
+        approval never use up a tick's budget ahead of newer work.
+        """
 
         units: list[UnitOutcome] = []
         capped: set[str] = set()
-        for _ in range(self.settings.drain_units_per_tick):
+        counted = 0
+        while counted < self.settings.drain_units_per_tick:
             # Asked again before every claim: a window can lapse mid-tick.
             if not self.store.runtime_dispatch_enabled():
                 return DrainReport(tuple(units), "runtime_activation_disabled")
@@ -658,6 +664,8 @@ class XhsDrain:
                 break
             unit = self._unit(task)
             units.append(unit)
+            if unit.outcome != "deferred":
+                counted += 1
             if unit.outcome == "capped":
                 capped.add(str(self._handlers[unit.kind].provider))
             if unit.stop:
