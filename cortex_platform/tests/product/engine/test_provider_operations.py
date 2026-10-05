@@ -34,6 +34,7 @@ from cortex_platform.product.engine.protocol import (
 )
 from cortex_platform.product.engine.supervisor import ResearchEffectSupervisor
 from cortex_platform.product.secrets import SecretValue
+from cortex_platform.product.xhs.results import ENGINE_SHAPES, validate_engine
 
 from .conftest import ActivationGate
 
@@ -143,7 +144,11 @@ def public_resolver(host: str, port: int, type: int = 0):  # noqa: A002
 
 
 def dispatch(operation: str, payload: dict[str, Any], **kwargs) -> dict[str, Any]:
-    return child._HANDLERS[operation](request_for(operation, payload, **kwargs))
+    outcome = child._HANDLERS[operation](request_for(operation, payload, **kwargs))
+    # Every successful handler result is what the parent's check accepts,
+    # and survives the JSON round trip the result file makes.
+    validate_engine(operation, json.loads(json.dumps(outcome["engine"])))
+    return outcome
 
 
 def refusal(operation: str, payload: dict[str, Any], **kwargs) -> child._Refusal:
@@ -168,6 +173,29 @@ def test_provider_categories_are_the_task_store_allowlist() -> None:
 
     assert PROVIDER_FAILURE_CATEGORIES == XHS_FAILURE_CATEGORIES
     assert CATEGORIES | {"outcome_unknown"} == PROVIDER_FAILURE_CATEGORIES
+
+
+def test_every_provider_operation_has_a_result_shape() -> None:
+    assert set(ENGINE_SHAPES) == PROVIDER_OPERATIONS
+
+
+@pytest.mark.parametrize(
+    ("operation", "engine"),
+    [
+        ("xhs_list_page", {"user_id": USER}),
+        ("xhs_download_image", {"image": {"name": "x", "sha256": "y", "byte_size": True,
+                                          "media_type": "image/png", "extension": "png",
+                                          "width": None, "height": None}}),
+        ("xhs_resolve_link", {"prompt_version": "v", "url": None, "page_title": None,
+                              "url_state": "auto_matched", "final_url": None,
+                              "checked_title": None, "verification_failure": None}),
+        ("ingest_arxiv", {}),
+        ("xhs_ocr_image", ["not", "an", "object"]),
+    ],
+)
+def test_a_malformed_result_is_rejected(operation: str, engine: Any) -> None:
+    with pytest.raises(ValueError):
+        validate_engine(operation, engine)
 
 
 def test_the_provider_modules_are_imported_lazily() -> None:
@@ -490,7 +518,7 @@ def test_a_real_list_page_child_gets_one_key_and_writes_nothing(supervisor, root
         "xhs_list_page", {"user_id": USER, "cursor": "", "tikhub_base": tikhub}
     )
     assert execution.ok, (execution.failure_category, execution.failure_message, execution.stderr_tail)
-    assert execution.engine["notes"][0]["note_id"] == NOTE
+    assert validate_engine("xhs_list_page", execution.engine)["notes"][0]["note_id"] == NOTE
     assert execution.checkpointed and execution.write_boundary["ok"]
     assert _FakeTikHub.seen[0]["authorization"] == "Bearer dummy-tikhub"
     assert roots.research_db.stat().st_mtime_ns == before and not wal.exists()
