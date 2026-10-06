@@ -1,16 +1,16 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SourceProjection } from "../../app/control/research-contracts";
 import { LibraryView } from "../../app/shell/library-view";
 import { Shell } from "../../app/shell/shell";
 import type { ControlActions, ControlState } from "../../app/shell/types";
-import { FakeControl } from "./fake-control";
+import { FakeControl, memoryStorage } from "./fake-control";
 
 // `tests/jsdom-setup.ts` owns the Testing Library cleanup for every suite; this
 // hook also resets the query the shell reads once on mount, and unmounts first
 // so the reset never lands under a mounted tree.
-afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
+afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); vi.unstubAllGlobals(); });
 
 function seeded() {
   const control = new FakeControl();
@@ -96,8 +96,35 @@ describe("LibraryView", () => {
     expect(row.getAttribute("aria-current")).toBe("true");
     expect(screen.getByText("imported")).toBeTruthy();
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Notes", "Full text", "Grounding"]);
-    expect(await screen.findByText("First line")).toBeTruthy();
+    expect(await screen.findByText(/^First line\s+Second line/)).toBeTruthy();
     expect(control.gets).toContain("sources/source_1");
+    expect(control.gets).toContain("sources/source_1/document?kind=notes");
+  });
+
+  it("keeps the reader's view across sources and loads figures through the source", async () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    const control = seeded();
+    control.sourceContent("source_2", "notes", "# Retrieval\n\n![Recall curve](assets/recall.png)\n\n![Lost](assets/lost.png)\n");
+    control.sourceAsset("source_2", "assets/recall.png", "image/png", new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+    library(control);
+    const list = await screen.findByRole("navigation", { name: "Adopted sources" });
+    await userEvent.click(within(list).getAllByRole("button")[0]!);
+    await screen.findByText(/^First line\s+Second line/);
+    await userEvent.click(screen.getByRole("button", { name: "Source" }));
+    expect(await screen.findByLabelText("Line 2")).toBeTruthy();
+    // The next source opens in the view the operator chose for the last one.
+    await userEvent.click(within(list).getAllByRole("button")[1]!);
+    expect(await screen.findByRole("heading", { level: 3, name: "Grounded retrieval for research" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Source" }).getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const figure = await screen.findByRole("img", { name: "Recall curve" });
+    expect(figure.getAttribute("src")).toBe("/api/cortex/sources/source_2/asset?path=assets%2Frecall.png");
+    expect((await control.fetch(figure.getAttribute("src")!)).headers.get("content-type")).toBe("image/png");
+    const lost = screen.getByRole("img", { name: "Lost" });
+    expect((await control.fetch(lost.getAttribute("src")!)).status).toBe(404);
+    fireEvent.error(lost);
+    expect(await screen.findByText("Figure not in the stored copy")).toBeTruthy();
+    expect(screen.getByText("assets/lost.png")).toBeTruthy();
   });
 
   it("selects a source that the search returned", async () => {

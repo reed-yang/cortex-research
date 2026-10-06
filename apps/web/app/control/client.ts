@@ -31,9 +31,11 @@ import {
   decodeSource,
   decodeSourceGate,
   decodeSourceContent,
+  decodeSourceDocument,
   decodeSourceSearch,
   type SourceContent,
   type SourceContentKind,
+  type SourceDocument,
   type SourceSearch,
   type ArtifactVersionContent,
   type ResearchWorkflowProjection,
@@ -241,6 +243,27 @@ export class CortexControlClient {
       }
       return decoded;
     });
+  }
+
+  // The whole retained document in one read, for Preview and Copy source. The
+  // signal is carried to `fetch`, so a document the reader has moved past is
+  // cancelled rather than parsed and dropped.
+  readSourceDocument(sourceId: string, kind: SourceContentKind, signal?: AbortSignal): Promise<SourceDocument> {
+    const query = new URLSearchParams({ kind });
+    return this.read(`/sources/${encodeURIComponent(sourceId)}/document?${query}`, (value, path = "source_document") => {
+      const decoded = decodeSourceDocument(value, path);
+      if (decoded.source_id !== sourceId || decoded.kind !== kind) {
+        throw new ContractDecodeError(path, "source document identity does not match the request");
+      }
+      return decoded;
+    }, signal);
+  }
+
+  // Where the browser loads one figure the stored copy references. The image
+  // is read by the page itself rather than through `fetch`, so this only names
+  // the gateway route; Control decides which file, if any, the path reaches.
+  sourceAssetUrl(sourceId: string, path: string): string {
+    return `${this.basePath}/sources/${encodeURIComponent(sourceId)}/asset?${new URLSearchParams({ path })}`;
   }
 
   searchSources(query: string, limit = 10): Promise<SourceSearch> {

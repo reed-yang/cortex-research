@@ -459,6 +459,18 @@ describe("server-only Control gateway", () => {
       upstream: "http://127.0.0.1:8799/api/v1/sources/source_1/content?kind=grounding&cursor=next&limit=20000",
     },
     {
+      label: "source document",
+      path: ["sources", "source_1", "document"],
+      query: "?kind=full_text",
+      upstream: "http://127.0.0.1:8799/api/v1/sources/source_1/document?kind=full_text",
+    },
+    {
+      label: "source document default kind",
+      path: ["sources", "source_1", "document"],
+      query: "",
+      upstream: "http://127.0.0.1:8799/api/v1/sources/source_1/document",
+    },
+    {
       label: "sources list",
       path: ["sources"],
       query: "",
@@ -807,6 +819,18 @@ describe("server-only Control gateway", () => {
     ["content blank cursor", "sources/source_1/content?cursor=", ["sources", "source_1", "content"]],
     ["content oversized limit", "sources/source_1/content?limit=20001", ["sources", "source_1", "content"]],
     ["content unknown field", "sources/source_1/content?path=/tmp/file", ["sources", "source_1", "content"]],
+    ["document kind", "sources/source_1/document?kind=pdf", ["sources", "source_1", "document"]],
+    ["document duplicate kind", "sources/source_1/document?kind=notes&kind=grounding", ["sources", "source_1", "document"]],
+    ["document cursor", "sources/source_1/document?kind=notes&cursor=next", ["sources", "source_1", "document"]],
+    ["document unknown field", "sources/source_1/document?path=assets/fig.png", ["sources", "source_1", "document"]],
+    ["asset without path", "sources/source_1/asset", ["sources", "source_1", "asset"]],
+    ["asset empty path", "sources/source_1/asset?path=", ["sources", "source_1", "asset"]],
+    ["asset duplicate path", "sources/source_1/asset?path=assets/a.png&path=assets/b.png", ["sources", "source_1", "asset"]],
+    ["asset path beside kind", "sources/source_1/asset?path=assets/a.png&kind=notes", ["sources", "source_1", "asset"]],
+    ["asset path over 512 bytes", `sources/source_1/asset?path=assets/${"图".repeat(169)}.png`, ["sources", "source_1", "asset"]],
+    ["asset path control character", "sources/source_1/asset?path=assets/a%00.png", ["sources", "source_1", "asset"]],
+    ["asset path newline", "sources/source_1/asset?path=assets/a%0A.png", ["sources", "source_1", "asset"]],
+    ["extra asset segment", "sources/source_1/asset/raw", ["sources", "source_1", "asset", "raw"]],
     ["sources list query", "sources?limit=10", ["sources"]],
     ["source detail query", "sources/source_1?verbose=1", ["sources", "source_1"]],
     ["extra sources segment", "sources/source_1/aliases", ["sources", "source_1", "aliases"]],
@@ -1200,6 +1224,92 @@ describe("server-only Control gateway", () => {
     expect(rename.status).toBe(200);
     expect(String(upstream.mock.calls[2][0])).toBe("http://127.0.0.1:8799/api/v1/threads/thread_1/rename");
     expect(upstream).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("source figure gateway", () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const assetPath = ["sources", "source_1", "asset"];
+  const read = (query: string, headers: Record<string, string> = boundaryHeaders()) => GET(
+    new NextRequest(`${PUBLIC_ORIGIN}/api/cortex/sources/source_1/asset${query}`, { headers }),
+    { params: Promise.resolve({ path: assetPath }) },
+  );
+  const image = (body: BodyInit, headers: Record<string, string>, status = 200) => new Response(body, { status, headers });
+
+  it("asks for an image and passes the bytes on with the headers that keep it same-origin and unsniffed", async () => {
+    configureControlGateway();
+    const upstream = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => image(PNG, {
+      "Content-Type": "image/png", "Content-Length": String(PNG.byteLength), "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "same-origin", "Set-Cookie": "leak=1",
+    }));
+    vi.stubGlobal("fetch", upstream);
+    const query = `?path=${encodeURIComponent(`papers/2401.12345/assets/${"a".repeat(512 - 29)}.png`)}`;
+    const response = await read(query);
+    expect(response.status).toBe(200);
+    expect(String(upstream.mock.calls[0][0])).toBe(`http://127.0.0.1:8799/api/v1/sources/source_1/asset${query}`);
+    const sent = new Headers(upstream.mock.calls[0][1]?.headers);
+    expect(sent.get("Accept")).toBe("image/*");
+    expect(sent.get("X-Cortex-Control-Token")).toBe(TOKEN);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG);
+    expect(Object.fromEntries(response.headers)).toMatchObject({
+      "cache-control": "no-store", "content-length": String(PNG.byteLength), "content-type": "image/png",
+      "cross-origin-resource-policy": "same-origin", "x-content-type-options": "nosniff",
+    });
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("sets the safety headers even when Control left one out", async () => {
+    configureControlGateway();
+    vi.stubGlobal("fetch", vi.fn(async () => image(PNG, { "Content-Type": "image/webp" })));
+    const response = await read("?path=assets/fig.webp");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/webp");
+    expect(response.headers.get("content-length")).toBe(String(PNG.byteLength));
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it.each([
+    ["an SVG", () => image("<svg/>", { "Content-Type": "image/svg+xml" })],
+    ["HTML", () => image("<p>x</p>", { "Content-Type": "text/html" })],
+    ["no type", () => image(PNG, {})],
+    ["a declared length over 8 MiB", () => image(PNG, { "Content-Type": "image/png", "Content-Length": String(8 * 1024 * 1024 + 1) })],
+    ["a body over 8 MiB", () => image(new Uint8Array(8 * 1024 * 1024 + 1), { "Content-Type": "image/jpeg" })],
+    ["a body shorter than declared", () => image(PNG, { "Content-Type": "image/gif", "Content-Length": "64" })],
+    ["an empty body", () => image(new Uint8Array(0), { "Content-Type": "image/png" })],
+    ["another success status", () => image(PNG, { "Content-Type": "image/png" }, 203)],
+    ["a non-JSON error", () => image("<h1>Not found</h1>", { "Content-Type": "text/html" }, 404)],
+  ])("refuses %s from Control as a JSON problem", async (_label, answer) => {
+    configureControlGateway();
+    vi.stubGlobal("fetch", vi.fn(async () => answer()));
+    const response = await read("?path=assets/fig.png");
+    expect(response.status).toBe(502);
+    expect(response.headers.get("content-type")).toBe("application/problem+json");
+    await expect(response.json()).resolves.toMatchObject({ category: "control_gateway_invalid_response" });
+  });
+
+  it("passes Control's problem on as JSON", async () => {
+    configureControlGateway();
+    const body = JSON.stringify({ type: "urn:cortex:problem:source_asset_unavailable", title: "Not available", status: 404, category: "source_asset_unavailable", retryable: false, owner: "cortexd" });
+    vi.stubGlobal("fetch", vi.fn(async () => image(body, { "Content-Type": "application/problem+json" }, 404)));
+    const response = await read("?path=assets/missing.png");
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toBe("application/problem+json");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toMatchObject({ category: "source_asset_unavailable" });
+  });
+
+  it("keeps every access check of the other source reads", async () => {
+    configureControlGateway();
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const withoutBootstrap = boundaryHeaders();
+    delete withoutBootstrap["X-Cortex-Access-Bootstrap"];
+    for (const headers of [withoutBootstrap, { ...boundaryHeaders(), "Sec-Fetch-Site": "cross-site" }, { ...boundaryHeaders(), Origin: "https://evil.test" }]) {
+      expect((await read("?path=assets/fig.png", headers)).status).toBe(403);
+    }
+    expect(upstream).not.toHaveBeenCalled();
   });
 });
 

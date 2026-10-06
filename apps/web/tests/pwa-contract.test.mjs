@@ -41,6 +41,10 @@ test("service worker caches only install assets and uses an honest navigation fa
   assert.match(worker, /event\.request\.mode !== "navigate"/);
   assert.match(worker, /fetch\(event\.request\)\.catch\(\(\) => caches\.match\(OFFLINE_URL\)\)/);
   assert.match(worker, /key\.startsWith\(CACHE_PREFIX\) && key !== CACHE_NAME/);
+  // The install assets are the only entries ever written: a source figure or a
+  // Control read must never be cached at request time.
+  assert.equal(worker.match(/\.addAll\(|\.add\(|\.put\(/g)?.length, 1);
+  assert.match(worker, /cache\.addAll\(INSTALL_ASSETS\)/);
   assert.doesNotMatch(worker, /PushManager|Notification|addEventListener\("push"|api\//i);
   assert.match(offline, /No research state is stored in this offline page/);
   assert.match(offline, /no action will be queued/);

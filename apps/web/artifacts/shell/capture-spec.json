@@ -98,14 +98,14 @@
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library",
-      "sha256": "eacfe89fa686f770db7d32d1af6c17324e4c1ce02a0ed9b98a37924dea3f7486"
+      "sha256": "c3d6c99de05fcad6eb516a194f2de71722297901b098fde8493275f84de3a33c"
     },
     "library-dark-desktop.png": {
       "scene": "library",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library",
-      "sha256": "76723537b0ce9cf05dfef3966977d34ebcaf92ba4adcde240f390b5eeef8cc02"
+      "sha256": "5f86e3a37397618beabc4634d0efa77e952e862103cb42ef70d278f4c51f8334"
     },
     "inbox-light-desktop.png": {
       "scene": "inbox",

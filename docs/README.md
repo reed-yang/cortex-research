@@ -26,6 +26,7 @@ instructions. The following files are intentionally tracked and public.
 | [0.1.20](releases/0.1.20.md) | Previous composition and acceptance record |
 | [PR review tooling](../tools/pr_review/README.md) | Standalone workflow consumer, English feedback, OAuth setup and review boundaries |
 | [PR review quality](plans/pr-review-quality.md) | T3 Code case study and proposed context, feedback and publication improvements |
+| [Library reader](plans/library-reader.md) | Rendered Markdown and source-bound figures for adopted sources |
 | [ADR index](adr/README.md) | Retained architectural decisions |
 
 Release composition is defined in `../distribution/release.toml`; installed

@@ -11,7 +11,9 @@ import re
 import socket
 import sqlite3
 import stat
+import struct
 import tempfile
+import zlib
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -758,8 +760,29 @@ def emit_redacted(root: Path) -> dict[str, Any]:
 CAPTURE_PAPER_ID = "2608.00042"
 CAPTURE_PAYLOAD = f"https://arxiv.org/abs/{CAPTURE_PAPER_ID} 请总结方法部分"
 CAPTURE_NOTE = "Synthetic capture note"
-CAPTURE_ROOT_ID = "workflow-corpus"
 CAPTURE_PAPER_TITLE = "Synthetic Capture Paper for Library Navigation"
+CAPTURE_PAPER_DIR = "20260901-Synthetic_Capture_Paper"
+# The stored copy the Library reads: one figure that exists, referenced by its
+# own `assets/` path and by the legacy `papers/<dir>/assets/` prefix, and one
+# that does not.
+CAPTURE_NOTES = (
+    "# Synthetic capture notes\n\n"
+    "The method in one figure.\n\n"
+    "![Drift over steps](assets/drift.png)\n\n"
+    f"![Drift by legacy path](papers/{CAPTURE_PAPER_DIR}/assets/drift.png)\n\n"
+    "![Ablation](assets/ablation.png)\n"
+)
+
+
+def _png(width: int, height: int) -> bytes:
+    """A small opaque RGB PNG, built here so no binary fixture is committed."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    rows = b"".join(b"\x00" + b"\x2a\x6f\xdb" * width for _ in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
 def seed_capture(root: Path) -> dict[str, Any]:
@@ -803,13 +826,20 @@ def adopt_capture_paper(root: Path) -> dict[str, Any]:
     """Adopt the failed Capture's paper by a separate, committed manifest."""
 
     from cortex_platform.product.sources.adoption import AdoptionEntry, build_manifest
+    from cortex_platform.product.sources.reader import ROOT_ID
 
     state = _read_state(root)
     store = ControlStore(_database(root))
     corpus = _child(root, "data", "workflow-corpus")
     corpus.mkdir(mode=0o700, exist_ok=True)
+    assets = _child(corpus, CAPTURE_PAPER_DIR, "assets")
+    assets.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _child(corpus, CAPTURE_PAPER_DIR, "notes.md").write_text(CAPTURE_NOTES, encoding="utf-8")
+    _child(assets, "drift.png").write_bytes(_png(4, 3))
+    # Registered as the root the Library reader serves, so opening the source
+    # reads this stored copy through Control.
     store.register_asset_root(
-        root_id=CAPTURE_ROOT_ID,
+        root_id=ROOT_ID,
         private_path=corpus,
         max_bytes=1_000_000,
         enabled=True,
@@ -819,14 +849,14 @@ def adopt_capture_paper(root: Path) -> dict[str, Any]:
     store.commit_adoption_manifest(
         manifest=build_manifest([
             AdoptionEntry(
-                paper_dir="20260901-Synthetic_Capture_Paper",
+                paper_dir=CAPTURE_PAPER_DIR,
                 authority="arxiv",
                 authority_id=CAPTURE_PAPER_ID,
                 official_title=CAPTURE_PAPER_TITLE,
                 content_digest=_digest(CAPTURE_PAPER_TITLE),
             )
         ]),
-        corpus_root_id=CAPTURE_ROOT_ID,
+        corpus_root_id=ROOT_ID,
         actor_id="fixture",
         idempotency_key="workflow-capture-adopt",
     )
@@ -834,7 +864,12 @@ def adopt_capture_paper(root: Path) -> dict[str, Any]:
     if len(linked) != 1:
         raise AssertionError("the adopted paper is not linkable")
     _write_state(root, {**state, "capture_source_id": linked[f"arxiv:{CAPTURE_PAPER_ID}"]})
-    return {"state": "capture_paper_adopted", "linked": len(linked)}
+    return {
+        "state": "capture_paper_adopted",
+        "linked": len(linked),
+        "paper_dir": CAPTURE_PAPER_DIR,
+        "notes_sha256": _digest(CAPTURE_NOTES),
+    }
 
 
 def assert_capture(root: Path) -> dict[str, Any]:
@@ -911,6 +946,7 @@ def seed_telegram_idea(root: Path) -> dict[str, Any]:
     """
 
     from cortex_platform.product.control.research_store import research_item_id
+    from cortex_platform.product.sources.reader import ROOT_ID
 
     state = _read_state(root)
     store = ControlStore(_database(root))
@@ -922,7 +958,7 @@ def seed_telegram_idea(root: Path) -> dict[str, Any]:
         item={"id": item_id, "kind": "idea", "origin_id": TELEGRAM_ITEM_ORIGIN, "title": TELEGRAM_ITEM_TITLE},
         documents=[{
             "title": TELEGRAM_ITEM_TITLE,
-            "asset_root_id": CAPTURE_ROOT_ID,
+            "asset_root_id": ROOT_ID,
             "relative_path": "ideas/telegram-idea.md",
             "origin_relative_path": "ideas/telegram-idea.md",
             "media_type": "text/markdown",

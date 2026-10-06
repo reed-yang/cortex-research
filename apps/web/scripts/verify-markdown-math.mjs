@@ -1,5 +1,6 @@
-// Browser acceptance for the shared renderer and output reading modes. All
-// content is a synthetic local fixture; the live product is never contacted.
+// Browser acceptance for the shared renderer and its reading modes, in Outputs
+// and in the Library's Preview. All content is a synthetic local fixture; the
+// live product is never contacted.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -82,8 +83,61 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     await trigger.click();
     assert.equal(await trigger.getAttribute("aria-expanded"), "false");
+
+    // Library Preview: the same renderer over a stored source copy, whose own
+    // figure loads through the source-bound asset route and whose missing
+    // figure is named rather than hidden.
+    const assetResponses = [];
+    page.on("response", (response) => { if (/\/api\/cortex\/sources\/[^/]+\/asset\?/.test(response.url())) assetResponses.push(response); });
+    // Opened through the shell's own navigation: a direct load of
+    // `?view=library` is server-rendered as the thread and fails hydration,
+    // which is a separate defect from what this acceptance checks.
+    if (width < 500) await page.getByRole("button", { name: "Open navigation" }).click();
+    await page.getByRole("button", { name: "Library", exact: true }).click();
+    await page.getByRole("navigation", { name: "Adopted sources" }).getByRole("button").first().click();
+    const reader = page.locator(".source-content-reader");
+    const libraryPreview = reader.getByRole("tabpanel");
+    await libraryPreview.locator(".katex").first().waitFor();
+    assert.equal(await reader.getByRole("button", { name: "Preview", exact: true }).getAttribute("aria-pressed"), "true");
+    // Figures load lazily, so the end of the reader is brought into view first.
+    await reader.getByRole("button", { name: "Reopen document" }).scrollIntoViewIfNeeded();
+    await libraryPreview.getByText("Figure not in the stored copy").waitFor();
+    await libraryPreview.getByText("assets/ablation.png").waitFor();
+    await page.waitForFunction(() => {
+      const image = document.querySelector('.source-content-reader img[alt="Memory drift by layer"]');
+      return Boolean(image?.complete && image.naturalWidth > 0);
+    });
+    const library = await page.evaluate(() => {
+      const panel = document.querySelector('.source-content-reader [role="tabpanel"]');
+      const image = panel.querySelector('img[alt="Memory drift by layer"]');
+      return { documentWidth: document.documentElement.scrollWidth, imageWidth: image.getBoundingClientRect().width, panelWidth: panel.getBoundingClientRect().width, naturalWidth: image.naturalWidth, src: image.getAttribute("src"), srcset: image.getAttribute("srcset"), loading: image.getAttribute("loading"), images: panel.querySelectorAll("img").length, mathCount: panel.querySelectorAll(".katex").length };
+    });
+    assert.ok(library.documentWidth <= width + 1, JSON.stringify(library));
+    assert.ok(library.imageWidth <= library.panelWidth + 1, JSON.stringify(library));
+    assert.equal(library.naturalWidth, 480);
+    assert.equal(library.src, "/api/cortex/sources/src_echo/asset?path=assets%2Fdrift.png");
+    assert.equal(library.srcset, null);
+    assert.equal(library.loading, "lazy");
+    assert.equal(library.images, 1);
+    assert.equal(library.mathCount, 1);
+    const served = assetResponses.find((response) => response.url().endsWith("path=assets%2Fdrift.png"));
+    assert.equal(served?.status(), 200);
+    assert.deepEqual(
+      ["content-type", "cache-control", "x-content-type-options", "cross-origin-resource-policy"].map((header) => served.headers()[header]),
+      ["image/png", "no-store", "nosniff", "same-origin"],
+    );
+    assert.equal(assetResponses.find((response) => response.url().endsWith("path=assets%2Fablation.png"))?.status(), 404);
+    await page.screenshot({ path: new URL(`${name}-library-preview.png`, output).pathname });
+    await reader.getByRole("button", { name: "Source", exact: true }).click();
+    await reader.getByLabel("Line 13").waitFor();
+    assert.equal(await page.evaluate(() => localStorage.getItem("cortex.library.reader-mode.v1")), "source");
+    await reader.getByRole("button", { name: "Copy source" }).click();
+    const stored = await page.evaluate(async () => (await (await fetch("/api/cortex/sources/src_echo/document?kind=notes")).json()).text);
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), stored);
+    await page.screenshot({ path: new URL(`${name}-library-source.png`, output).pathname });
+
     assert.deepEqual(errors, []);
-    results.push({ name, ...geometry, mathCount: 3, sourceExact: true, copyExact: true, errors });
+    results.push({ name, ...geometry, mathCount: 3, sourceExact: true, copyExact: true, library, errors });
     await context.close();
   }
   await writeFile(new URL("results.json", output), JSON.stringify(results, null, 2));

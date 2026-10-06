@@ -14,7 +14,10 @@ region showing exactly one of Thread, Research, Library, Inbox or Status.
   this does not restart a legacy engine round. See the
   [operator guide](../../docs/runbooks/cortex-web-user-guide.md).
 - **Library** is the adopted corpus, shared across projects: search, the record
-  for one source, and its Notes / Full text / Grounding reader.
+  for one source, and its Notes / Full text / Grounding reader. Each tab opens in
+  Preview (rendered Markdown, math and the source's own figures) or in Source
+  (the paged, line-numbered citation view); the choice is remembered in this
+  browser.
 - **Inbox** is what is waiting for you: pending decisions from every thread, and
   the captures queue with its Capture entry point.
 - **Status** reports the API version and capabilities, whether runtime dispatch

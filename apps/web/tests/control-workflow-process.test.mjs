@@ -221,6 +221,7 @@ test("real temporary research workflow crosses the Web boundary and cleans up", 
   assert.equal(summary.browser_websocket_guard_probes, 1);
   assert.equal(summary.capture_source_opened, true);
   assert.equal(summary.idea_saved, true);
+  assert.equal(summary.library_figures, 2);
   assert.equal(summary.network_guard_probes, 12);
   assert.equal(summary.response_boundary_probes, 3);
   assert.equal(summary.sse_frame_probes, 3);

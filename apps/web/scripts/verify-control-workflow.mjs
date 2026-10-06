@@ -56,6 +56,9 @@ const capturePayload = "https://arxiv.org/abs/2608.00042 请总结方法部分";
 const captureNote = "Synthetic capture note";
 const captureDerivedNote = "请总结方法部分";
 const capturePaperTitle = "Synthetic Capture Paper for Library Navigation";
+// Its stored notes, which `adopt-capture-paper` writes with one figure present
+// (referenced twice) and one missing.
+const captureNotesHeading = "Synthetic capture notes";
 // The idea `workflow-control-fixture.py assert-fragment` expects, byte for byte.
 const ideaText = "  第一行的想法 🎬\n\n  indented second line  ";
 const ideaNote = "Synthetic idea note";
@@ -724,6 +727,7 @@ async function main() {
   let failure;
   let networkGuardProbes = 0;
   let captureSourceOpened = false;
+  let libraryFigures = 0;
   let ideaSaved = false;
   try {
     await mkdir(path.join(temporaryRoot, "home"), { mode: 0o700 });
@@ -922,7 +926,8 @@ async function main() {
     await captureCard.getByText(copy.capture.payloadNote, { exact: true }).waitFor();
     await captureCard.getByText(captureDerivedNote, { exact: true }).waitFor();
     assert.equal(await captureCard.getByRole("button", { name: copy.capture.openSource }).count(), 0, "an unadopted paper must offer no Library link");
-    summaries.push(await runFixture("adopt-capture-paper", temporaryRoot, capability, secrets, processOutputs));
+    const adoptSummary = await runFixture("adopt-capture-paper", temporaryRoot, capability, secrets, processOutputs);
+    summaries.push(adoptSummary);
     await activePage.getByRole("button", { name: copy.inbox.refresh, exact: true }).click();
     const openSource = captureCard.getByRole("button", { name: copy.capture.openSource });
     await openSource.waitFor();
@@ -938,6 +943,18 @@ async function main() {
       if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/")) captureMutations.push(request.method());
     };
     activePage.on("request", recordMutation);
+    // Figures are read by the page itself, as images, through the source-bound
+    // asset route; their status and headers are part of what is proven.
+    const assetResponses = [];
+    const recordAsset = (response) => {
+      const url = new URL(response.url());
+      if (!/^\/api\/cortex\/sources\/[A-Za-z0-9_.:-]+\/asset$/.test(url.pathname)) return;
+      const record = { path: url.searchParams.get("path"), status: response.status(), headers: null };
+      assetResponses.push(record);
+      response.allHeaders().then((headers) => { record.headers = headers; }, () => { record.headers = {}; });
+    };
+    activePage.on("response", recordAsset);
+    const beforeOpen = responseRecords.length;
     await openSource.click();
     await activePage.getByRole("heading", { name: copy.library.title }).waitFor();
     await activePage.getByRole("heading", { name: capturePaperTitle, level: 3 }).waitFor();
@@ -946,6 +963,37 @@ async function main() {
       1,
       "the adopted source must be the Library selection",
     );
+    // Library opens in Preview: the whole stored copy is read once through
+    // Control and rendered, both references to the stored figure -- its own
+    // `assets/` path and the legacy `papers/<dir>/assets/` prefix -- load
+    // through Control, and the missing figure is named rather than hidden.
+    const documentRecord = await waitForResponse(responseRecords, beforeOpen, (record) => /^\/api\/cortex\/sources\/[A-Za-z0-9_.:-]+\/document$/.test(new URL(record.url).pathname));
+    assert.equal(JSON.parse(documentRecord.body).content_sha256, adoptSummary.notes_sha256, "Preview must read the stored notes");
+    const preview = activePage.locator("#source-panel-notes");
+    await preview.getByRole("heading", { name: captureNotesHeading }).waitFor();
+    for (const alt of ["Drift over steps", "Drift by legacy path"]) {
+      const figure = preview.locator(`img[alt="${alt}"]`);
+      await waitForValue(async () => await figure.evaluate((image) => image.complete && image.naturalWidth), 4);
+      libraryFigures += 1;
+    }
+    await preview.getByText(copy.reader.figureMissing, { exact: true }).waitFor();
+    await preview.getByText("assets/ablation.png", { exact: true }).waitFor();
+    const figurePaths = ["assets/drift.png", `papers/${adoptSummary.paper_dir}/assets/drift.png`, "assets/ablation.png"];
+    await waitForValue(() => figurePaths.every((figurePath) => assetResponses.some((record) => record.path === figurePath && record.headers !== null)), true);
+    activePage.off("response", recordAsset);
+    for (const record of assetResponses.filter((item) => item.headers !== null)) {
+      assert.ok(figurePaths.includes(record.path), "the page requested an asset the stored copy does not reference");
+      if (record.path === "assets/ablation.png") {
+        assert.equal(record.status, 404, "a missing figure must be unavailable");
+        assert.match(record.headers["content-type"] ?? "", /^application\/(?:problem\+)?json/);
+        continue;
+      }
+      assert.equal(record.status, 200);
+      assert.equal(record.headers["content-type"], "image/png");
+      assert.equal(record.headers["cache-control"], "no-store");
+      assert.equal(record.headers["x-content-type-options"], "nosniff");
+      assert.equal(record.headers["cross-origin-resource-policy"], "same-origin");
+    }
     await quiesceResponses(responseRecords);
     activePage.off("request", recordMutation);
     assert.deepEqual(captureMutations, [], "opening a source must send no command");
@@ -1099,7 +1147,7 @@ async function main() {
     }
   }
   if (failure) throw failure;
-  process.stdout.write(`${JSON.stringify({ artifact_leak_probes: artifactLeakProbes, browser_websocket_guard_probes: blockedWebSockets.length, capture_source_opened: captureSourceOpened, idea_saved: ideaSaved, network_guard_probes: networkGuardProbes, pids, ports, response_boundary_probes: responseBoundaryProbes, sse_frame_probes: sseFrameProbes, status: "ok" })}\n`);
+  process.stdout.write(`${JSON.stringify({ artifact_leak_probes: artifactLeakProbes, browser_websocket_guard_probes: blockedWebSockets.length, capture_source_opened: captureSourceOpened, idea_saved: ideaSaved, library_figures: libraryFigures, network_guard_probes: networkGuardProbes, pids, ports, response_boundary_probes: responseBoundaryProbes, sse_frame_probes: sseFrameProbes, status: "ok" })}\n`);
 }
 
 await main().catch((error) => {

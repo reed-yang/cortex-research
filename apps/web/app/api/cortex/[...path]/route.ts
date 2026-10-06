@@ -24,6 +24,8 @@ const GET_ROUTES = [
   /^sources$/,
   /^sources\/search$/,
   new RegExp(`^sources\\/${ID}\\/content$`),
+  new RegExp(`^sources\\/${ID}\\/document$`),
+  new RegExp(`^sources\\/${ID}\\/asset$`),
   new RegExp(`^sources\\/${ID}$`),
   /^events$/,
   /^decisions$/,
@@ -33,6 +35,15 @@ const GET_ROUTES = [
   /^fragments$/,
   new RegExp(`^fragments\\/${ID}$`),
 ];
+
+const SOURCE_CONTENT_KINDS = ["notes", "full_text", "grounding"];
+const SOURCE_DOCUMENT_ROUTE = new RegExp(`^sources\\/${ID}\\/document$`);
+const SOURCE_ASSET_ROUTE = new RegExp(`^sources\\/${ID}\\/asset$`);
+// The one binary body this gateway passes on: a figure from a source's stored
+// copy. Control decides the type by signature and refuses anything else; the
+// gateway holds the same four types and the same 8 MiB bound.
+const SOURCE_ASSET_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const MAX_SOURCE_ASSET_BYTES = 8 * 1024 * 1024;
 
 const CAPTURE_STATES = [
   "pending",
@@ -118,8 +129,20 @@ function validQuery(path: string, searchParams: URLSearchParams): boolean {
   }
   if (new RegExp(`^sources\\/${ID}\\/content$`).test(path)) {
     return only("kind", "cursor", "limit") && boundedLimit(20_000) &&
-      (!searchParams.has("kind") || (once("kind") && ["notes", "full_text", "grounding"].includes(searchParams.get("kind") ?? ""))) &&
+      (!searchParams.has("kind") || (once("kind") && SOURCE_CONTENT_KINDS.includes(searchParams.get("kind") ?? ""))) &&
       (!searchParams.has("cursor") || (once("cursor") && /^[A-Za-z0-9_-]{1,512}$/.test(searchParams.get("cursor") ?? "")));
+  }
+  if (SOURCE_DOCUMENT_ROUTE.test(path)) {
+    return only("kind") &&
+      (!searchParams.has("kind") || (once("kind") && SOURCE_CONTENT_KINDS.includes(searchParams.get("kind") ?? "")));
+  }
+  // The path names a file under the source's own `assets/`; Control decides
+  // which forms reach one. The edge bounds it as Control does, at 512 bytes
+  // after decoding, and refuses control characters before anything is sent.
+  if (SOURCE_ASSET_ROUTE.test(path)) {
+    const assetPath = searchParams.get("path") ?? "";
+    return only("path") && once("path") && assetPath.length > 0 &&
+      new TextEncoder().encode(assetPath).length <= 512 && !/[\u0000-\u001f\u007f]/.test(assetPath);
   }
   if (path === "threads") {
     const workspaceId = searchParams.get("workspace_id");
@@ -242,6 +265,72 @@ const EXACT_BODY_ROUTES: Array<[RegExp, (body: string) => boolean, string]> = [
   [new RegExp(`^threads\\/${ID}\\/(?:archive|unarchive)$`), hasExactRevisionBody, "The archive command body is invalid"],
 ];
 
+async function boundedBody(response: Response, maximum: number): Promise<Uint8Array<ArrayBuffer> | null> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximum) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  }
+  const body = new Uint8Array(new ArrayBuffer(total));
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+// A 200 carries image bytes only when they are one of the four raster types
+// and within 8 MiB, checked against the declared length and the bytes actually
+// read. The headers that keep the browser from sniffing, caching or embedding
+// the figure elsewhere are set here to the values Control sends, so an
+// upstream that omitted one still never reaches the page without it. Any other
+// status is a problem and passes on only as JSON.
+async function sourceAssetResponse(response: Response): Promise<NextResponse> {
+  const unusable = () => problem(502, "control_gateway_invalid_response", "The local Cortex Control gateway returned an unusable image");
+  const type = (response.headers.get("content-type") ?? "").trim().toLowerCase();
+  if (response.status !== 200) {
+    if (!/^application\/(?:problem\+)?json(?:\s*;|$)/.test(type)) {
+      await response.body?.cancel().catch(() => {});
+      return unusable();
+    }
+    return new NextResponse(await response.arrayBuffer(), {
+      status: response.status,
+      headers: { "Cache-Control": "no-store", "Content-Type": type },
+    });
+  }
+  const declared = response.headers.get("content-length");
+  if (
+    !SOURCE_ASSET_TYPES.includes(type) ||
+    (declared !== null && (!/^[0-9]{1,10}$/.test(declared) || Number(declared) > MAX_SOURCE_ASSET_BYTES))
+  ) {
+    await response.body?.cancel().catch(() => {});
+    return unusable();
+  }
+  const body = await boundedBody(response, MAX_SOURCE_ASSET_BYTES);
+  if (!body || body.byteLength === 0 || (declared !== null && body.byteLength !== Number(declared))) return unusable();
+  return new NextResponse(body, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Length": String(body.byteLength),
+      "Content-Type": type,
+      "Cross-Origin-Resource-Policy": "same-origin",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 async function proxy(request: NextRequest, context: RouteContext, method: "GET" | "POST") {
   const accessBoundary = verifyAccessBoundary(request, method);
   if (!accessBoundary.allowed) {
@@ -271,8 +360,9 @@ async function proxy(request: NextRequest, context: RouteContext, method: "GET" 
   }
 
   const upstream = new URL(`/api/v1/${canonicalPath}${incoming.search}`, configuration.base);
+  const assetRead = method === "GET" && SOURCE_ASSET_ROUTE.test(canonicalPath);
   const headers = new Headers({
-    Accept: "application/json",
+    Accept: assetRead ? "image/*" : "application/json",
     "X-Cortex-Control-Token": configuration.token,
   });
   // ⟦P8-08⟧ The upstream headers are built from nothing, so no caller header
@@ -313,6 +403,13 @@ async function proxy(request: NextRequest, context: RouteContext, method: "GET" 
     });
   } catch {
     return problem(503, "control_gateway_unavailable", "The local Cortex Control gateway is unavailable");
+  }
+  if (assetRead) {
+    try {
+      return await sourceAssetResponse(response);
+    } catch {
+      return problem(503, "control_gateway_unavailable", "The local Cortex Control gateway is unavailable");
+    }
   }
 
   const responseHeaders = new Headers({

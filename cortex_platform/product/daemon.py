@@ -184,7 +184,8 @@ def _handler(
             self.wfile.write(body)
 
         def _send_api(self, response: APIResponse) -> None:
-            body = json.dumps(
+            # A binary response (a source image) sends its bytes verbatim.
+            body = response.body if response.body is not None else json.dumps(
                 response.payload, sort_keys=True, separators=(",", ":")
             ).encode("utf-8")
             self.send_response(response.status)

@@ -22,8 +22,10 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
 
+export type MarkdownComponents = NonNullable<Parameters<typeof memoizeMarkdownComponents>[0]>;
+
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
-  components?: Parameters<typeof memoizeMarkdownComponents>[0];
+  components?: MarkdownComponents;
   smooth?: boolean;
 };
 
@@ -77,10 +79,12 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, smooth = true }) 
 export const MarkdownText = memo(MarkdownTextImpl);
 
 // Static documents share the chat renderer without borrowing the active message.
-export const MarkdownDocument = memo(function MarkdownDocument({ text }: { text: string }) {
+// `components` is merged over the defaults; a caller that passes none renders
+// exactly what the thread renders. Pass a stable object.
+export const MarkdownDocument = memo(function MarkdownDocument({ text, components }: { text: string; components?: MarkdownComponents }) {
   return (
     <TextMessagePartProvider text={text}>
-      <MarkdownText smooth={false} />
+      <MarkdownText smooth={false} components={components} />
     </TextMessagePartProvider>
   );
 });

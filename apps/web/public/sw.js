@@ -24,6 +24,9 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  // Only navigations are answered here. Every other request -- Control reads
+  // and the figures a stored source copy references -- goes to the network
+  // untouched and is never written to a cache.
   if (event.request.mode !== "navigate") return;
 
   event.respondWith(fetch(event.request).catch(() => caches.match(OFFLINE_URL)));

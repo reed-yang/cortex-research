@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 import sqlite3
 import stat
+import unicodedata
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -25,6 +27,10 @@ MAX_PAGE_LINES = 2_000
 MAX_FILE_LINES = 200_000
 MAX_SOURCES = 10_000
 KINDS = {"notes": "notes.md", "full_text": "full_text.md", "grounding": "grounding.md"}
+MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
+MAX_ASSET_BYTES = 8 * 1024 * 1024
+MAX_ASSET_PATH_BYTES = 512
+_ENCODED_SEPARATOR = re.compile(r"%(?:2f|5c|2e|00)", re.IGNORECASE)
 
 
 class SourceContentUnavailable(RuntimeError):
@@ -37,6 +43,36 @@ class SourceQueryInvalid(ValueError):
     """A public read/search request exceeds or violates the closed contract."""
 
     category = "source_query_invalid"
+
+
+class SourceDocumentTooLarge(RuntimeError):
+    """The retained document exceeds the whole-document read limit."""
+
+    category = "source_document_too_large"
+
+
+class SourceAssetInvalid(ValueError):
+    """An asset reference is outside the closed relative-path grammar."""
+
+    category = "source_asset_invalid"
+
+
+class SourceAssetUnavailable(RuntimeError):
+    """The source, its own assets directory, or the referenced file is unreadable."""
+
+    category = "source_asset_unavailable"
+
+
+class SourceAssetTooLarge(RuntimeError):
+    """The referenced asset exceeds the root and asset byte limits."""
+
+    category = "source_asset_too_large"
+
+
+class SourceAssetUnsupported(RuntimeError):
+    """The referenced asset is not a PNG, JPEG, GIF or WebP image."""
+
+    category = "source_asset_unsupported"
 
 
 def _integer_limit(value: object, maximum: int) -> int:
@@ -80,6 +116,66 @@ def _directory(path: Path):
 
 def _identity(info: os.stat_result) -> tuple:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _read_checked(directory: int, name: str, limit: int) -> bytes:
+    # A regular single-link file, opened without following links, whose
+    # identity did not change across the read.
+    before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    raw = _read_regular(directory, name, limit=limit, require_private=False)
+    after = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    if _identity(before) != _identity(after):
+        raise SourceContentUnavailable("source content changed during read")
+    return raw
+
+
+def _check_text(raw: bytes) -> None:
+    raw.decode("utf-8", errors="strict")
+    if raw.count(b"\n") + bool(raw and not raw.endswith(b"\n")) > MAX_FILE_LINES:
+        raise SourceContentUnavailable("source content row limit exceeded")
+
+
+def _asset_reference(path: object) -> tuple[str | None, tuple[str, ...]]:
+    """Parse a stored image reference into (named paper directory, segments).
+
+    Only `assets/...`, `./assets/...` and `papers/<dir>/assets/...` parse; the
+    caller decides whether `<dir>` is the source's own binding directory.
+    """
+    if not isinstance(path, str) or not path:
+        raise SourceAssetInvalid("asset path is invalid")
+    try:
+        size = len(path.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise SourceAssetInvalid("asset path is invalid") from None
+    if (
+        size > MAX_ASSET_PATH_BYTES
+        or "\\" in path
+        or _ENCODED_SEPARATOR.search(path)
+        or any(unicodedata.category(char).startswith("C") for char in path)
+    ):
+        raise SourceAssetInvalid("asset path is invalid")
+    dotted = path.startswith("./")
+    segments = tuple((path[2:] if dotted else path).split("/"))
+    if any(segment in {"", ".", ".."} for segment in segments):
+        raise SourceAssetInvalid("asset path is invalid")
+    if segments[0] == "assets" and len(segments) > 1:
+        return None, segments[1:]
+    if not dotted and len(segments) > 3 and segments[0] == "papers" and segments[2] == "assets":
+        return segments[1], segments[3:]
+    raise SourceAssetInvalid("asset path is invalid")
+
+
+def _image_media_type(raw: bytes) -> str | None:
+    # Decided by signature only; the stored file name is never trusted.
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image/gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _begin_read(connection: sqlite3.Connection) -> None:
@@ -304,18 +400,10 @@ class SourceKnowledgeReader:
             with self._registered(source_id) as (root, path, sources):
                 paper_dir, source = next(iter(sources.items()))
                 with _directory(path / paper_dir) as directory:
-                    before = os.stat(KINDS[kind], dir_fd=directory, follow_symlinks=False)
-                    raw = _read_regular(
-                        directory, KINDS[kind],
-                        limit=min(root["max_bytes"], MAX_FILE_BYTES),
-                        require_private=False,
+                    raw = _read_checked(
+                        directory, KINDS[kind], min(root["max_bytes"], MAX_FILE_BYTES)
                     )
-                    after = os.stat(KINDS[kind], dir_fd=directory, follow_symlinks=False)
-                    if _identity(before) != _identity(after):
-                        raise SourceContentUnavailable("source content changed during read")
-                raw.decode("utf-8", errors="strict")
-                if raw.count(b"\n") + bool(raw and not raw.endswith(b"\n")) > MAX_FILE_LINES:
-                    raise SourceContentUnavailable("source content row limit exceeded")
+                _check_text(raw)
                 digest = hashlib.sha256(raw).hexdigest()
                 binding = hashlib.sha256(
                     repr((source_id, source["canonical_id"], kind, digest, root["revision"])).encode()
@@ -352,6 +440,88 @@ class SourceKnowledgeReader:
             raise
         except Exception:
             raise SourceContentUnavailable("source content is unavailable") from None
+
+    def document(self, source_id, kind="notes") -> dict:
+        """Read one whole retained document once, projected as pages are."""
+        if not isinstance(source_id, str) or not source_id or len(source_id) > 200:
+            raise SourceQueryInvalid("source_id is invalid")
+        if not isinstance(kind, str) or kind not in KINDS:
+            raise SourceQueryInvalid("content kind is invalid")
+        too_large = False
+        try:
+            with self._registered(source_id) as (root, path, sources):
+                paper_dir, source = next(iter(sources.items()))
+                retained_limit = min(root["max_bytes"], MAX_FILE_BYTES)
+                with _directory(path / paper_dir) as directory:
+                    info = os.stat(KINDS[kind], dir_fd=directory, follow_symlinks=False)
+                    # Refuse by retained size before reading or decoding. A
+                    # file over the root limit stays unavailable, as on pages.
+                    too_large = (
+                        stat.S_ISREG(info.st_mode)
+                        and MAX_DOCUMENT_BYTES < info.st_size <= retained_limit
+                    )
+                    if not too_large:
+                        raw = _read_checked(
+                            directory, KINDS[kind], min(retained_limit, MAX_DOCUMENT_BYTES)
+                        )
+                if not too_large:
+                    _check_text(raw)
+                    text = raw.decode("utf-8")
+                    redacted = self._redact_line is not None and any(
+                        map(self._redact_line, text.split("\n"))
+                    )
+                    if redacted:
+                        text = self._project_page(raw, 0, len(raw))
+                    result = {
+                        "source_id": source["id"], "canonical_id": source["canonical_id"],
+                        "kind": kind, "text": text,
+                        "content_sha256": hashlib.sha256(raw).hexdigest(),
+                        "retained_bytes": len(raw), "redacted": redacted,
+                    }
+        except (SourceQueryInvalid, SourceContentUnavailable):
+            raise
+        except Exception:
+            raise SourceContentUnavailable("source content is unavailable") from None
+        # The size refusal describes the file, so it follows the authorization
+        # recheck that ends the read.
+        if too_large:
+            raise SourceDocumentTooLarge("source document exceeds the whole-document limit")
+        return result
+
+    def asset(self, source_id, path) -> tuple[str, bytes]:
+        """Read one image from the source's own `assets/` directory.
+
+        The directory comes from the authorized adoption binding, never from
+        the request; a `papers/<dir>/` prefix may only name that directory.
+        """
+        prefix, segments = _asset_reference(path)
+        if not isinstance(source_id, str) or not source_id or len(source_id) > 200:
+            raise SourceAssetUnavailable("source asset is unavailable")
+        refusal = None
+        try:
+            with self._registered(source_id) as (root, root_path, sources):
+                paper_dir = next(iter(sources))
+                if prefix is not None and prefix != paper_dir:
+                    raise SourceAssetUnavailable("source asset is unavailable")
+                limit = min(root["max_bytes"], MAX_ASSET_BYTES)
+                with _directory(root_path.joinpath(paper_dir, "assets", *segments[:-1])) as directory:
+                    info = os.stat(segments[-1], dir_fd=directory, follow_symlinks=False)
+                    if stat.S_ISREG(info.st_mode) and info.st_size > limit:
+                        refusal = SourceAssetTooLarge("source asset exceeds its size limit")
+                    else:
+                        raw = _read_checked(directory, segments[-1], limit)
+        except SourceAssetUnavailable:
+            raise
+        except Exception:
+            raise SourceAssetUnavailable("source asset is unavailable") from None
+        # Size and type refusals describe the file, so they follow the
+        # authorization recheck that ends the read.
+        if refusal is not None:
+            raise refusal
+        media_type = _image_media_type(raw)
+        if media_type is None:
+            raise SourceAssetUnsupported("source asset is not a supported image")
+        return media_type, raw
 
     def search(self, query, limit=10, *, per_source=None) -> dict:
         from .search import search_knowledge
