@@ -493,10 +493,19 @@ def download_image(
         try:
             with os.fdopen(handle, "wb") as stream:
                 stream.write(page.body)
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, target)
         except BaseException:
             Path(temporary).unlink(missing_ok=True)
             raise
+        # Control records the download once this child returns; the file must
+        # outlive a host crash, not only this process.
+        directory = os.open(destination, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     return DownloadedImage(
         path=target,
         sha256=digest,

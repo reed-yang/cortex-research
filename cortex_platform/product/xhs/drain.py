@@ -52,6 +52,7 @@ from .layout import (
     render_note,
     render_transcription,
     source_title,
+    sync_directory,
     write_version,
 )
 from .results import validate_engine
@@ -109,12 +110,20 @@ def strip_signed_urls(value: Any, key: str | None = None) -> Any:
 
 
 def _write_private(path: Path, text: str) -> None:
-    """Replace one staging file whole: a reader sees the old file or the new."""
+    """Replace one staging file whole: a reader sees the old file or the new.
+
+    Synced before Control records the step that wrote it, so a host crash
+    cannot leave a recorded step whose file is missing or empty.
+    """
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.partial")
-    temporary.write_text(text, encoding="utf-8")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(text)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
+    sync_directory(path.parent)
 
 
 def _json(value: Any) -> str:

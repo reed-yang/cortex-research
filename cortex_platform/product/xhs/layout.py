@@ -119,15 +119,17 @@ def _write_locked(
     # The caller registers the version once this returns, so its entries and
     # the rename must survive a host crash, not only its file contents.
     for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
-        _sync_directory(directory)
+        sync_directory(directory)
     os.rename(partial, target)
-    _sync_directory(parent)
+    sync_directory(parent)
     if stale.exists():
         shutil.rmtree(stale)
     return digest
 
 
-def _sync_directory(path: Path) -> None:
+def sync_directory(path: Path) -> None:
+    """fsync one directory, so the entries made in it outlive a host crash."""
+
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(descriptor)
