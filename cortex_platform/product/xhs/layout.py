@@ -107,17 +107,32 @@ def _write_locked(
     partial = parent / f".v{version}.partial"
     if partial.exists():
         shutil.rmtree(partial)
+    directories = {partial}
     for name, data in files.items():
         path = partial / name
         path.parent.mkdir(parents=True, exist_ok=True)
+        directories.update(p for p in path.parents if p.is_relative_to(partial))
         with path.open("xb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+    # The caller registers the version once this returns, so its entries and
+    # the rename must survive a host crash, not only its file contents.
+    for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
+        _sync_directory(directory)
     os.rename(partial, target)
+    _sync_directory(parent)
     if stale.exists():
         shutil.rmtree(stale)
     return digest
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _quote(text: str) -> list[str]:
