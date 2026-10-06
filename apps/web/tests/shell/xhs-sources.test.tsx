@@ -275,6 +275,7 @@ describe("XHS note record", () => {
     expect(await screen.findByRole("heading", { level: 3, name: "Synthetic Memory Networks" })).toBeTruthy();
   });
 
+  // Each click re-renders all 101 rows: under 1 s locally, about 6 s on the CI runner.
   it("never sends more than 100 recommendations in one import", async () => {
     const control = seeded();
     Object.assign(control.xhsNotes.source_note!, {
@@ -283,7 +284,6 @@ describe("XHS note record", () => {
       })),
     });
     const region = await openNote(control);
-    // fireEvent keeps 101 clicks well inside the default timeout; userEvent took ~5 s on CI.
     for (const box of within(region).getAllByRole("checkbox")) fireEvent.click(box);
     const importButton = within(region).getByRole("button", { name: copy.xhs.importSelected });
     expect((importButton as HTMLButtonElement).disabled).toBe(true);
@@ -292,7 +292,7 @@ describe("XHS note record", () => {
     expect((importButton as HTMLButtonElement).disabled).toBe(false);
     expect(within(region).queryByText(copy.xhs.importTooMany)).toBeNull();
     expect(control.posts).toHaveLength(0);
-  });
+  }, 30_000);
 
   it("stages the selection, approves each staged paper and reports every row, a failed approval included", async () => {
     const control = seeded();
