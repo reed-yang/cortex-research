@@ -519,8 +519,13 @@ Live provider acceptance follows this PR, after operator approval:
 
 Left open by this change, each a follow-up:
 
-- The TikHub detail response shape follows the recorded probe. The live
-  contract is confirmed only by the operator-approved acceptance above.
+- The TikHub contract rests on live answers that an operator-approved probe
+  recorded on 2026-10-05 and again 24 hours later. The product parsers read
+  every recorded list and detail answer. Full note IDs, list cursors and image
+  `fileid`s did not change between the two days, and the day-old cursor returned
+  the same next page. Each detail call re-signs every image URL, and day-old
+  URLs still loaded. Not yet observed: when a signed URL expires, and a note
+  edited between scans.
 - No test runs the provider operations through a real effect child. The
   handlers are tested in-process with mocked transports, and the drain with a
   scripted supervisor.
