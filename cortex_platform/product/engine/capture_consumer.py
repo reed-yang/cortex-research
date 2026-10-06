@@ -81,7 +81,7 @@ RESEARCH_CAPTURE_WORKFLOW = WorkflowDefinition(
     ),
 )
 
-# The frozen store allowlist (`_CAPTURE_FAILURES`, `control/store.py:149`)
+# The frozen store allowlist (`_CAPTURE_FAILURES`, `control/store.py:159`)
 # plus the one translation
 # ⟦AMD-7⟧ requires: the gate refusal has no capture category of its own, and
 # gen 8 R-1 lets an `adapter_unavailable` capture be re-captured.
@@ -203,7 +203,7 @@ def effect_key_for(capture_id: str) -> str:
 def _idempotency_key(*parts: str) -> str:
     """A store-legal idempotency key derived from stable parts.
 
-    `_KEY_RE` (`control/store.py:118`) admits 16 to 128 URL-safe characters, so
+    `_KEY_RE` (`control/store.py:124`) admits 16 to 128 URL-safe characters, so
     a readable prefix is kept and anything that could carry an illegal
     character is folded into a digest rather than trusted.
     """

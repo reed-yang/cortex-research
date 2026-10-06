@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from ..artifacts.reader import ArtifactContentUnavailable, ArtifactReader
 from ..research.documents import MAX_DOCUMENT_BYTES, ResearchDocumentReader, ResearchDocumentUnavailable
-from ..config import DEFAULT_TELEGRAM_MODE
+from ..config import DEFAULT_TELEGRAM_MODE, XhsSettings
 from ..control import (
     CANCELED_BEFORE_BINDING,
     CAPTURE_BLOCKING_CATEGORIES,
@@ -36,10 +36,13 @@ from ..control import (
     ThreadArchived,
 )
 from ..sources import SourceResolver, canonicalize_arxiv_id, canonicalize_doi
+from ..sources.identity import xhs_note_permalink
+from ..sources.models import CONTENT_SOURCE_KINDS
 from .events import _SENSITIVE_TEXT_PATTERNS, project_public_decision, project_public_event
 from .research import ResearchWorkflowProjector
 
 _PUBLIC_ID_PATTERN = r"[A-Za-z0-9_-]{1,200}"
+_SOURCE_KINDS = frozenset({"paper", "blog", "xhs_note"})
 
 #: ⟦P8-08⟧ The one header that names who acted through the public front door.
 #: The web adapter strips it from every caller and sets it itself, only after
@@ -103,6 +106,7 @@ class ControlAPI:
         turn_bridge: object | None = None,
         research_catalog: object | None = None,
         readings_service: object | None = None,
+        xhs_settings: XhsSettings | None = None,
     ) -> None:
         if len(access_token) < 32:
             raise ValueError("API access token must contain at least 32 characters")
@@ -127,6 +131,8 @@ class ControlAPI:
         self._turn_bridge = turn_bridge
         self._research_catalog = research_catalog
         self._readings_service = readings_service
+        # Only the status route reads it; absent, the plugin reads as disabled.
+        self._xhs_settings = xhs_settings or XhsSettings()
 
     def handle(
         self,
@@ -556,7 +562,7 @@ class ControlAPI:
             # ⟦batchO ADJ-3⟧ A cursor implies a page, so it implies the page's
             # bound. `after_id` without `limit` was the one request shape with
             # no ceiling: `list_threads(limit=None)` reads EVERY remaining row
-            # (`LIMIT -1`, control/store.py:11807) and the ownership query below then
+            # (`LIMIT -1`, control/store.py:11870) and the ownership query below then
             # binds all of them into one `IN (...)` list -- measured at 900
             # threads as 81.3 ms against the unpaged read's 68.6 ms for one
             # row fewer, and past sqlite's `SQLITE_LIMIT_VARIABLE_NUMBER`
@@ -710,12 +716,26 @@ class ControlAPI:
             )
 
         if path == "/api/v1/sources":
+            # Other query keys stay ignored, as this route always did. `kind`
+            # filters in SQL, so it applies before any later page or limit.
+            kind = self._optional_single_query(query, "kind")
+            if kind is not None and kind not in _SOURCE_KINDS:
+                raise ValueError("kind query parameter is invalid")
             return APIResponse(
                 200,
                 {
-                    "items": self._public_value(self.store.list_sources()),
+                    "items": [
+                        self._public_source(source)
+                        for source in self.store.list_sources(kind=kind)
+                    ],
                     "next_cursor": None,
                 },
+            )
+
+        if path == "/api/v1/xhs/status":
+            self._require_query_fields(query, frozenset())
+            return APIResponse(
+                200, self._xhs_status(), headers=(("Cache-Control", "no-store"),)
             )
 
         if path == "/api/v1/sources/search":
@@ -743,10 +763,28 @@ class ControlAPI:
         if match:
             return self._source_asset_response(match.group(1), query)
 
+        match = re.fullmatch(rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/note", path)
+        if match:
+            self._require_query_fields(query, frozenset())
+            return APIResponse(
+                200,
+                self._xhs_note_projection(self.store.xhs_note_view(match.group(1))),
+                headers=(("Cache-Control", "no-store"),),
+            )
+
+        match = re.fullmatch(rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/links", path)
+        if match:
+            self._require_query_fields(query, frozenset())
+            return APIResponse(
+                200,
+                self._source_links_projection(self.store.list_source_links(match.group(1))),
+                headers=(("Cache-Control", "no-store"),),
+            )
+
         match = re.fullmatch(r"/api/v1/sources/([^/]+)", path)
         if match:
             return APIResponse(
-                200, self._public_value(self.store.get_source(match.group(1)))
+                200, self._public_source(self.store.get_source(match.group(1)))
             )
 
         if path == "/api/v1/artifacts":
@@ -1285,6 +1323,79 @@ class ControlAPI:
                 projector=self._capture_projection,
             )
 
+        match = re.fullmatch(
+            rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/recommendations/import", path
+        )
+        if match:
+            # Each item gets its own disposition; papers are only staged, and
+            # the operator approves each Capture through its own route.
+            self._require_body_fields(
+                body, frozenset({"recommendation_ids", "expected_revision"})
+            )
+            ids = body["recommendation_ids"]
+            if not isinstance(ids, list) or not all(
+                isinstance(value, str) and re.fullmatch(_PUBLIC_ID_PATTERN, value)
+                for value in ids
+            ):
+                raise ValueError("recommendation_ids is invalid")
+            return self._command(
+                self.store.import_xhs_recommendations(
+                    note_source_id=match.group(1),
+                    recommendation_ids=ids,
+                    expected_revision=self._revision(body),
+                    actor_id=actor,
+                    idempotency_key=key,
+                ),
+                projector=self._xhs_import_projection,
+            )
+
+        match = re.fullmatch(
+            rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/recommendations/"
+            rf"({_PUBLIC_ID_PATTERN})/link",
+            path,
+        )
+        if match:
+            self._require_body_fields(body, frozenset({"url", "expected_revision"}))
+            return self._command(
+                self.store.set_xhs_recommendation_link(
+                    note_source_id=match.group(1),
+                    recommendation_id=match.group(2),
+                    url=self._string(body, "url"),
+                    expected_revision=self._revision(body),
+                    actor_id=actor,
+                    idempotency_key=key,
+                ),
+                projector=lambda value: {
+                    "recommendation": self._xhs_recommendation_projection(
+                        value["recommendation"]
+                    )
+                },
+            )
+
+        match = re.fullmatch(
+            rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/images/([1-9][0-9]{{0,2}})/retry",
+            path,
+        )
+        if match:
+            self._require_body_fields(body, frozenset({"expected_revision"}))
+            expected = self._revision(body)
+            # A note's source never changes once saved, so resolving it before
+            # the receipt cannot refuse a retry that already committed.
+            note_id = self.store.xhs_note_id_for_source(match.group(1))
+            return self._command(
+                self.store.retry_xhs_image(
+                    note_id=note_id,
+                    ordinal=int(match.group(2)),
+                    expected_revision=expected,
+                    actor_id=actor,
+                    idempotency_key=key,
+                ),
+                projector=lambda value: {
+                    "note": self._xhs_note_header(value["note"]),
+                    "image": self._xhs_image_projection(value["image"]),
+                },
+            )
+
         raise NotFound("endpoint", path)
 
     def _authenticate(self, headers: Mapping[str, str], *, client_host: str) -> None:
@@ -1321,6 +1432,11 @@ class ControlAPI:
             return project_public_decision(value)
         if {"candidates", "decision", "title", "locator"}.issubset(value):
             return ResearchWorkflowProjector.project_source_gate(value)
+        # An XHS note or recommendation, the way its own routes project it.
+        if {"note_id", "caption_complete", "content_version"}.issubset(value):
+            return cls._xhs_note_header(value)
+        if {"item_key", "quote", "url_state", "identify_run"}.issubset(value):
+            return cls._xhs_recommendation_projection(value)
         return cls._public_value(dict(value))
 
     @classmethod
@@ -1518,6 +1634,16 @@ class ControlAPI:
             body=body,
         )
 
+    @classmethod
+    def _public_source(cls, source: Mapping[str, Any]) -> Any:
+        """A source record; a note's or blog's title comes from a provider, so
+        it is redacted as the note and document routes redact it."""
+
+        value = cls._public_value(dict(source))
+        if value.get("source_kind") in CONTENT_SOURCE_KINDS and "official_title" in value:
+            value["official_title"] = cls._public_source_text(value["official_title"])
+        return value
+
     @staticmethod
     def _public_source_text(value: Any) -> Any:
         if not isinstance(value, str):
@@ -1528,6 +1654,147 @@ class ControlAPI:
             "[redacted]" if any(pattern.search(line) for pattern in _SENSITIVE_TEXT_PATTERNS)
             else line for line in value.split("\n")
         )
+
+    # -- XHS notes, recommendations and links ---------------------------------
+    #
+    # Each projection names its fields. Task rows are never read for these
+    # routes, so a signed CDN URL (task payloads only), a raw provider answer
+    # (files only), a private path and a lease have no way in.
+
+    @classmethod
+    def _xhs_note_header(cls, note: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "source_id": note["source_id"],
+            "note_id": note["note_id"],
+            "title": cls._public_source_text(note["title"]),
+            "state": note["state"],
+            "last_error": note["last_error"],
+            "content_version": note["content_version"],
+            "revision": note["revision"],
+        }
+
+    @classmethod
+    def _xhs_note_projection(cls, view: Mapping[str, Any]) -> dict[str, Any]:
+        note, blogger = view["note"], view["blogger"] or {}
+        return {
+            **cls._xhs_note_header(note),
+            "blogger": {
+                "user_id": note["user_id"],
+                "name": cls._public_source_text(blogger.get("display_name")),
+                "role": blogger.get("role"),
+            },
+            "permalink": xhs_note_permalink(str(note["note_id"])),
+            "published_at": note["published_at"],
+            "caption": cls._public_source_text(note["caption"]),
+            "caption_complete": bool(note["caption_complete"]),
+            "images": [cls._xhs_image_projection(image) for image in view["images"]],
+            "recommendations": [
+                cls._xhs_recommendation_projection(item) for item in view["recommendations"]
+            ],
+        }
+
+    @staticmethod
+    def _xhs_image_projection(image: Mapping[str, Any]) -> dict[str, Any]:
+        # The asset path is relative to the note's version, for the asset
+        # route; an image downloaded since the last save is not in it yet.
+        downloaded = image["download_state"] == "ok" and image["asset_name"]
+        return {
+            "ordinal": image["ordinal"],
+            "asset_path": f"assets/{image['asset_name']}" if downloaded else None,
+            "media_type": image["media_type"],
+            "width": image["width"],
+            "height": image["height"],
+            "download_state": image["download_state"],
+            "download_error": image["download_error"],
+            "ocr_state": image["ocr_state"],
+            "ocr_error": image["ocr_error"],
+            "ocr_engine": image["ocr_engine"],
+            "ocr_flags": list(image["ocr_flags"]),
+        }
+
+    @classmethod
+    def _xhs_recommendation_projection(cls, value: Mapping[str, Any]) -> dict[str, Any]:
+        url = value["url"]
+        if url is not None and any(pattern.search(url) for pattern in _SENSITIVE_TEXT_PATTERNS):
+            url = None
+        return {
+            "id": value["id"],
+            "image_ordinal": value["image_ordinal"],
+            "kind": value["kind"],
+            "title": cls._public_source_text(value["title"]),
+            "quote": cls._public_source_text(value["quote"]),
+            "arxiv_id": value["arxiv_id"],
+            "url": url,
+            "url_state": value["url_state"],
+            "url_checked_title": cls._public_source_text(value["url_checked_title"]),
+            "origin": value["origin"],
+            "identify_run": value["identify_run"],
+            "capture_id": value["capture_id"],
+            "capture_state": value.get("capture_state"),
+            "capture_revision": value.get("capture_revision"),
+            "import_state": value["import_state"],
+            "imported_source_id": value["imported_source_id"],
+            "imported_source_kind": value.get("imported_source_kind"),
+            "revision": value["revision"],
+            "created_at": value["created_at"],
+            "updated_at": value["updated_at"],
+        }
+
+    @classmethod
+    def _xhs_import_projection(cls, value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "note_source_id": value["note_source_id"],
+            "items": [
+                {
+                    **{
+                        name: item[name]
+                        for name in (
+                            "recommendation_id", "disposition", "reason",
+                            "capture_id", "capture_revision", "capture_state",
+                        )
+                    },
+                    "recommendation": None
+                    if item["recommendation"] is None
+                    else cls._xhs_recommendation_projection(item["recommendation"]),
+                }
+                for item in value["items"]
+            ],
+        }
+
+    @classmethod
+    def _source_links_projection(cls, links: Mapping[str, Any]) -> dict[str, Any]:
+        def entry(row: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                "source_id": row["source_id"],
+                "source_kind": row["source_kind"],
+                "title": cls._public_metadata_text(
+                    row["official_title"], fallback="Untitled source"
+                ),
+                "image_ordinal": row["image_ordinal"],
+                "recommendation_id": row["recommendation_id"],
+                "created_at": row["created_at"],
+            }
+
+        return {
+            "recommended_in": [entry(row) for row in links["recommended_in"]],
+            "recommends": [entry(row) for row in links["recommends"]],
+        }
+
+    def _xhs_status(self) -> dict[str, Any]:
+        from ..xhs.status import xhs_status
+
+        status = xhs_status(self.store, self._xhs_settings)
+        return {
+            **status,
+            # Scanning runs only when nothing refuses and both rows are armed.
+            "enabled": status["refusal"] is None
+            and all(row["enabled"] for row in status["schedules"].values()),
+            "roots_ready": all(state == "ready" for state in status["roots"].values()),
+            "bloggers": [
+                {**row, "display_name": self._public_source_text(row["display_name"])}
+                for row in status["bloggers"]
+            ],
+        }
 
     @staticmethod
     def _public_artifact(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1603,7 +1870,7 @@ class ControlAPI:
                 not isinstance(alias_id, str)
                 or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", alias_id)
                 is None
-                or authority not in {"arxiv", "doi", "sha256", "project"}
+                or authority not in {"arxiv", "doi", "sha256", "project", "xhs", "url"}
                 or not isinstance(display_value, str)
                 or not isinstance(created_at, str)
                 or re.fullmatch(
@@ -1627,7 +1894,13 @@ class ControlAPI:
                     valid = "://" not in display_value
                     if valid:
                         canonicalize_doi(display_value)
+                elif authority == "xhs":
+                    valid = re.fullmatch(
+                        r"[0-9a-f]{24}", display_value, re.IGNORECASE
+                    ) is not None
                 else:
+                    # `sha256`, and `url`, whose public value is the digest of
+                    # the normalized URL, never a URL that could carry a token.
                     valid = re.fullmatch(
                         r"[0-9a-f]{64}", display_value, re.IGNORECASE
                     ) is not None
@@ -1781,7 +2054,7 @@ class ControlAPI:
         would erase the chip on the same card -- so a dismissed capture kept
         naming the run an operator was being told to go and end, for a capture
         the operator had just closed. `reopen_capture` clears the category
-        (control/store.py:1183), which is why a reopened capture already stopped
+        (control/store.py:1236), which is why a reopened capture already stopped
         reporting one; a dismissed capture stops here instead, by state, with
         the category and its chip intact.
 
@@ -2005,14 +2278,14 @@ class ControlAPI:
 
         ⟦batchO ADJ-2⟧ They are now one SOURCE and two predicates, which is
         not the same thing as one predicate: this route asks
-        `ControlStore._MACHINE_RUN_PREDICATE` (control/store.py:11244) through
-        `run_is_machine` (control/store.py:11191), and the store asks the NARROWER
-        `_ENGINE_OWNED_RUN_PREDICATE` (control/store.py:11272) through
-        `_engine_owned_run` (control/store.py:11250) on the writing transaction's own
+        `ControlStore._MACHINE_RUN_PREDICATE` (control/store.py:11307) through
+        `run_is_machine` (control/store.py:11254), and the store asks the NARROWER
+        `_ENGINE_OWNED_RUN_PREDICATE` (control/store.py:11335) through
+        `_engine_owned_run` (control/store.py:11313) on the writing transaction's own
         connection. Both are generated by `ControlStore._machine_run_predicate`
-        (control/store.py:464), whose docstring argues the one clause that still
+        (control/store.py:474), whose docstring argues the one clause that still
         differs -- the store's workflow half is `research.capture` only
-        (control/store.py:492-500) -- and names why it cannot be reached today. So a
+        (control/store.py:502-510) -- and names why it cannot be reached today. So a
         run carrying some OTHER workflow is the one shape on which the two
         doors still answer differently: this route refuses the cancel and the
         store commits it. That single intended disagreement is pinned by

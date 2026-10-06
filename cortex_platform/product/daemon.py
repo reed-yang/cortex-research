@@ -24,6 +24,7 @@ from .config import (
     load_config,
     telegram_allowed_user_ids,
     telegram_mode,
+    xhs_settings,
 )
 from .transports.bridge import InboundTurnBridge
 from .transports.drain import (
@@ -641,6 +642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             transport_windows=window_supervisor,
             turn_bridge=turn_bridge,
             readings_service=readings_service,
+            xhs_settings=xhs_settings(product_config),
         )
         server = create_server(
             host=arguments.host,

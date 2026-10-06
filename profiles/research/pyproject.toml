@@ -16,6 +16,10 @@ dependencies = [
     # either provider could have dropped both without a signal.
     "beautifulsoup4>=4.14.3",
     "lxml>=6.1.0",
+    # `blog_fetch.py` imports trafilatura inside `extract_article` only, on the
+    # first-party blog import path. The nine arXiv bridge modules never import
+    # it, and `tests/test_supported_surface.py` keeps it forbidden for them.
+    "trafilatura>=2.0.0",
 ]
 
 [build-system]

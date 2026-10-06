@@ -85,7 +85,7 @@ def _supervisor(roots, arxiv, config, product_paths) -> ResearchEffectSupervisor
         skip_embed=True,
         timeout_seconds=180,
         literal_overrides=arxiv.literal_overrides(),
-        secret_provider=lambda: {
+        secret_provider=lambda _operation: {
             "novita": SecretValue("novita", "fake-novita"),
             "openrouter": SecretValue("openrouter", "fake-embedding"),
         },

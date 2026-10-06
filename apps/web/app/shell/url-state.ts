@@ -1,3 +1,4 @@
+import { isSourceKind, type SourceKind } from "../control/research-contracts";
 import { isResearchItemId } from "../control/research-items-contracts";
 import type { ShellView } from "./types";
 
@@ -8,6 +9,8 @@ export type ShellLocation = {
   // an item is an original research identity and a thread is a conversation.
   item: string | null;
   view: ShellView;
+  // The Library's kind filter; absent means every kind.
+  kind?: SourceKind;
 };
 const VIEWS: ShellView[] = ["thread", "research", "library", "inbox", "status"];
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -18,6 +21,7 @@ export function readShellLocation(search: string): ShellLocation {
   const thread = params.get("thread");
   const item = params.get("item");
   const view = params.get("view");
+  const kind = params.get("kind");
   return {
     project: project && ID.test(project) ? project : null,
     thread: thread && ID.test(thread) ? thread : null,
@@ -25,6 +29,8 @@ export function readShellLocation(search: string): ShellLocation {
     // anything else opens the catalog with nothing selected.
     item: item && isResearchItemId(item) ? item : null,
     view: VIEWS.includes(view as ShellView) ? (view as ShellView) : "thread",
+    // An unknown kind opens the Library unfiltered.
+    ...(isSourceKind(kind) ? { kind } : {}),
   };
 }
 
@@ -37,6 +43,8 @@ export function writeShellLocation(location: ShellLocation): void {
   if (location.thread) params.set("thread", location.thread);
   if (location.item) params.set("item", location.item);
   if (location.view !== "thread") params.set("view", location.view);
+  // The filter belongs to the Library, so another view's link does not carry it.
+  if (location.kind && location.view === "library") params.set("kind", location.kind);
   const query = params.toString();
   const next = `${window.location.pathname}${query ? `?${query}` : ""}`;
   if (next !== `${window.location.pathname}${window.location.search}`) window.history.replaceState(null, "", next);

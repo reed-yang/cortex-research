@@ -65,6 +65,21 @@ async function openExtra(page, scene) {
       return Boolean(image?.complete && image.naturalWidth > 0);
     });
   }
+  if (scene.open === "note") {
+    // The note detail: one recommendation selected and opened onto its slide,
+    // transcription and identified fields, then the failed slide with Retry.
+    await page.getByRole("navigation", { name: copy.library.sources }).getByRole("button").first().click();
+    const row = page.getByRole("region", { name: copy.xhs.recommendations }).locator('[data-recommendation-id="xhs_rec_window"]');
+    await row.getByRole("checkbox").check();
+    await row.getByRole("button", { name: copy.xhs.evidence }).click();
+    await row.locator("[data-transcription='1']").waitFor();
+    await page.waitForFunction(() => {
+      const image = document.querySelector('[data-recommendation-id="xhs_rec_window"] img');
+      return Boolean(image?.complete && image.naturalWidth > 0);
+    });
+    await page.getByRole("region", { name: copy.xhs.failedImages }).waitFor();
+    await page.getByRole("tab", { name: copy.reader.note }).waitFor();
+  }
   if (scene.open === "drawer") {
     await page.getByRole("button", { name: copy.sidebar.openNavigation }).click();
     await page.getByRole("dialog").waitFor();
@@ -79,6 +94,8 @@ async function landed(page, scene) {
     await page.getByText(copy.thread.noThread).waitFor();
   } else if (scene.name === "library") {
     await page.getByRole("navigation", { name: copy.library.sources }).getByRole("button").nth(2).waitFor();
+  } else if (scene.name === "xhs-note") {
+    await page.getByRole("navigation", { name: copy.library.sources }).getByRole("button", { name: /^本周记忆论文/ }).waitFor();
   } else if (scene.name === "inbox") {
     await page.getByText("https://arxiv.org/abs/2607.07675", { exact: true }).waitFor();
     await page.getByText("Memory drift should be measured before the context is scaled.").waitFor();

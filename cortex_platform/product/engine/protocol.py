@@ -19,12 +19,52 @@ PROTOCOL_VERSION = 1
 
 # The operations the engine boundary exposes. P4.2 wires the non-agentic ingest
 # subset; `radar` and `audit` are named by A3 but are not implemented here.
-OPERATIONS: frozenset[str] = frozenset(
+ARXIV_OPERATIONS: frozenset[str] = frozenset(
     {"ingest_arxiv", "checkpoint", "reconcile_arxiv", "self_check"}
+)
+# ⟦XHS⟧ First-party provider calls. Each is one bounded request (or one short
+# chain, for OCR's fallback and link verification), imports its research
+# profile client inside its handler, never opens `research.db`, and receives
+# only its own credentials (`bindings.OPERATION_SECRET_SCOPES`).
+PROVIDER_OPERATIONS: frozenset[str] = frozenset(
+    {
+        "xhs_list_page",
+        "xhs_note_detail",
+        "xhs_download_image",
+        "xhs_ocr_image",
+        "xhs_identify",
+        "xhs_resolve_link",
+        "blog_fetch",
+    }
+)
+OPERATIONS: frozenset[str] = ARXIV_OPERATIONS | PROVIDER_OPERATIONS
+
+# The asset root each writing provider operation writes under, by root ID. The
+# caller binds that root as the child's only write root; every other provider
+# operation may write nothing outside its own effect directory.
+PROVIDER_WRITE_ROOTS: Mapping[str, str] = {
+    "xhs_download_image": "xhs-notes",
+    "blog_fetch": "blogs",
+}
+
+# What a provider operation may fail with: the XHS task allowlist
+# (`control/xhs_store.py`). The Capture allowlist below does not apply to them.
+PROVIDER_FAILURE_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "auth",
+        "payment",
+        "rate_limited",
+        "transient",
+        "outcome_unknown",
+        "upstream_error",
+        "not_found",
+        "invalid_response",
+        "url_expired",
+    }
 )
 
 # The frozen store allowlist an effect failure has to land in
-# (`control/store.py:151`). Nothing else may cross this boundary.
+# (`control/store.py:161`). Nothing else may cross this boundary.
 FAILURE_CATEGORIES: frozenset[str] = frozenset(
     {
         "adapter_unavailable",

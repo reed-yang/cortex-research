@@ -17,6 +17,7 @@ export const SCENES = Object.freeze([
   { name: "thread-failed", query: "project=ws_mobile&thread=thread_failed", viewports: ["desktop"] },
   { name: "sidebar-archived", query: "project=ws_mobile&thread=thread_mobile", open: "archived", viewports: ["desktop"] },
   { name: "library", query: "project=ws_mobile&view=library", open: "source", viewports: ["desktop"] },
+  { name: "xhs-note", query: "project=ws_mobile&view=library&kind=xhs_note", open: "note", viewports: ["desktop"] },
   { name: "inbox", query: "project=ws_mobile&view=inbox", viewports: ["desktop"] },
   { name: "status", query: "project=ws_mobile&view=status", viewports: ["desktop"] },
   { name: "drawer", query: "project=ws_mobile&thread=thread_mobile", open: "drawer", viewports: ["mobile"] },

@@ -44,7 +44,12 @@ from ..sources import (
     validate_engine_ref,
 )
 from ..sources.adoption import AdoptionEntry, AdoptionManifest
-from ..sources.models import normalize_source_text
+from ..sources.models import (
+    CONTENT_SOURCE_KINDS,
+    content_source_kind_for_authority,
+    normalize_source_text,
+    normalize_xhs_id,
+)
 from ..workflows.models import (
     ArtifactWorkflowRequest,
     ArtifactWorkflowResult,
@@ -60,6 +65,7 @@ from ..workflows.models import (
 )
 from .fragment_store import IdeaFragmentsStore
 from .research_store import ResearchItemsStore
+from .xhs_store import XhsStore
 from .errors import (
     CaptureConflict,
     IdempotencyConflict,
@@ -133,8 +139,12 @@ _HEALTH_SENSITIVE_TERMS = (
     "secret",
     "token",
 )
-_SOURCE_ALIAS_AUTHORITIES = frozenset({"arxiv", "doi", "sha256", "project"})
-_RESEARCH_SCHEDULE_OPERATIONS = frozenset({"capture_drain", "legacy"})
+_SOURCE_ALIAS_AUTHORITIES = frozenset(
+    {"arxiv", "doi", "sha256", "project", "xhs", "url"}
+)
+_RESEARCH_SCHEDULE_OPERATIONS = frozenset(
+    {"capture_drain", "legacy", "xhs_pull", "xhs_drain"}
+)
 _RESEARCH_CADENCE_SOURCES = frozenset({"product", "migrated", "unknown"})
 _RESEARCH_SCHEDULE_OUTCOMES = frozenset({"ran", "skipped", "refused", "failed"})
 _SOURCE_IMPORT_FAILURES = frozenset(
@@ -363,9 +373,9 @@ def _receipt_subject_id(response_column: str) -> str:
     receipt is the whole of what they read. Whether the subject also stops
     being the ENGINE'S is a narrower question: `_MACHINE_RUN_PREDICATE` and
     `_MACHINE_THREAD_PREDICATE` each OR that receipt half with a workflow
-    half -- a run owning a workflow instance (control/store.py:523), a
+    half -- a run owning a workflow instance (control/store.py:533), a
     thread any run of which ever carried one
-    (control/store.py:11317-11319). So a gen-13 carrier that owns its
+    (control/store.py:11380-11382). So a gen-13 carrier that owns its
     workflow still answers "the engine's" at both doors, and only its
     creator changes. "Not the engine's at every door" is the answer for a
     subject whose receipt is its ONLY machine signal: a workflow-less
@@ -383,7 +393,7 @@ def _receipt_subject_id(response_column: str) -> str:
     ⟦batchS ADJ-1⟧ And the write the corruption permits is not only an
     operator's. A capture thread that stops matching
     `_MACHINE_THREAD_PREDICATE` makes a workflow-less carrier run on it
-    match `_CONVERSATION_RUN_PREDICATE` (control/store.py:10931-10937) as soon
+    match `_CONVERSATION_RUN_PREDICATE` (control/store.py:10994-11000) as soon
     as the thread is drivable at all -- an operator message the API stored,
     or a transport binding -- and the turn bridge's start sweep projects
     exactly those runs (transports/bridge.py:2044). So a restarted daemon
@@ -429,22 +439,22 @@ def _receipt_subject_id(response_column: str) -> str:
 
     ⟦batchS ADJ-3⟧ Over SQL, and only there. Three PYTHON readers parse a
     `response_json` column with a bare `json.loads` and carry no guard at
-    all: `_receipt` (control/store.py:12783-12807) over these same
+    all: `_receipt` (control/store.py:12846-12870) over these same
     `idempotency_receipts` rows, `_runtime_event_replay`
-    (control/store.py:11730-11797) over `runtime_event_inbox`, and
-    `_transport_command_row` (control/store.py:14490-14517) over
+    (control/store.py:11793-11860) over `runtime_event_inbox`, and
+    `_transport_command_row` (control/store.py:14587-14614) over
     `transport_command_receipts`. Each raises `json.JSONDecodeError` on a
     corrupt row, and ⟦batchT ADJ-A2⟧ the door that error reaches is not the
     same for all three. `_receipt` sits behind the control API's command
     routes, where `ControlAPI.handle` answers its decode error as 400
-    `invalid_request` (api/app.py:314-315) -- so a replayed command whose
+    `invalid_request` (api/app.py:319-320) -- so a replayed command whose
     own stored receipt is unreadable blames the caller for a row the caller
     did not write. `_runtime_event_replay` never reaches that door:
     `adapter_event_id` is supplied only by the daemon's runtime delivery
     path (orchestration/service.py:733) through `apply_runtime_transition`
-    (control/store.py:5978-6013); every control-API caller leaves it None,
+    (control/store.py:6031-6066); every control-API caller leaves it None,
     and the reader returns at its `adapter_event_id` guard
-    (control/store.py:11739-11740) before it parses anything -- so its
+    (control/store.py:11802-11803) before it parses anything -- so its
     corrupt row fails a daemon-side runtime event, not an operator's
     request. The third is the Telegram adapter's command replay
     (`transports/ports.py:244-255`). Left as they are: each is a single-row
@@ -629,7 +639,9 @@ def _capture_shape(payload: str) -> tuple[str, str]:
     return "url", key
 
 
-class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStore):
+class ControlStore(
+    TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStore, XhsStore
+):
     """Own durable product metadata without calling runtime or domain stores."""
 
     def __init__(
@@ -918,41 +930,82 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStor
             # precedent: only an OPEN capture blocks. A consumed, dismissed
             # or failed row is history, so the same payload may be captured
             # again deliberately.
-            open_row = conn.execute(
-                """SELECT id FROM captures
-                   WHERE capture_key = ?
-                     AND state IN ('pending', 'approved', 'claimed', 'uncertain')
-                   ORDER BY created_at, id LIMIT 1""",
-                (capture_key,),
-            ).fetchone()
-            if open_row is not None:
-                raise CaptureConflict(self._capture(conn, str(open_row["id"])))
-            now = self._now()
-            capture_id = self._id_factory("capture")
-            conn.execute(
-                """INSERT INTO captures
-                   (id, capture_key, payload, kind, note, state, claim_epoch,
-                    known_source_id, revision, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 0, ?, ?)""",
-                (
-                    capture_id,
-                    capture_key,
-                    payload,
-                    kind,
-                    note,
-                    self._known_capture_source(conn, capture_key),
-                    now,
-                    now,
-                ),
+            open_capture = self._open_capture(conn, capture_key)
+            if open_capture is not None:
+                raise CaptureConflict(open_capture)
+            value = self._insert_capture(
+                conn, payload=payload, note=note, kind=kind, capture_key=capture_key
             )
-            # The payload never enters the audit trail: only the shape does.
-            self._audit(
-                conn, "capture", capture_id, "capture.created", {"kind": kind}
-            )
-            value = self._capture(conn, capture_id)
             return self._save_receipt(
                 conn, actor_id, operation, idempotency_key, request, value, 201
             )
+
+    def _stage_capture(
+        self, conn: sqlite3.Connection, *, payload: str, note: str
+    ) -> tuple[JsonObject, bool]:
+        """Reuse the open capture of this payload's key, or insert a pending one.
+
+        For a command that stages a capture inside its own transaction and
+        receipt, such as an XHS recommendation import. `create_capture`
+        refuses an open capture instead. Returns the capture and whether it
+        was reused.
+        """
+
+        self._required_text(payload, "payload", maximum=_CAPTURE_PAYLOAD_MAX)
+        note = self._capture_note(note)
+        kind, capture_key = _capture_shape(payload.strip())
+        open_capture = self._open_capture(conn, capture_key)
+        if open_capture is not None:
+            return open_capture, True
+        return (
+            self._insert_capture(
+                conn, payload=payload, note=note, kind=kind, capture_key=capture_key
+            ),
+            False,
+        )
+
+    def _open_capture(
+        self, conn: sqlite3.Connection, capture_key: str
+    ) -> JsonObject | None:
+        row = conn.execute(
+            """SELECT id FROM captures
+               WHERE capture_key = ?
+                 AND state IN ('pending', 'approved', 'claimed', 'uncertain')
+               ORDER BY created_at, id LIMIT 1""",
+            (capture_key,),
+        ).fetchone()
+        return None if row is None else self._capture(conn, str(row["id"]))
+
+    def _insert_capture(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        payload: str,
+        note: str,
+        kind: str,
+        capture_key: str,
+    ) -> JsonObject:
+        now = self._now()
+        capture_id = self._id_factory("capture")
+        conn.execute(
+            """INSERT INTO captures
+               (id, capture_key, payload, kind, note, state, claim_epoch,
+                known_source_id, revision, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 0, ?, ?)""",
+            (
+                capture_id,
+                capture_key,
+                payload,
+                kind,
+                note,
+                self._known_capture_source(conn, capture_key),
+                now,
+                now,
+            ),
+        )
+        # The payload never enters the audit trail: only the shape does.
+        self._audit(conn, "capture", capture_id, "capture.created", {"kind": kind})
+        return self._capture(conn, capture_id)
 
     def capture_blocked_by(self, capture_ids: Sequence[str]) -> dict[str, str]:
         """What each capture's newest uncertain audit row said was blocking it.
@@ -8297,6 +8350,12 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStor
             official_title, "official_title", maximum=2_000
         )
         engine_ref = self._validate_engine_ref(engine_ref)
+        self._validate_source_kind_identity(
+            authority=authority,
+            authority_id=authority_id,
+            source_kind=source_kind,
+            engine_ref=engine_ref,
+        )
         normalized_aliases = self._normalize_source_aliases(aliases)
         request = {
             "authority": authority,
@@ -9291,10 +9350,14 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStor
         with self._connect() as conn:
             return self._source(conn, source_id)
 
-    def list_sources(self) -> list[JsonObject]:
+    def list_sources(self, *, kind: str | None = None) -> list[JsonObject]:
+        """Every source, or only those of one `source_kind`."""
+
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id FROM sources ORDER BY canonical_id, id"
+                """SELECT id FROM sources WHERE (? IS NULL OR source_kind = ?)
+                   ORDER BY canonical_id, id""",
+                (kind, kind),
             ).fetchall()
             return [self._source(conn, str(row["id"])) for row in rows]
 
@@ -13930,6 +13993,12 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStor
         authority, authority_id, canonical_id = self._canonical_source_identity(
             authority, authority_id
         )
+        self._validate_source_kind_identity(
+            authority=authority,
+            authority_id=authority_id,
+            source_kind=source_kind,
+            engine_ref=engine_ref,
+        )
         source_id = self._id_factory("source")
         conn.execute(
             """INSERT INTO sources
@@ -14186,7 +14255,14 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStor
                     normalized_value = canonicalize_doi(value).authority_id
                 except ValueError as exc:
                     raise ValueError("source alias value is invalid") from exc
+            elif authority == "xhs":
+                try:
+                    normalized_value = normalize_xhs_id(value)
+                except ValueError as exc:
+                    raise ValueError("source alias value is invalid") from exc
             else:
+                # `sha256`, and `url`, whose value is the SHA-256 of the
+                # normalized URL: the URL itself never becomes an alias.
                 if re.fullmatch(r"[0-9a-f]{64}", value, re.IGNORECASE) is None:
                     raise ValueError("source alias value is invalid")
                 normalized_value = value.lower()
@@ -14221,10 +14297,14 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStor
             normalized_id = canonicalize_arxiv_id(authority_id).authority_id
         elif normalized_authority == "doi":
             normalized_id = canonicalize_doi(authority_id).authority_id
-        elif normalized_authority == "sha256":
+        elif normalized_authority in {"sha256", "url"}:
+            # A `url` identity is the SHA-256 of its normalized URL
+            # (`sources.identity.blog_url_identity`), never the URL.
             if re.fullmatch(r"[0-9a-f]{64}", authority_id, re.IGNORECASE) is None:
                 raise ValueError("SHA-256 authority_id is invalid")
             normalized_id = authority_id.lower()
+        elif normalized_authority == "xhs":
+            normalized_id = normalize_xhs_id(authority_id, "XHS authority_id")
         else:
             raise ValueError("source authority is not supported")
         return (
@@ -14232,6 +14312,23 @@ class ControlStore(TransportDeliveryStore, ResearchItemsStore, IdeaFragmentsStor
             normalized_id,
             f"{normalized_authority}:{normalized_id}",
         )
+
+    @staticmethod
+    def _validate_source_kind_identity(
+        *, authority: str, authority_id: str, source_kind: str, engine_ref: str | None
+    ) -> None:
+        """A non-paper kind and its authority come together, or not at all.
+
+        Its engine_ref is derived from its identity in its own namespace, so it
+        can never be mistaken for a paper directory (`paper:`).
+        """
+
+        kind = CONTENT_SOURCE_KINDS.get(source_kind)
+        expected = content_source_kind_for_authority(authority)
+        if kind is not expected:
+            raise ValueError("source kind does not match its authority")
+        if kind is not None and engine_ref != kind.engine_ref(authority_id):
+            raise ValueError("source engine_ref does not match its identity")
 
     @staticmethod
     def _normalize_source_authority(value: Any) -> str:

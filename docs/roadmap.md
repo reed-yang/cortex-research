@@ -24,6 +24,25 @@ acknowledgment, preserved human pauses/terminal states, artifact-write failure,
 restart reconciliation, and one isolated real-state copy followed by an explicit
 installed round. A model answer alone does not close this milestone.
 
+## XHS notes and blogs
+
+A bounded acquisition milestone, implemented on `feat/xhs-sources` and not yet
+in a release: follow chosen XHS bloggers, save each image note with verbatim
+image OCR, identify the papers and blogs it recommends, and import them on the
+operator's choice (papers through the existing Capture flow). It is disabled
+by default, capped per provider per day, and adds no research evidence. See
+the [plan](plans/xhs-sources.md) and the [runbook](runbooks/xhs.md).
+
+Before it counts as accepted: a command that registers its two asset roots,
+operator-approved live provider acceptance (keys stored as references, a small
+test set with a measured identification match rate, then an approved backfill
+budget), and a release composition that includes Control schema 21.
+
+Deferred, each its own decision: notes and blogs in search and `/research`
+evidence (the stored blogger role takes effect only with a new research
+context packet schema), an unread marker for new notes, reclassifying the
+legacy web items adopted as papers, and downloading images inside blog pages.
+
 ## Independent work
 
 - Hermes update candidate: reproducible qualification and upgrade/rollback/native

@@ -15,6 +15,7 @@ from cortex_platform.product.engine.port import ProductResearchEngine
 from cortex_platform.product.engine.schedules import (
     CAPTURE_DRAIN_JOB,
     LEGACY_JOBS,
+    XHS_JOBS,
     ResearchScheduleTick,
     read_live_jobs,
     seed_schedules,
@@ -124,9 +125,10 @@ def test_exactly_one_job_is_enabled(store: ControlStore, tmp_path: Path) -> None
     schedules = store.list_research_schedules()
     enabled = [item for item in schedules if item["enabled"]]
     assert [item["job_key"] for item in enabled] == [CAPTURE_DRAIN_JOB]
-    assert len(schedules) == len(LEGACY_JOBS) + 1
+    assert len(schedules) == len(LEGACY_JOBS) + len(XHS_JOBS) + 1
+    xhs = {job_key: operation for job_key, operation, _ in XHS_JOBS}
     assert all(
-        item["operation"] == "legacy"
+        item["operation"] == xhs.get(item["job_key"], "legacy")
         for item in schedules
         if item["job_key"] != CAPTURE_DRAIN_JOB
     )

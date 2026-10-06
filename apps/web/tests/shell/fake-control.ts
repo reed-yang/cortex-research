@@ -1,7 +1,14 @@
 import { CortexControlClient } from "../../app/control/client";
+import { sourceLinkEntry, tinyPng, xhsNoteProjection, xhsStatusProjection } from "./xhs-fixtures";
 
 export const now = "2026-09-06T12:00:00Z";
 type Row = Record<string, unknown>;
+
+// The note header Control answers a command or a 409 with.
+const NOTE_HEADER_FIELDS = ["source_id", "note_id", "title", "state", "last_error", "content_version", "revision"];
+function noteHeader(note: Row): Row {
+  return Object.fromEntries(NOTE_HEADER_FIELDS.map((name) => [name, note[name]]));
+}
 
 // A plain in-memory Storage for a test that needs the browser to remember
 // something. Newer Node releases put their own unconfigured `localStorage` in
@@ -35,6 +42,11 @@ export class FakeControl {
   // Figures a source's stored copy holds, by `${source_id}:${path}`; a path
   // missing here is the route's 404, which is how a missing figure looks.
   assets = new Map<string, { type: string; bytes: Uint8Array<ArrayBuffer> }>();
+  // XHS: each saved note's projection by its source id, the links each source
+  // has (none unless a test adds them), and the plugin status, off as shipped.
+  xhsNotes: Record<string, Row> = {};
+  sourceLinks: Record<string, { recommended_in: Row[]; recommends: Row[] }> = {};
+  xhsStatus: Row = xhsStatusProjection();
   research: Record<string, Row> = {};
   // R1c: research items hold their detail fields here; the list route answers
   // with the catalog fields only, exactly as the contract says.
@@ -119,6 +131,32 @@ export class FakeControl {
   }
   sourceAsset(source_id: string, path: string, type: string, bytes: Uint8Array<ArrayBuffer>): void {
     this.assets.set(`${source_id}:${path}`, { type, bytes });
+  }
+  // A blog source, identified the way Control identifies one: by the SHA-256
+  // of its normalized URL. The digest here is invented.
+  blog(id: string, title: string, extra: Row = {}): Row {
+    const digest = (id.replace(/[^0-9a-f]/g, "") + "b".repeat(64)).slice(0, 64);
+    return this.source(id, `url:${digest}`, title, { authority: "url", source_kind: "blog", ...extra });
+  }
+  // A saved XHS note: its source row and its note projection, with one tiny
+  // generated image under the version's assets for every downloaded one.
+  xhsNote(id: string, title: string, extra: Row = {}): Row {
+    const note = xhsNoteProjection(id, { title, ...extra });
+    this.source(id, `xhs:${String(note.note_id)}`, title, { authority: "xhs", source_kind: "xhs_note" });
+    for (const image of note.images as Row[]) {
+      if (image.asset_path) this.sourceAsset(id, String(image.asset_path), "image/png", tinyPng());
+    }
+    this.xhsNotes[id] = note;
+    return note;
+  }
+  // One recommendation link from a note to a source, seen from both ends.
+  link(noteId: string, toId: string, imageOrdinal: number | null = 1): void {
+    const note = this.sources.find((s) => s.id === noteId)!;
+    const to = this.sources.find((s) => s.id === toId)!;
+    const recommendation = `xhs_rec_${noteId}_${toId}`;
+    const entry = (source: Row) => sourceLinkEntry(String(source.id), String(source.source_kind), String(source.official_title), { image_ordinal: imageOrdinal, recommendation_id: recommendation });
+    (this.sourceLinks[toId] ??= { recommended_in: [], recommends: [] }).recommended_in.push(entry(note));
+    (this.sourceLinks[noteId] ??= { recommended_in: [], recommends: [] }).recommends.push(entry(to));
   }
   sourceGate(id: string, run: Row, decision: Row | null, extra: Row = {}): Row {
     return { id, run_id: run.id, attempt_id: run.active_attempt_id, state: "pending", revision: 0, created_at: now, updated_at: now, title_observation: null, locator_observation: null, candidates: [{ id: `${id}_candidate`, claim_kind: "title", canonical_id: "arxiv:2606.04527", official_title: "Echo-Infinity", source_kind: "paper", version: null }], decision, ...extra };
@@ -269,7 +307,27 @@ export class FakeControl {
     if (path === "fragments") return list([...this.fragments].reverse());
     m = path.match(/^fragments\/([^/]+)$/);
     if (m) { const f = this.fragments.find((x) => x.id === m![1]); return f ? this.json(f) : this.problem(404, "not_found"); }
-    if (path === "sources") return list(this.sources);
+    if (path === "sources") {
+      const kind = params.get("kind");
+      return list(this.sources.filter((s) => !kind || s.source_kind === kind));
+    }
+    if (path === "xhs/status") return this.json(this.xhsStatus);
+    m = path.match(/^sources\/([^/]+)\/note$/);
+    if (m) {
+      const note = this.xhsNotes[m[1]];
+      if (!note) return this.problem(404, "not_found");
+      // A recommendation's Capture state is read from the Capture, as Control does.
+      for (const recommendation of note.recommendations as Row[]) {
+        const capture = this.captures.find((c) => c.id === recommendation.capture_id);
+        if (capture) Object.assign(recommendation, { capture_state: capture.state, capture_revision: capture.revision });
+      }
+      return this.json(note);
+    }
+    m = path.match(/^sources\/([^/]+)\/links$/);
+    if (m) {
+      if (!this.sources.some((s) => s.id === m![1])) return this.problem(404, "not_found");
+      return this.json(this.sourceLinks[m[1]] ?? { recommended_in: [], recommends: [] });
+    }
     // Search is a sibling route of the record, so it is answered before the
     // `sources/{id}` pattern can claim the word "search" as an identifier.
     if (path === "sources/search") {
@@ -371,6 +429,64 @@ export class FakeControl {
     if (path === "captures") { const c = { id: `capture_${this.captures.length + 1}`, capture_key: String(body.payload), payload: String(body.payload), kind: /^https?:/.test(String(body.payload)) ? "url" : "text", note: String(body.note ?? ""), state: "pending", known_source_id: null, consumed_source_ids: null, failure_category: null, blocked_by: null, available_source_id: null, payload_note: null, revision: 0, created_at: now, updated_at: now }; this.captures.push(c); return this.json(c, 201); }
     m = path.match(/^captures\/([^/]+)\/(approve|dismiss|reopen)$/);
     if (m) { const c = this.captures.find((x) => x.id === m![1])!; c.state = { approve: "approved", dismiss: "dismissed", reopen: "pending" }[m[2]]!; c.revision = (c.revision as number) + 1; return this.json(c); }
+    m = path.match(/^sources\/([^/]+)\/recommendations\/import$/);
+    if (m) return this.importRecommendations(m[1], body);
+    m = path.match(/^sources\/([^/]+)\/recommendations\/([^/]+)\/link$/);
+    if (m) {
+      const recommendation = ((this.xhsNotes[m[1]]?.recommendations as Row[] | undefined) ?? []).find((r) => r.id === m![2]);
+      if (!recommendation) return this.problem(404, "not_found");
+      if (body.expected_revision !== recommendation.revision) return this.problem(409, "revision_conflict", recommendation);
+      Object.assign(recommendation, { url: body.url, url_state: "operator_set", url_checked_title: null, revision: (recommendation.revision as number) + 1, updated_at: now });
+      // As in Control, a changed link moves the note's revision.
+      const note = this.xhsNotes[m[1]]!;
+      note.revision = (note.revision as number) + 1;
+      return this.json({ recommendation });
+    }
+    m = path.match(/^sources\/([^/]+)\/images\/([0-9]+)\/retry$/);
+    if (m) {
+      const note = this.xhsNotes[m[1]];
+      const image = ((note?.images as Row[] | undefined) ?? []).find((i) => i.ordinal === Number(m![2]));
+      if (!note || !image) return this.problem(404, "not_found");
+      if (body.expected_revision !== note.revision) return this.problem(409, "revision_conflict", noteHeader(note));
+      if (image.download_state === "failed") Object.assign(image, { download_state: "pending", download_error: null });
+      else if (image.ocr_state === "failed") Object.assign(image, { ocr_state: "pending", ocr_error: null });
+      else return this.problem(409, "invalid_transition");
+      Object.assign(note, { state: "detail_ok", revision: (note.revision as number) + 1 });
+      return this.json({ note: noteHeader(note), image });
+    }
     return this.problem(404, "not_found");
+  }
+
+  // Each recommendation gets its own disposition, as Control's import gives:
+  // a paper is staged as a pending Capture (an open one of the same payload is
+  // reused), a blog with a link is queued, and anything else is refused.
+  private importRecommendations(noteSourceId: string, body: Row): Response {
+    const note = this.xhsNotes[noteSourceId];
+    if (!note) return this.problem(404, "not_found");
+    if (body.expected_revision !== note.revision) return this.problem(409, "revision_conflict", noteHeader(note));
+    const items = (body.recommendation_ids as string[]).map((id) => {
+      const recommendation = (note.recommendations as Row[]).find((r) => r.id === id) ?? null;
+      const item = (disposition: string, reason: string | null, capture: Row | null = null) => ({
+        recommendation_id: id, disposition, reason, capture_id: capture?.id ?? null,
+        capture_revision: capture?.revision ?? null, capture_state: capture?.state ?? null, recommendation,
+      });
+      if (!recommendation) return item("refused", "not_found");
+      if (recommendation.import_state !== "none" && recommendation.import_state !== "failed") return item("refused", "already_imported");
+      if (recommendation.kind === "paper") {
+        if (!recommendation.arxiv_id) return item("refused", "no_arxiv_id");
+        const payload = `https://arxiv.org/abs/${String(recommendation.arxiv_id)}`;
+        const open = this.captures.find((c) => c.payload === payload && ["pending", "approved", "claimed"].includes(String(c.state)));
+        const capture = open ?? this.capture(`capture_${this.captures.length + 1}`, payload, { note: `Recommended in XHS note ${String(note.title)} · image ${String(recommendation.image_ordinal)}` });
+        Object.assign(recommendation, { capture_id: capture.id, capture_state: capture.state, capture_revision: capture.revision, import_state: "staged", revision: (recommendation.revision as number) + 1 });
+        return item(open ? "capture_reused" : "capture_staged", null, capture);
+      }
+      if (recommendation.kind === "blog") {
+        if (!recommendation.url) return item("refused", "no_url");
+        Object.assign(recommendation, { import_state: "importing", revision: (recommendation.revision as number) + 1 });
+        return item("blog_import_queued", null);
+      }
+      return item("refused", "not_importable");
+    });
+    return this.json({ note_source_id: noteSourceId, items });
   }
 }

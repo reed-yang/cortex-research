@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Mapping
 
 from cortex_platform.product.paths import PathRegistry
@@ -193,6 +194,67 @@ ENGINE_BINDINGS: Mapping[str, Binding] = {
     "OCR_GLOBAL_SLOTS": Binding("OCR_GLOBAL_SLOTS", DENIED, None, "No in-package reader; denied so a stray value cannot acquire meaning later."),
     "OCR_SLOT_DIR": Binding("OCR_SLOT_DIR", DENIED, None, "The slot semaphore left with the excluded ingest_slots module; no retained reader."),
 }
+
+
+# ⟦XHS⟧ Credentials of the first-party provider operations, by alias. They are
+# not engine ambient inputs: no module of the retained engine package reads
+# them, so they stay out of `ENGINE_BINDINGS` and its AST scan. The product's
+# own child handler for the one operation that needs a credential reads its
+# variable and hands the value to the provider client as an argument.
+PROVIDER_SECRET_BINDINGS: Mapping[str, str] = MappingProxyType(
+    {
+        "tikhub": "CORTEX_TIKHUB_API_KEY",
+        "sub2api-gpt": "CORTEX_GPT_API_KEY",
+        "jina": "CORTEX_JINA_API_KEY",
+    }
+)
+if set(PROVIDER_SECRET_BINDINGS.values()) & set(ENGINE_BINDINGS) or set(
+    PROVIDER_SECRET_BINDINGS
+) & {binding.secret_alias for binding in ENGINE_BINDINGS.values()}:
+    raise RuntimeError("provider secret bindings overlap the engine table")
+
+
+@dataclass(frozen=True)
+class SecretScope:
+    """The credentials one child operation may receive, and no others.
+
+    A configured alias in `aliases` that fails to resolve refuses the effect;
+    one in `optional` is omitted instead, and the operation runs without it.
+    """
+
+    aliases: frozenset[str]
+    optional: frozenset[str] = frozenset()
+
+
+_ENGINE_SECRET_ALIASES = frozenset(
+    binding.secret_alias
+    for binding in ENGINE_BINDINGS.values()
+    if binding.secret_alias is not None
+)
+# The arXiv operations keep every engine credential they always had. Each XHS
+# operation gets only its own provider's, so a missing or unreadable XHS
+# credential is never resolved for, and never blocks, an arXiv ingest.
+OPERATION_SECRET_SCOPES: Mapping[str, SecretScope] = MappingProxyType(
+    {
+        "ingest_arxiv": SecretScope(_ENGINE_SECRET_ALIASES),
+        "checkpoint": SecretScope(_ENGINE_SECRET_ALIASES),
+        "reconcile_arxiv": SecretScope(_ENGINE_SECRET_ALIASES),
+        "self_check": SecretScope(_ENGINE_SECRET_ALIASES),
+        "xhs_list_page": SecretScope(frozenset({"tikhub"})),
+        "xhs_note_detail": SecretScope(frozenset({"tikhub"})),
+        "xhs_download_image": SecretScope(frozenset()),
+        "xhs_ocr_image": SecretScope(frozenset({"novita", "glm", "glm-app-id"})),
+        "xhs_identify": SecretScope(frozenset({"sub2api-gpt"})),
+        "xhs_resolve_link": SecretScope(frozenset({"sub2api-gpt"})),
+        "blog_fetch": SecretScope(frozenset(), optional=frozenset({"jina"})),
+    }
+)
+
+
+def operation_secret_scope(operation: str) -> SecretScope:
+    """An operation the table does not name receives no credential at all."""
+
+    return OPERATION_SECRET_SCOPES.get(operation, SecretScope(frozenset()))
 
 
 # One value per BOUND literal slot, each the engine's own shipped default except
@@ -370,6 +432,16 @@ def engine_secret_aliases() -> Mapping[str, str]:
     }
 
 
+def effect_secret_aliases() -> Mapping[str, str]:
+    """Every alias that can reach some effect child, and its variable.
+
+    The engine bindings plus the first-party provider credentials. Which child
+    receives which is `OPERATION_SECRET_SCOPES`.
+    """
+
+    return {**engine_secret_aliases(), **PROVIDER_SECRET_BINDINGS}
+
+
 def engine_capability_slots() -> Mapping[str, str]:
     """Map each capability slot (`ocr.entry`) onto the variable it lands in."""
 
@@ -403,7 +475,7 @@ def research_effect_environment(
     if not effect_marker or not effect_marker.isascii() or not effect_marker.isalnum():
         raise ValueError("effect_marker must be a non-empty alphanumeric token")
     resolved = dict(secrets or {})
-    aliases = engine_secret_aliases()
+    aliases = effect_secret_aliases()
     unknown = set(resolved) - set(aliases)
     if unknown:
         raise ValueError(f"secrets carry unbound aliases: {sorted(unknown)}")
@@ -450,6 +522,10 @@ def research_effect_environment(
                 environment[name] = value
         else:  # pragma: no cover - Binding validates the source grammar
             raise ValueError(f"{name}: unsupported binding source")
+    for alias, name in PROVIDER_SECRET_BINDINGS.items():
+        secret = resolved.get(alias)
+        if secret is not None:
+            environment[name] = secret.reveal()
 
     # HOME is BOUND and may never be DENIED (AMD-9): without it `Path.home()`
     # falls through to `pwd.getpwuid`, which answers with the operator's real

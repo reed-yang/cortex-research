@@ -23,7 +23,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Mapping
 
-from .protocol import EffectRequest, write_result
+from .protocol import PROVIDER_OPERATIONS, EffectRequest, write_result
 from . import digests, survivors
 
 # Audit events that mean "a path is about to change". `open` is filtered by its
@@ -240,6 +240,326 @@ def _self_check(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {"engine": engine, "paper_dirs": []}
 
 
+# -- ⟦XHS⟧ first-party provider operations ------------------------------------
+#
+# Each handler imports its research-profile client lazily, reads only the
+# credential variables its operation is bound (`bindings.py`), and passes the
+# value to the client as an argument: no client module reads the environment.
+# A provider failure leaves as its own category; nothing here retries.
+
+
+def _payload_text(
+    payload: Mapping[str, Any], name: str, *, maximum: int = 2_000, blank: bool = False
+) -> str:
+    value = payload.get(name, "" if blank else None)
+    if not isinstance(value, str) or len(value) > maximum or (not blank and not value):
+        raise _Refusal("invalid_response", f"invalid request: {name}")
+    return value
+
+
+def _credential(alias: str) -> str:
+    """The value bound for one alias in this child, or `""` when unbound."""
+
+    from .bindings import PROVIDER_SECRET_BINDINGS, engine_secret_aliases
+
+    name = {**engine_secret_aliases(), **PROVIDER_SECRET_BINDINGS}[alias]
+    return os.environ.get(name, "")
+
+
+def _provider_call(function, *args, **kwargs):
+    """Run one client call, turning its typed failure into a refusal."""
+
+    from cortex_research.provider_http import ProviderError
+
+    try:
+        return function(*args, **kwargs)
+    except ProviderError as error:
+        raise _Refusal(error.category, error.message) from error
+
+
+def _inside(path: str, roots: tuple[Path, ...]) -> Path:
+    """A directory strictly below one bound write root, or a refusal."""
+
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        raise _Refusal("invalid_response", "invalid request: path is not absolute")
+    resolved = candidate.resolve(strict=False)
+    for root in roots:
+        bound = Path(root).resolve(strict=False)
+        if resolved != bound and resolved.is_relative_to(bound):
+            return resolved
+    raise _Refusal("invalid_response", "invalid request: path is outside the write roots")
+
+
+def _gpt_settings(payload: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "base": _payload_text(payload, "gpt_base", blank=True),
+        "model": _payload_text(payload, "gpt_model", maximum=200),
+        "effort": _payload_text(payload, "gpt_effort", maximum=40),
+        "api_key": _credential("sub2api-gpt"),
+    }
+
+
+def _xhs_list_page(payload: Mapping[str, Any]) -> dict[str, Any]:
+    from cortex_research import xhs_client
+
+    user_id = _payload_text(payload, "user_id", maximum=24)
+    cursor = _payload_text(payload, "cursor", maximum=400, blank=True)
+    try:
+        page = _provider_call(
+            xhs_client.list_user_notes,
+            user_id,
+            cursor,
+            api_key=_credential("tikhub"),
+            base=_payload_text(payload, "tikhub_base"),
+        )
+    except ValueError as error:
+        raise _Refusal("invalid_response", f"invalid request: {error}") from error
+    return {
+        "engine": {
+            "user_id": user_id,
+            "cursor": cursor,
+            "has_more": page.has_more,
+            "next_cursor": page.next_cursor,
+            "notes": [note.to_dict() for note in page.notes],
+            "raw": page.raw,
+        },
+        "paper_dirs": [],
+    }
+
+
+def _xhs_note_detail(payload: Mapping[str, Any]) -> dict[str, Any]:
+    from cortex_research import xhs_client
+
+    note_id = _payload_text(payload, "note_id", maximum=24)
+    try:
+        detail = _provider_call(
+            xhs_client.note_detail,
+            note_id,
+            api_key=_credential("tikhub"),
+            base=_payload_text(payload, "tikhub_base"),
+        )
+    except ValueError as error:
+        raise _Refusal("invalid_response", f"invalid request: {error}") from error
+    return {"engine": {"note": detail.to_dict(), "raw": detail.raw}, "paper_dirs": []}
+
+
+def _xhs_download_image(
+    payload: Mapping[str, Any], write_roots: tuple[Path, ...]
+) -> dict[str, Any]:
+    from cortex_research import xhs_client
+
+    staging = _inside(_payload_text(payload, "staging_dir", maximum=4_000), write_roots)
+    image = _provider_call(
+        xhs_client.download_image, _payload_text(payload, "url", maximum=8_000), staging
+    )
+    described = image.to_dict()
+    described["name"] = image.path.name
+    del described["path"]
+    return {
+        "engine": {
+            "note_id": payload.get("note_id"),
+            "ordinal": payload.get("ordinal"),
+            "image": described,
+        },
+        "paper_dirs": [],
+    }
+
+
+def _xhs_ocr_image(payload: Mapping[str, Any]) -> dict[str, Any]:
+    import hashlib
+
+    from cortex_research import image_ocr, xhs_client
+
+    path = Path(_payload_text(payload, "image_path", maximum=4_000))
+    expected = _payload_text(payload, "sha256", maximum=64)
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise _Refusal("invalid_response", "invalid request: image is unreadable") from error
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise _Refusal("invalid_response", "invalid request: image bytes changed")
+    media_type = _provider_call(xhs_client.sniff_image, data)[0]
+    overrides = {
+        name: _payload_text(payload, name)
+        for name in ("novita_base", "glm_url")
+        if payload.get(name)
+    }
+    result = _provider_call(
+        image_ocr.ocr_image,
+        data,
+        media_type,
+        novita_key=_credential("novita") or None,
+        glm_app_id=_credential("glm-app-id") or None,
+        glm_key=_credential("glm") or None,
+        **overrides,
+    )
+    return {
+        "engine": {
+            "sha256": expected,
+            "engine": result.engine,
+            "markdown": result.markdown,
+            "text_sha256": hashlib.sha256(result.markdown.encode("utf-8")).hexdigest(),
+            "flags": list(result.flags),
+            "finish_reason": result.finish_reason,
+            "usage": dict(result.usage) if result.usage else None,
+            "attempts": [attempt.to_dict() for attempt in result.attempts],
+            "raw": dict(result.raw),
+        },
+        "paper_dirs": [],
+    }
+
+
+def _transcriptions(payload: Mapping[str, Any]) -> list[tuple[int, str]]:
+    entries = payload.get("transcriptions")
+    if not isinstance(entries, list):
+        raise _Refusal("invalid_response", "invalid request: transcriptions")
+    pairs: list[tuple[int, str]] = []
+    for entry in entries:
+        image = entry.get("image") if isinstance(entry, dict) else None
+        text = entry.get("text") if isinstance(entry, dict) else None
+        if isinstance(image, bool) or not isinstance(image, int) or not isinstance(text, str):
+            raise _Refusal("invalid_response", "invalid request: transcriptions")
+        pairs.append((image, text))
+    return pairs
+
+
+def _xhs_identify(payload: Mapping[str, Any]) -> dict[str, Any]:
+    from cortex_research import responses_client
+
+    from cortex_platform.product.xhs import identify
+
+    caption = _payload_text(payload, "caption", maximum=20_000, blank=True)
+    transcriptions = _transcriptions(payload)
+    try:
+        text = identify.build_identify_input(caption, transcriptions)
+        digest = identify.input_sha256(caption, transcriptions)
+    except ValueError as error:
+        raise _Refusal("invalid_response", f"invalid request: {error}") from error
+    answer = _provider_call(
+        responses_client.create_response,
+        text,
+        instructions=identify.IDENTIFY_INSTRUCTIONS,
+        **_gpt_settings(payload),
+    )
+    try:
+        model_items = identify.parse_model_items(answer.text)
+    except identify.IdentifyAnswerError as error:
+        # Never an empty list: an answer that is not the asked-for JSON fails.
+        raise _Refusal("invalid_response", f"responses: {error}") from error
+    outcome = identify.identify(caption, transcriptions, model_items)
+    return {
+        "engine": {
+            "prompt_version": identify.PROMPT_VERSION,
+            "input_sha256": digest,
+            "response_id": answer.response_id,
+            "model": answer.model,
+            "usage": dict(answer.usage) if answer.usage else None,
+            "model_items": model_items,
+            "items": [dict(item) for item in outcome.items],
+            "dropped": outcome.dropped,
+            "rule_items": outcome.rule_items,
+        },
+        "paper_dirs": [],
+    }
+
+
+def _xhs_resolve_link(payload: Mapping[str, Any]) -> dict[str, Any]:
+    from cortex_research import blog_fetch, responses_client
+    from cortex_research.provider_http import PolicyRefusal, ProviderError
+
+    from cortex_platform.product.xhs import identify
+
+    title = _payload_text(payload, "title", maximum=1_000)
+    answer = _provider_call(
+        responses_client.create_response,
+        identify.build_link_input(title),
+        instructions=identify.LINK_INSTRUCTIONS,
+        tools=[{"type": "web_search"}],
+        **_gpt_settings(payload),
+    )
+    try:
+        url, page_title = identify.parse_link_answer(answer.text)
+    except identify.IdentifyAnswerError as error:
+        raise _Refusal("invalid_response", f"responses: {error}") from error
+    engine: dict[str, Any] = {
+        "prompt_version": identify.LINK_PROMPT_VERSION,
+        "response_id": answer.response_id,
+        "usage": dict(answer.usage) if answer.usage else None,
+        "url": url,
+        "page_title": page_title,
+        "url_state": "not_found",
+        "final_url": None,
+        "checked_title": None,
+        "verification_failure": None,
+    }
+    if url is None:
+        return {"engine": engine, "paper_dirs": []}
+    try:
+        final_url, fetched_title, og_title = blog_fetch.fetch_title(url)
+    except PolicyRefusal as error:
+        # A suggested link the fetch policy refuses is not shown at all.
+        engine.update(url=None, verification_failure=error.to_dict())
+        return {"engine": engine, "paper_dirs": []}
+    except ProviderError as error:
+        engine.update(url_state="unverified", verification_failure=error.to_dict())
+        return {"engine": engine, "paper_dirs": []}
+    matched = identify.title_matches(title, (fetched_title, og_title))
+    engine.update(
+        url_state="auto_matched" if matched else "unverified",
+        final_url=final_url,
+        checked_title=og_title or fetched_title,
+    )
+    return {"engine": engine, "paper_dirs": []}
+
+
+def _write_file(path: Path, data: bytes) -> dict[str, Any]:
+    import hashlib
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".partial")
+    temporary.write_bytes(data)
+    temporary.replace(path)
+    return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+
+
+def _blog_fetch(payload: Mapping[str, Any], write_roots: tuple[Path, ...]) -> dict[str, Any]:
+    from cortex_research import blog_fetch
+
+    from cortex_platform.product.sources.identity import blog_url_identity
+
+    staging = _inside(_payload_text(payload, "staging_dir", maximum=4_000), write_roots)
+    try:
+        normalized, authority_id = blog_url_identity(_payload_text(payload, "url"))
+    except ValueError as error:
+        raise _Refusal("not_found", f"blog: refused: {error}") from error
+    options: dict[str, Any] = {"jina_key": _credential("jina") or None}
+    if payload.get("jina_base"):
+        options["jina_base"] = _payload_text(payload, "jina_base")
+    article = _provider_call(blog_fetch.fetch_blog, normalized, **options)
+    files = {
+        "article.md": _write_file(
+            staging / "article.md", blog_fetch.article_markdown(article).encode("utf-8")
+        )
+    }
+    # Raw HTML only when the origin page was really fetched.
+    if article.page_html is not None:
+        files["raw/page.html"] = _write_file(staging / "raw" / "page.html", article.page_html)
+    if article.jina_text is not None:
+        files["raw/jina.md"] = _write_file(
+            staging / "raw" / "jina.md", article.jina_text.encode("utf-8")
+        )
+    return {
+        "engine": {
+            "normalized_url": normalized,
+            "authority_id": authority_id,
+            "metadata": article.metadata(),
+            "files": files,
+        },
+        "paper_dirs": [],
+    }
+
+
 class _Refusal(Exception):
     def __init__(self, category: str, message: str) -> None:
         super().__init__(message)
@@ -247,11 +567,24 @@ class _Refusal(Exception):
         self.message = message
 
 
+def _write_roots(request: EffectRequest) -> tuple[Path, ...]:
+    return tuple(Path(root) for root in request.write_roots)
+
+
 _HANDLERS = {
     "ingest_arxiv": lambda request: _ingest_arxiv(request.payload, request.capabilities),
     "reconcile_arxiv": lambda request: _reconcile_arxiv(request.payload),
     "self_check": lambda request: _self_check(request.payload),
     "checkpoint": lambda request: {"engine": {}, "paper_dirs": []},
+    "xhs_list_page": lambda request: _xhs_list_page(request.payload),
+    "xhs_note_detail": lambda request: _xhs_note_detail(request.payload),
+    "xhs_download_image": lambda request: _xhs_download_image(
+        request.payload, _write_roots(request)
+    ),
+    "xhs_ocr_image": lambda request: _xhs_ocr_image(request.payload),
+    "xhs_identify": lambda request: _xhs_identify(request.payload),
+    "xhs_resolve_link": lambda request: _xhs_resolve_link(request.payload),
+    "blog_fetch": lambda request: _blog_fetch(request.payload, _write_roots(request)),
 }
 
 
@@ -285,13 +618,21 @@ def run(request: EffectRequest) -> dict[str, Any]:
     except _Refusal as refusal:
         result["failure"] = {"category": refusal.category, "message": refusal.message}
     except Exception as error:  # noqa: BLE001 - the category is the contract
+        provider = request.operation in PROVIDER_OPERATIONS
         result["failure"] = {
-            "category": "materialization_failed",
+            # A provider call may already have been made, and billed, when an
+            # unexpected error ends the handler: that outcome is unknown.
+            "category": "outcome_unknown" if provider else "materialization_failed",
             "message": f"{type(error).__name__}: {error}",
         }
 
-    # ⟦AMD-5⟧ the completion protocol, in order, whatever the outcome was.
-    result["checkpointed"] = checkpoint_research_db(Path(request.research_db))
+    # ⟦AMD-5⟧ the completion protocol, in order, whatever the outcome was. A
+    # provider operation never opens `research.db`, so it owes no checkpoint.
+    result["checkpointed"] = (
+        True
+        if request.operation in PROVIDER_OPERATIONS
+        else checkpoint_research_db(Path(request.research_db))
+    )
     violations = assess_write_boundary(
         audit.paths, tuple(Path(root) for root in request.write_roots)
     )

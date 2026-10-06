@@ -4,8 +4,24 @@ import { alreadyCapturedCurrent, ControlProblemError, CortexControlClient } from
 import {
   decodeArtifactVersionContent,
   decodeResearchWorkflow,
+  decodeSourceLinks,
+  decodeXhsImageRetryResult,
+  decodeXhsImportResult,
+  decodeXhsNote,
+  decodeXhsNoteHeader,
+  decodeXhsStatus,
   type SourceGateProjection,
 } from "../app/control/research-contracts";
+import {
+  sourceLinkEntry,
+  xhsBloggerStatus,
+  xhsImage,
+  xhsNoteHeader,
+  xhsNoteProjection,
+  xhsRecommendation,
+  xhsStatusProjection,
+  XHS_USER_ID,
+} from "./shell/xhs-fixtures";
 import {
   decodeResearchDocumentContent,
   decodeResearchItem,
@@ -1152,5 +1168,209 @@ describe("idea fragments", () => {
     expect(JSON.parse(String(requests[1].init?.body))).toEqual({ text: fragment.text, note: "" });
     expect(requests.slice(1).map((request) => new Headers(request.init?.headers).get("Idempotency-Key")))
       .toEqual(["web-idea-command-0001", "web-idea-command-0001"]);
+  });
+});
+
+describe("XHS note, link and status contracts", () => {
+  const note = xhsNoteProjection("source_note");
+  const status = xhsStatusProjection({
+    bloggers: [
+      xhsBloggerStatus(XHS_USER_ID, "Synthetic Curator", { last_scan_at: now, last_scan_outcome: "ok", last_new_note_at: now }),
+      xhsBloggerStatus("00000000000000000000b0b2", null, { last_scan_at: now, last_scan_outcome: "no_new_notes" }),
+      xhsBloggerStatus("00000000000000000000b0b3", "合成作者", { role: "author", last_scan_at: now, last_scan_outcome: "failed", last_scan_error: "rate_limited" }),
+    ],
+  });
+
+  function withRecommendation(extra: Record<string, unknown>) {
+    return { ...note, recommendations: [xhsRecommendation("xhs_rec_paper", extra)] };
+  }
+
+  it("decodes a saved note, its images and its recommendations exactly", () => {
+    expect(decodeXhsNote(note)).toEqual(note);
+    expect(decodeXhsNoteHeader(xhsNoteHeader("source_note"))).toEqual(xhsNoteHeader("source_note"));
+  });
+
+  it.each([
+    ["a signed image URL on the note", (value: Record<string, unknown>) => ({ ...value, signed_url: "https://cdn.example/x?sign=private-token" })],
+    ["a task payload", (value: Record<string, unknown>) => ({ ...value, payload_json: "{}" })],
+    ["an image's upstream file id", (value: Record<string, unknown>) => ({ ...value, images: [xhsImage(1, { fileid: "file-1" })] })],
+    ["an image's download URL", (value: Record<string, unknown>) => ({ ...value, images: [xhsImage(1, { url: "https://cdn.example/1.png" })] })],
+    ["a recommendation's merge key", (value: Record<string, unknown>) => ({ ...value, recommendations: [xhsRecommendation("xhs_rec_paper", { item_key: "arxiv:2401.00001" })] })],
+    ["the blogger's follow flag", (value: Record<string, unknown>) => ({ ...value, blogger: { user_id: XHS_USER_ID, name: null, role: null, followed: true } })],
+  ])("refuses a note carrying %s", (_label, mutate) => {
+    expect(() => decodeXhsNote(mutate(note))).toThrowError(ContractDecodeError);
+  });
+
+  it("refuses a note missing a field", () => {
+    const value: Record<string, unknown> = { ...note };
+    delete value.caption_complete;
+    expect(() => decodeXhsNote(value)).toThrow("expected a field");
+  });
+
+  it.each([
+    ["a private path in the caption", { caption: "see /Users/someone/notes.md" }],
+    ["a permalink for another note", { permalink: "https://www.xiaohongshu.com/explore/0000000000000000000000ff" }],
+    ["a short note identity", { note_id: "a1" }],
+    ["an unknown state", { state: "archived" }],
+    ["an unsaved note", { content_version: 0 }],
+    ["images out of order", { images: [xhsImage(2), xhsImage(1)] }],
+    ["the same image twice", { images: [xhsImage(1), xhsImage(1)] }],
+    ["an image beyond the carousel bound", { images: [xhsImage(101, { asset_path: null })] }],
+    ["a file under another image's ordinal", { images: [xhsImage(1, { asset_path: "assets/2-000000000002.png" })] }],
+    ["a file outside the version's assets", { images: [xhsImage(1, { asset_path: "raw/detail.json" })] }],
+    ["a failed download without a category", { images: [xhsImage(1, { download_state: "failed", asset_path: null })] }],
+    ["a category on a finished download", { images: [xhsImage(1, { download_error: "transient" })] }],
+    ["flags on a failed transcription", { images: [xhsImage(1, { ocr_state: "failed", ocr_error: "transient", ocr_flags: ["empty"] })] }],
+    ["a recommendation citing an absent image", { recommendations: [xhsRecommendation("xhs_rec_paper", { image_ordinal: 9 })] }],
+    ["the same recommendation twice", { recommendations: [xhsRecommendation("xhs_rec_paper"), xhsRecommendation("xhs_rec_paper")] }],
+  ])("refuses a note with %s", (_label, extra) => {
+    expect(() => decodeXhsNote({ ...note, ...extra })).toThrowError(ContractDecodeError);
+  });
+
+  it.each([
+    ["a link under the none state", { kind: "blog", arxiv_id: null, url: "https://example.org/", url_state: "none" }],
+    ["a script link", { kind: "blog", arxiv_id: null, url: "javascript:alert(1)", url_state: "operator_set" }],
+    ["a link with credentials", { kind: "blog", arxiv_id: null, url: "https://user:pass@example.org/", url_state: "operator_set" }],
+    ["an arXiv identifier on a blog", { kind: "blog" }],
+    ["an old-style arXiv identifier", { arxiv_id: "cs/0101001" }],
+    ["a Capture without its state", { capture_id: "capture_1", capture_revision: 0 }],
+    ["an import without its source", { import_state: "imported" }],
+    ["an imported source of an unknown kind", { import_state: "imported", imported_source_id: "source_x", imported_source_kind: "web" }],
+    ["an unknown link state", { url_state: "guessed" }],
+    ["an empty quote", { quote: "" }],
+  ])("refuses a recommendation with %s", (_label, extra) => {
+    expect(() => decodeXhsNote(withRecommendation(extra))).toThrowError(ContractDecodeError);
+  });
+
+  it("bounds XHS text in code points, as Control does", () => {
+    const quote = "📄".repeat(4_000);
+    expect(decodeXhsNote(withRecommendation({ quote })).recommendations[0]!.quote).toBe(quote);
+    expect(() => decodeXhsNote(withRecommendation({ quote: quote + "📄" }))).toThrowError(ContractDecodeError);
+  });
+
+  it("accepts a link-bearing state whose link Control withheld", () => {
+    const decoded = decodeXhsNote(withRecommendation({ kind: "blog", arxiv_id: null, url: null, url_state: "operator_set" }));
+    expect(decoded.recommendations[0]).toMatchObject({ url: null, url_state: "operator_set" });
+  });
+
+  it("decodes links in both directions and refuses a link from anything but a note", () => {
+    const links = {
+      recommended_in: [sourceLinkEntry("source_note", "xhs_note", "本周论文 Weekly reading list", { image_ordinal: null })],
+      recommends: [sourceLinkEntry("source_paper", "paper", "Synthetic Memory Networks")],
+    };
+    expect(decodeSourceLinks(links)).toEqual(links);
+    expect(() => decodeSourceLinks({ ...links, recommended_in: [sourceLinkEntry("source_blog", "blog", "A blog")] })).toThrow("only a note recommends");
+    expect(() => decodeSourceLinks({ ...links, extra: [] })).toThrowError(ContractDecodeError);
+    expect(() => decodeSourceLinks({ ...links, recommends: [{ ...sourceLinkEntry("source_paper", "paper", "x"), private_path: "/tmp/x" }] })).toThrowError(ContractDecodeError);
+  });
+
+  it("keeps success, nothing new and a provider failure three distinct scan answers", () => {
+    const decoded = decodeXhsStatus(status);
+    expect(decoded.bloggers.map((row) => [row.last_scan_outcome, row.last_scan_error])).toEqual([
+      ["ok", null], ["no_new_notes", null], ["failed", "rate_limited"],
+    ]);
+    expect(decoded).toEqual(status);
+    const blogger = (extra: Record<string, unknown>) => ({ ...status, bloggers: [xhsBloggerStatus(XHS_USER_ID, null, { last_scan_at: now, ...extra })] });
+    expect(() => decodeXhsStatus(blogger({ last_scan_outcome: "failed" }))).toThrow("only a failed scan");
+    expect(() => decodeXhsStatus(blogger({ last_scan_outcome: "no_new_notes", last_scan_error: "transient" }))).toThrow("only a failed scan");
+    expect(() => decodeXhsStatus(blogger({ last_scan_outcome: "empty" }))).toThrowError(ContractDecodeError);
+    expect(() => decodeXhsStatus(blogger({ last_scan_outcome: null }))).toThrow("scan time");
+  });
+
+  it.each([
+    ["an extra top-level field", { lease_until: now }],
+    ["a third root", { roots: { "xhs-notes": "ready", blogs: "ready", corpus: "ready" } }],
+    ["a missing schedule", { schedules: { "xhs-pull": (xhsStatusProjection().schedules as Record<string, unknown>)["xhs-pull"] } }],
+    ["an unknown usage provider", { usage: { gpt: { calls: 0, cap: 1 }, ocr: { calls: 0, cap: 1 }, tikhub: { calls: 0, cap: 1 }, jina: { calls: 0, cap: 1 } } }],
+    ["a failure as text", { last_failures: { tikhub: "TikHub said 401 Unauthorized", cdn: null, ocr: null, gpt: null, blog: null } }],
+    ["an unknown refusal", { refusal: "busy" }],
+    ["a blogger's private path", { bloggers: [xhsBloggerStatus(XHS_USER_ID, "/home/someone")] }],
+  ])("refuses a status with %s", (_label, extra) => {
+    expect(() => decodeXhsStatus({ ...status, ...extra })).toThrowError(ContractDecodeError);
+  });
+
+  it("decodes each import disposition and pins the Capture to staged papers", () => {
+    const staged = xhsRecommendation("xhs_rec_paper", { capture_id: "capture_1", capture_state: "pending", capture_revision: 0, import_state: "staged" });
+    const result = {
+      note_source_id: "source_note",
+      items: [
+        { recommendation_id: "xhs_rec_paper", disposition: "capture_staged", reason: null, capture_id: "capture_1", capture_revision: 0, capture_state: "pending", recommendation: staged },
+        { recommendation_id: "xhs_rec_blog", disposition: "blog_import_queued", reason: null, capture_id: null, capture_revision: null, capture_state: null, recommendation: xhsRecommendation("xhs_rec_blog", { kind: "blog", arxiv_id: null, url: "https://blog.example.org/a", url_state: "from_text", import_state: "importing" }) },
+        { recommendation_id: "xhs_rec_gone", disposition: "refused", reason: "not_found", capture_id: null, capture_revision: null, capture_state: null, recommendation: null },
+      ],
+    };
+    expect(decodeXhsImportResult(result)).toEqual(result);
+    const [first, second, third] = result.items;
+    expect(() => decodeXhsImportResult({ ...result, items: [{ ...first, capture_id: null }] })).toThrow("staged paper");
+    expect(() => decodeXhsImportResult({ ...result, items: [{ ...second, capture_id: "capture_2", capture_revision: 0, capture_state: "pending" }] })).toThrow("staged paper");
+    expect(() => decodeXhsImportResult({ ...result, items: [{ ...third, reason: null }] })).toThrow("carries a reason");
+    expect(() => decodeXhsImportResult({ ...result, items: [{ ...second, recommendation: null }] })).toThrow("does not match");
+    expect(() => decodeXhsImportResult({ ...result, items: [{ ...first, recommendation_id: "xhs_rec_other" }] })).toThrow("does not match");
+    expect(() => decodeXhsImportResult({ ...result, items: [first, first] })).toThrow("unique");
+  });
+
+  it("reads notes, links, status and a filtered list on exact routes", async () => {
+    const requests: string[] = [];
+    const answers: Record<string, unknown> = {
+      "/api/cortex/sources?kind=xhs_note": { items: [], next_cursor: null },
+      "/api/cortex/sources/source_note/note": note,
+      "/api/cortex/sources/source_note/links": { recommended_in: [], recommends: [sourceLinkEntry("source_paper", "paper", "Synthetic Memory Networks")] },
+      "/api/cortex/xhs/status": status,
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify(answers[String(input)]), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const client = new CortexControlClient({ fetcher: fetcher as typeof fetch });
+    await client.listSources("xhs_note");
+    expect((await client.getXhsNote("source_note")).note_id).toBe(note.note_id);
+    expect((await client.getSourceLinks("source_note")).recommends).toHaveLength(1);
+    expect((await client.getXhsStatus()).bloggers).toHaveLength(3);
+    expect(requests).toEqual(Object.keys(answers));
+    // A note read under another source's name, a list holding another kind and
+    // a link back to the source itself are refused rather than shown.
+    answers["/api/cortex/sources/source_other/note"] = note;
+    await expect(client.getXhsNote("source_other")).rejects.toThrow("note identity");
+    answers["/api/cortex/sources?kind=blog"] = { items: [{ id: "source_paper", authority: "arxiv", authority_id: "2401.00001", canonical_id: "arxiv:2401.00001", source_kind: "paper", official_title: "x", import_state: "imported", revision: 0, aliases: [], created_at: now, updated_at: now }], next_cursor: null };
+    await expect(client.listSources("blog")).rejects.toThrow("another kind");
+    answers["/api/cortex/sources/source_paper/links"] = { recommended_in: [], recommends: [sourceLinkEntry("source_paper", "paper", "x")] };
+    await expect(client.getSourceLinks("source_paper")).rejects.toThrow("itself");
+  });
+
+  it("sends the three commands with exact bodies and one key across a retry", async () => {
+    const bodies: Array<{ url: string; body: unknown; key: string | null }> = [];
+    const blog = xhsRecommendation("xhs_rec_blog", { kind: "blog", arxiv_id: null, url: "https://blog.example.org/b", url_state: "operator_set", revision: 2 });
+    const answers: Record<string, unknown> = {
+      "/api/cortex/sources/source_note/recommendations/import": {
+        note_source_id: "source_note",
+        items: [{ recommendation_id: "xhs_rec_blog", disposition: "refused", reason: "no_url", capture_id: null, capture_revision: null, capture_state: null, recommendation: blog }],
+      },
+      "/api/cortex/sources/source_note/recommendations/xhs_rec_blog/link": { recommendation: blog },
+      "/api/cortex/sources/source_note/images/2/retry": { note: xhsNoteHeader("source_note", { state: "detail_ok", revision: 4 }), image: xhsImage(2, { asset_path: null, download_state: "pending", ocr_state: "pending", ocr_engine: null }) },
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push({ url: String(input), body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get("Idempotency-Key") });
+      return new Response(JSON.stringify(answers[String(input)]), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    let keys = 0;
+    const client = new CortexControlClient({ fetcher: fetcher as typeof fetch, idempotencyKeyFactory: () => `web-xhs-command-000${++keys}` });
+    const header = { source_id: "source_note", revision: 3 };
+    const importing = client.prepareImportRecommendations(header, ["xhs_rec_blog"]);
+    await importing.execute();
+    await importing.execute();
+    await client.prepareSetRecommendationLink("source_note", { id: "xhs_rec_blog", revision: 1 }, "https://blog.example.org/b").execute();
+    const retried = await client.prepareRetryXhsImage(header, 2).execute();
+    expect(retried.value.image.ordinal).toBe(2);
+    expect(bodies).toEqual([
+      { url: "/api/cortex/sources/source_note/recommendations/import", body: { recommendation_ids: ["xhs_rec_blog"], expected_revision: 3 }, key: "web-xhs-command-0001" },
+      { url: "/api/cortex/sources/source_note/recommendations/import", body: { recommendation_ids: ["xhs_rec_blog"], expected_revision: 3 }, key: "web-xhs-command-0001" },
+      { url: "/api/cortex/sources/source_note/recommendations/xhs_rec_blog/link", body: { url: "https://blog.example.org/b", expected_revision: 1 }, key: "web-xhs-command-0002" },
+      { url: "/api/cortex/sources/source_note/images/2/retry", body: { expected_revision: 3 }, key: "web-xhs-command-0003" },
+    ]);
+    // An answer about other recommendations, or another image, is refused.
+    await expect(client.prepareImportRecommendations(header, ["xhs_rec_paper"]).execute()).rejects.toThrow("does not match the request");
+    answers["/api/cortex/sources/source_note/images/1/retry"] = answers["/api/cortex/sources/source_note/images/2/retry"];
+    await expect(client.prepareRetryXhsImage(header, 1).execute()).rejects.toThrow("does not match the request");
+    expect(() => decodeXhsImageRetryResult({ ...(answers["/api/cortex/sources/source_note/images/2/retry"] as object), lease_until: now })).toThrowError(ContractDecodeError);
   });
 });

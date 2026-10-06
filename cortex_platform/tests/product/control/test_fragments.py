@@ -144,10 +144,19 @@ def _counts(store: ControlStore) -> dict[str, int]:
 # -- migration -----------------------------------------------------------------
 
 
-def test_the_fragment_migration_is_the_newest_and_creates_the_table(
+def test_the_fragment_migration_creates_the_table_at_20(
     store: ControlStore,
 ) -> None:
-    assert SCHEMA_VERSION == IDEA_FRAGMENTS_MIGRATION == max(MIGRATION_VERSIONS)
+    # Later migrations land after this one; what is pinned is that fragments
+    # arrive at 20 and that the store carries the whole contiguous ledger.
+    assert IDEA_FRAGMENTS_MIGRATION == 20
+    assert SCHEMA_VERSION == max(MIGRATION_VERSIONS)
+    assert "CREATE TABLE idea_fragments" in dict(schema.migration_scripts())[20]
+    assert not any(
+        "CREATE TABLE idea_fragments" in script
+        for version, script in schema.migration_scripts()
+        if version != 20
+    )
     with sqlite3.connect(store.path) as conn:
         assert conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"

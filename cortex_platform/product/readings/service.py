@@ -109,7 +109,10 @@ class ReadingsService:
             os.close(fd)
 
     def track(self, source: dict) -> None:
-        if (source['import_state'] not in ('existing', 'imported')
+        # Only papers are published. Blogs and XHS notes have their own
+        # namespaces, but the kind is required explicitly, not inferred from one.
+        if (source.get('source_kind') != 'paper'
+                or source['import_state'] not in ('existing', 'imported')
                 or not str(source.get('engine_ref') or '').startswith('paper:')):
             return
         name = decode_engine_ref(source['engine_ref'])
@@ -124,7 +127,10 @@ class ReadingsService:
 
     def retry(self, source_id: str) -> None:
         with self.lock():
-            self.track(self.store.get_source(source_id))
+            source = self.store.get_source(source_id)
+            if source.get('source_kind') != 'paper':
+                raise PublicationConflict('source_not_paper')
+            self.track(source)
             with self.connect() as db:
                 db.execute("UPDATE publications SET state='pending',failure=NULL,next_attempt=0 WHERE source_id=?", (source_id,))
 
@@ -254,9 +260,13 @@ class ReadingsService:
                     raise ReadingsBoundaryError('readings root identity changed')
             with self.connect() as db:
                 baseline = {r[0] for r in db.execute('SELECT source_id FROM baseline')}
-            for source in self.store.list_sources():
+            sources = self.store.list_sources()
+            for source in sources:
                 if source['id'] not in baseline:
                     self.track(source)
+            # A queued row whose source is not a paper is left untouched and
+            # never run, whatever put it there.
+            papers = {s['id'] for s in sources if s.get('source_kind') == 'paper'}
             with self.connect() as db:
                 rows = db.execute('SELECT * FROM publications ORDER BY updated_at,source_id').fetchall()
             # Bounded per tick, with independent retry backoff for publication failures.
@@ -264,7 +274,8 @@ class ReadingsService:
             for row in rows:
                 if self._stop.is_set() or attempted >= 8:
                     break
-                if row['state'] == 'conflict' or row['next_attempt'] > time.time():
+                if (row['source_id'] not in papers or row['state'] == 'conflict'
+                        or row['next_attempt'] > time.time()):
                     continue
                 attempted += 1
                 try:

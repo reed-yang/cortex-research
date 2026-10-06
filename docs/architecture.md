@@ -15,6 +15,7 @@ not part of this repository.
 | `runtime/managed_hermes.py` | Lazy backend lifecycle, restart budget and session binding |
 | `product/runtime_update/supervisor.py` | Worker process and frame routing |
 | `product/runtime_update/service.py` | Stage, activate, rollback and pin release state |
+| `product/xhs/`, `product/control/xhs_store.py` | XHS scan and drain jobs, result checks, saved versions, and the XHS Control commands |
 | `apps/web/` | Loopback Node front door, scoped proxy, Web/PWA and Markdown presentation |
 | `distribution/` | Sealed bundle and installed-generation lifecycle |
 
@@ -69,6 +70,39 @@ recomputes that digest before every effect and binds the entry and interpreter
 into the child only when it still matches. Otherwise strict ingestion refuses
 the paper as `capability_unavailable`, distinct from `materialization_failed`.
 See [operator skills](runbooks/operator-skills.md).
+
+## XHS notes and blogs
+
+The opt-in XHS plugin adds two source kinds. An `xhs_note` has identity
+`xhs:<24-hex note id>`; a `blog` has `url:<sha256 of the normalized URL>`.
+Each is stored as write-once versions `v<N>` under its own asset root,
+`xhs-notes` or `blogs`, both outside the research corpus so the paper indexer
+never scans them. Control schema 21 records bloggers, notes, per-ordinal
+images, recommendations, the task queue, daily usage, append-only content
+bindings and `source_links` from a note to the paper or blog it recommends.
+The reader, document and asset routes resolve these kinds through their latest
+content binding with the same no-follow reads as papers; papers keep the
+adoption join.
+
+cortexd's schedule tick runs two rows that migration 21 seeds disabled.
+`xhs_pull` only queues page 1 of a scan per followed blogger. `xhs_drain`
+claims a bounded number of due tasks, runs each provider call as one engine
+child operation outside any transaction, checks the answer
+(`product/xhs/results.py` plus content and hash checks), writes private
+staging files, and records the result in one transaction fenced by the task
+revision. Saving a note and linking a Capture run locally without a child.
+
+The seven child operations (`xhs_list_page`, `xhs_note_detail`,
+`xhs_download_image`, `xhs_ocr_image`, `xhs_identify`, `xhs_resolve_link`,
+`blog_fetch`) import their clients from the research profile inside the
+handler. Each receives only its own credentials (`engine/bindings.py`), never
+opens `research.db`, and only the download and blog fetch get a write root:
+the one asset root their caller binds. Identification rules, the verbatim
+filter and the merge are standard-library code in `product/xhs/identify.py`;
+cortexd re-runs them on its own copy of the transcriptions. Importing a paper
+recommendation stages an ordinary Capture, so ingestion stays the existing
+arXiv path. See the [XHS runbook](runbooks/xhs.md) and the
+[plan](plans/xhs-sources.md).
 
 ## External readings publication
 

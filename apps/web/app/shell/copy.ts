@@ -234,6 +234,14 @@ export const copy = Object.freeze({
     sources: "Adopted sources",
     empty: "No source has been adopted into this Cortex yet.",
     details: "Details",
+    // The kind filter; search covers papers only, and says so.
+    kinds: "Source kinds",
+    kindAll: "All",
+    kindPapers: "Papers",
+    kindBlogs: "Blogs",
+    kindNotes: "XHS notes",
+    searchScope: "Searches stored papers",
+    emptyKind: "No source of this kind is in the library yet.",
   },
   source: {
     loading: "Loading the source record…",
@@ -244,6 +252,84 @@ export const copy = Object.freeze({
     unreadable: "That source record could not be read.",
     added: "Added",
     updated: "Updated",
+    // What each kind is called on its badge; paper keeps the word it had.
+    kinds: { paper: "paper", blog: "blog", xhs_note: "XHS note" } as Record<string, string | undefined>,
+    notPeerReviewed: "Not peer-reviewed",
+  },
+  // "Recommended in": the XHS notes that recommend a paper or a blog.
+  links: {
+    title: "Recommended in",
+    caption: "caption",
+    unreadable: "The notes that recommend this source could not be read.",
+  },
+  // The XHS note record: who posted it, what it recommends (each with the
+  // image or caption it came from), importing them, and its failed images.
+  // Transcription, Identified (auto) and Caption say where each text came from.
+  xhs: {
+    loading: "Loading the note…",
+    unreadable: "This note's recommendations and images could not be read.",
+    by: "By",
+    roles: { curator: "Curator", author: "Author" },
+    // What each role means today: an author's notes become research evidence
+    // in a later release.
+    roleScope: { curator: "Library only", author: "Research evidence later" },
+    published: "Published",
+    permalink: "Open on Xiaohongshu",
+    processing: "Cortex is still processing this note; a new version is saved when it finishes.",
+    noteFailed: "Processing this note failed",
+    recommendations: "Recommendations",
+    noRecommendations: "No recommendation was identified in this note.",
+    importSelected: "Import selected",
+    importing: "Importing…",
+    importNotDone: "Nothing was imported",
+    importTooMany: "Select at most 100 recommendations to import at once.",
+    evidence: "Evidence",
+    transcription: "Transcription",
+    identified: "Identified (auto)",
+    caption: "Caption",
+    transcriptionLoading: "Loading the transcription…",
+    transcriptionUnreadable: "The transcription could not be read.",
+    transcriptionMissing: "This image has no transcription in the saved copy.",
+    imageMissing: "This image is not in the saved copy yet.",
+    fields: { kind: "Kind", title: "Title", quote: "Quote", arxiv: "arXiv", link: "Link" },
+    kinds: { paper: "paper", blog: "blog", other: "other" },
+    open: "Open",
+    linkLabel: "Blog link",
+    saveLink: "Save link",
+    linkSaved: "Link saved.",
+    linkInvalid: "Enter an http or https link.",
+    linkNotSaved: "Link not saved",
+    // Where a recommendation's link came from, or why there is none.
+    urlStates: {
+      none: "No link yet",
+      from_text: "Link from the note",
+      auto_matched: "Link found and checked",
+      unverified: "Link found, not checked",
+      not_found: "No link found",
+      operator_set: "Link set by you",
+      failed: "Link lookup failed",
+    },
+    importStates: { staged: "In the inbox", importing: "Importing", imported: "Imported", failed: "Import failed" } as Record<string, string | undefined>,
+    // What importing did for each selected row. A paper is staged as a
+    // Capture and then approved as its own decision, so either step can fail.
+    outcomes: {
+      approved: "Approved; Cortex imports it next.",
+      notApproved: "In the inbox but not approved",
+      blogQueued: "Blog import queued.",
+      refused: {
+        not_found: "Not imported: this recommendation is no longer on the note.",
+        already_imported: "Already imported.",
+        not_importable: "Not imported: only papers and blogs can be imported.",
+        no_url: "Not imported: this blog has no link yet.",
+        no_arxiv_id: "Not imported: this paper has no arXiv id.",
+      },
+    },
+    failedImages: "Failed images",
+    download: "download",
+    ocr: "transcription",
+    retry: "Retry",
+    retryQueued: "Retry queued; the note is saved again when it finishes.",
+    retryNotDone: "Not retried",
   },
   // The Library reader's own words around a stored document: Preview, Source
   // and Copy source are the shared document controls' labels.
@@ -255,6 +341,11 @@ export const copy = Object.freeze({
     copyUnavailable: "The whole document could not be read, so Copy source is unavailable.",
     figureMissing: "Figure not in the stored copy",
     imageNotLoaded: "Image not loaded from this reference",
+    // The tabs a blog and an XHS note map onto the stored files.
+    article: "Article",
+    notes: "Notes",
+    note: "Note",
+    transcription: "Transcription",
   },
   status: {
     apiVersion: "API version",
@@ -308,6 +399,36 @@ export const copy = Object.freeze({
     // A key with no sentence and nothing left to say once Control's own words
     // are dropped from it.
     unnamedCapability: "A capability this app cannot name",
+    // The XHS plugin's line: whether it scans, and each followed blogger's
+    // last scan. Success, nothing new and a provider failure stay distinct.
+    xhs: {
+      title: "XHS notes",
+      on: "Scanning is on.",
+      offConfig: "Scanning is off: it is not enabled in the configuration.",
+      offRoots: "Scanning is off: the note and blog folders are not ready.",
+      offSchedule: "Scanning is off: its schedule is disabled.",
+      bloggers: "Followed bloggers",
+      noBloggers: "No blogger is followed.",
+      unnamed: "Unnamed blogger",
+      notScanned: "not scanned yet",
+      unavailable: "XHS status could not be read.",
+      outcomes: {
+        ok: "last scan succeeded",
+        no_new_notes: "last scan found no new notes",
+        failed: "last scan failed",
+      },
+      failures: {
+        auth: "credentials refused",
+        payment: "payment required",
+        rate_limited: "rate limited",
+        transient: "temporary provider failure",
+        outcome_unknown: "outcome unknown",
+        upstream_error: "provider error",
+        not_found: "not found",
+        invalid_response: "unreadable provider answer",
+        url_expired: "image link expired",
+      } as Record<string, string | undefined>,
+    },
   },
   errors: {
     unconfirmed: "Delivery is unconfirmed. Refresh before retrying.",
@@ -544,6 +665,21 @@ export const label = Object.freeze({
   // is rather than only offering to move.
   researchPage: (first: number, last: number, total: number) => `${first}–${last} of ${total}`,
   researchDocument: (title: string, version: number) => `${title} · version ${version}`,
+  // Where in a note a recommendation came from: one image, or the caption.
+  noteEvidence: (ordinal: number | null) => (ordinal === null ? copy.links.caption : `image ${ordinal}`),
+  sourceKind: (kind: string) => copy.source.kinds[kind] ?? kind.replaceAll("_", " "),
+  // The XHS note record's rows: a recommendation to select, one carousel
+  // image, and an image that failed with the step and the reason.
+  selectRecommendation: (title: string) => `Select ${title}`,
+  xhsImage: (ordinal: number) => `Image ${ordinal}`,
+  xhsImageFailed: (ordinal: number, step: string, reason: string) => `Image ${ordinal}: ${step} failed (${reason})`,
+  retryImage: (ordinal: number) => `Retry image ${ordinal}`,
+  // One followed blogger's last scan, as the Status line says it.
+  xhsScan: (name: string, when: string | null, outcome: string | null, failure: string | null) => {
+    if (!when || !outcome) return `${name}: ${copy.status.xhs.notScanned}`;
+    const said = copy.status.xhs.outcomes[outcome as keyof typeof copy.status.xhs.outcomes] ?? outcome.replaceAll("_", " ");
+    return `${name}: ${said}${failure ? ` (${failure})` : ""} · ${when}`;
+  },
   // The bot command that selects the SAME item in the operator's own bound
   // conversation. The identity is the item's, so it is rendered only inside a
   // details disclosure, where an id is allowed; it confers no authorization of

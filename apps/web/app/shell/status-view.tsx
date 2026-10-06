@@ -4,6 +4,7 @@ import { ENGINE_THREAD_SENTENCE } from "../control/assistant-adapter";
 // Aliased: `Fact` below takes its own `label` prop.
 import { copy, label as phrase } from "./copy";
 import type { ViewProps } from "./types";
+import { XhsStatusLine } from "./xhs-status";
 
 // What the rail badge and this view say about the runtime dispatch gate.
 // `null` is "the daemon does not report it" (no bridge or an unbound worker)
@@ -25,7 +26,7 @@ function Fact({ id, label, value }: { id: string; label: string; value: string }
 
 // The one place in the product that speaks the system's own vocabulary:
 // dispatch, replay and engine are facts here, not chrome.
-export function StatusView({ state, actions }: ViewProps) {
+export function StatusView({ state, actions, client }: ViewProps) {
   const capabilities = Object.entries(state.capabilities ?? {});
   return (
     <section aria-label={copy.status.title} className="flex flex-1 flex-col overflow-y-auto bg-background p-6 text-foreground">
@@ -53,6 +54,8 @@ export function StatusView({ state, actions }: ViewProps) {
             </ul>
           )}
         </section>
+
+        <XhsStatusLine client={client} />
 
         <div className="flex flex-col gap-2">
           <label className="flex items-center gap-2 text-sm">

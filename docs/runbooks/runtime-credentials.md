@@ -11,6 +11,9 @@ glm = "age://cortex/GLM_API_KEY"
 glm-app-id = "age://cortex/GLM_API_ID"
 novita = "age://cortex/NOVITA_API_KEY"
 openrouter = "keychain://cortex-research/openrouter-embedding"
+tikhub = "age://cortex/TIKHUB_API_KEY"
+sub2api-gpt = "keychain://cortex-research/sub2api-gpt"
+jina = "age://cortex/JINA_API_KEY"
 ```
 
 `age://cortex/GLM_API_KEY` decrypts `~/.config/cortex/secrets.age` with the adjacent
@@ -29,7 +32,25 @@ variables. The model worker and Telegram transport have separate aliases and
 bindings. Adding a key does not enable an unsupported engine or change provider
 routing. `novita` and `glm` reach PDF conversion only through an OCR skill the
 operator has accepted ([operator skills](operator-skills.md)); the bundle has
-no OCR of its own.
+no PDF OCR of its own.
+
+The opt-in [XHS plugin](xhs.md) adds `tikhub`, `sub2api-gpt` and the optional
+`jina`. Each XHS child operation resolves only its own aliases:
+
+| Operation | Aliases |
+| --- | --- |
+| `xhs_list_page`, `xhs_note_detail` | `tikhub` |
+| `xhs_download_image` | none |
+| `xhs_ocr_image` | `novita`, `glm`, `glm-app-id` |
+| `xhs_identify`, `xhs_resolve_link` | `sub2api-gpt` |
+| `blog_fetch` | `jina`, omitted when it does not resolve |
+
+The arXiv operations never resolve the three XHS aliases, so a missing or
+broken XHS reference cannot block paper ingestion. A configured XHS reference
+that fails to resolve fails that task as `auth` and stops the drain for that
+tick; fix it, then run `cortex xhs retry --failed`. Image OCR is first-party
+and uses `novita` (DeepSeek-OCR-2) with `glm` and `glm-app-id` as the
+fallback; it is separate from the PDF OCR skill.
 
 For a trusted operator command from the checkout:
 
@@ -39,11 +60,14 @@ For a trusted operator command from the checkout:
 
 Use `--config /absolute/path/config.toml` before `--` for another config. This
 wrapper inherits the operator environment and overlays only configured engine
-credentials in its child. It does not modify the parent shell or write `.env`.
-Do not use it as a model tool or run untrusted commands with it. Managed model
-tool children retain their credential-free environment and filesystem policy.
+credentials in its child, not the three XHS aliases. It does not modify the
+parent shell or write `.env`. Do not use it as a model tool or run untrusted
+commands with it. Managed model tool children retain their credential-free
+environment and filesystem policy.
 
 `env://VARIABLE_NAME` remains foreground-only. A missing durable reference or
 failed decryption is an error, not an implicit fallback to another provider.
-Run `cortex doctor` after updating references. Do not print decrypted stores or
-credential values while diagnosing missing keys.
+Run `cortex doctor` after updating references; it reports an `env://`
+reference that the supervised daemon cannot use, including the XHS aliases,
+but does not try to resolve those. Do not print decrypted stores or credential
+values while diagnosing missing keys.

@@ -32,9 +32,9 @@ a live synchronization with their original files.
 | Research → Ideas | Inspect existing specific hypotheses and their recorded progress and stop reasons. |
 | Research → Explorations | Inspect broader research directions and recorded exploration history. Exploration does not mean a runnable experiment. |
 | Research → Projects | Inspect legacy research project records and their dossiers. |
-| Library | Browse adopted paper and source records and their available content. |
+| Library | Browse papers, blogs and XHS notes by kind, read their content, and import what an XHS note recommends. |
 | Inbox | Save ideas as written, add arXiv sources, and review captures and pending decisions. It is not an automatic resume queue. |
-| Status | Inspect availability and technical service state. |
+| Status | Inspect availability and technical service state, including the XHS plugin's last scans. |
 | Runs | Inspect execution history for a conversation. |
 | Outputs | Read saved research artifacts for the selected run. |
 
@@ -235,7 +235,19 @@ reason, and the paper can be captured again once OCR is ready
 
 ## Read a Library source
 
-Each content tab (Notes, Full text, Grounding) opens in Preview, which renders
+The kind filter (All, Papers, Blogs, XHS notes) is kept in the address as
+`kind=`; sources are listed newest first. Search is shown for All and Papers
+only and says "Searches stored papers": blogs and notes are not searched.
+Changing the filter rereads the list and keeps the open record.
+
+A paper has the tabs Notes, Full text and Grounding. A blog has Article (the
+extracted page) and Notes (the notes that recommended it, with their
+screenshots), a "Not peer-reviewed" badge and "Recommended in". An XHS note has
+Note and Transcription. A paper or blog that an XHS note recommended lists
+that note under "Recommended in", with the image the recommendation came
+from, or "caption"; Open goes to the note.
+
+Each content tab opens in Preview, which renders
 the whole stored document with headings, tables, math and the paper's own
 figures. Source is the paged, line-numbered view with the line range and
 `sha256` of the stored file; use it when citing. This browser remembers the
@@ -251,6 +263,56 @@ the text "Image on <host>", not a link; `data:`, `file:` and protocol-relative i
 "Image not loaded from this reference". The stored Markdown is never rewritten.
 A document larger than 2 MiB opens as paged Source only, with a one-line notice,
 and Copy source is unavailable for it.
+
+## Read an XHS note and import what it recommends
+
+XHS notes appear once the operator has enabled the XHS plugin
+([XHS runbook](xhs.md)). A note record shows the blogger, a role badge
+(Curator: Library only; Author: research evidence later), the published date
+and "Open on Xiaohongshu", then the recommendations, then the failed images,
+then the Note and Transcription tabs. While Cortex is still processing a note,
+the record says so; a new version is saved when it finishes.
+
+Each recommendation row shows its kind (paper, blog or other), the image it
+came from or "caption", a blog's link state (for example "Link found and
+checked" or "Link found, not checked") and its import state. Expanding a row
+shows that image, its part of the transcription labelled "Transcription ·
+Image N" (or the caption, labelled "Caption"), and the fields the model
+identified, labelled "Identified (auto)". The transcription is the OCR
+provider's text, kept as recognized; only the identified fields come from the
+model. A blog that is not yet importing or imported has an editable link that
+accepts http and https links without credentials; saving it marks the link
+"Link set by you" and saves a new version of the note.
+
+A row has a checkbox only when it can be imported: a paper with an arXiv id, or
+a blog with a link, that has not been imported or staged yet or whose import
+failed. Import selected
+does two steps. It first stages the selection in one command: each paper
+becomes a pending Capture in the Inbox, an open Capture of the same paper is
+reused, and each blog gets a queued blog import. It then approves each staged
+paper that is still pending, one at a time, through the same approve action as
+the Inbox. Every row reports its own outcome: approved, in the inbox but not
+approved (with the reason), blog import queued, already in the inbox, or not
+imported (with the reason). If the whole import fails, the record says nothing
+was imported. The note is read again either way. An approved paper waits for
+the import schedule like any other capture; a blog appears in the Library when
+its import finishes, linked back to the note.
+
+Each failed image has its own row, "Image N: download failed (reason)" or
+"Image N: transcription failed (reason)", with Retry. Retry queues that image
+again; the row then says the retry is queued, and the note is identified and
+saved again as a new version when it finishes. An image downloaded after the
+latest saved version shows "This image is not in the saved copy yet." until the
+next save. A transcription already open is read again when you reopen the
+record.
+
+Status has one XHS notes line. It says whether scanning is on, or why it is
+off (not enabled in the configuration, the note and blog folders not ready, or
+the schedule disabled), and lists each followed blogger's last scan time with
+"last scan succeeded", "last scan found no new notes" or "last scan failed"
+and the failure, such as "credentials refused" or "rate limited". A scan that
+found nothing new is not a failure, and a provider failure is never shown as
+nothing new.
 
 ## Read and manage results
 

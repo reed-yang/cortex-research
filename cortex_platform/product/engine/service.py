@@ -26,7 +26,7 @@ from cortex_platform.product.control.errors import NotFound
 from cortex_platform.product.paths import PathRegistry
 from cortex_platform.product.secrets import SecretResolutionError, SecretResolver, SecretValue
 
-from .bindings import EngineRoots, engine_secret_aliases
+from .bindings import EngineRoots, effect_secret_aliases, operation_secret_scope
 from .capture_consumer import MACHINE_ACTOR, CaptureConsumer, LeasePlan
 from .port import ProductResearchEngine
 from .schedules import ResearchScheduleTick, read_live_jobs, seed_schedules
@@ -65,7 +65,7 @@ def unusable_secret_aliases(config: Mapping[str, Any]) -> tuple[str, ...]:
         sorted(
             alias
             for alias, reference in dict(config.get("secret_refs") or {}).items()
-            if alias in engine_secret_aliases()
+            if alias in effect_secret_aliases()
             and not str(reference).startswith(("keychain://", "age://"))
         )
     )
@@ -77,7 +77,7 @@ def _secret_provider(
     references = {
         alias: reference
         for alias, reference in dict(config.get("secret_refs") or {}).items()
-        if alias in engine_secret_aliases()
+        if alias in effect_secret_aliases()
     }
     dropped = unusable_secret_aliases(config) if keychain_only else ()
     if keychain_only:
@@ -91,13 +91,27 @@ def _secret_provider(
             if reference.startswith(("keychain://", "age://"))
         }
 
-    def provide() -> dict[str, SecretValue]:
+    def provide(operation: str | None = None) -> dict[str, SecretValue]:
         # An `env://` reference means "read it from this process's
         # environment", so the supervised path -- which must not depend on
         # whatever launchd happened to export -- gets an empty one, and the
         # deliberate foreground path gets the real one.
         resolver = SecretResolver(environment={} if keychain_only else os.environ)
-        return resolver.resolve_all(references)
+        if operation is None:
+            return resolver.resolve_all(references)
+        # Only this operation's aliases are resolved: a missing XHS credential
+        # cannot refuse an arXiv ingest, nor an arXiv one an XHS call. An
+        # optional alias that does not resolve is left out.
+        scope = operation_secret_scope(operation)
+        resolved = resolver.resolve_all(
+            {alias: ref for alias, ref in references.items() if alias in scope.aliases}
+        )
+        for alias in sorted(scope.optional & set(references)):
+            try:
+                resolved[alias] = resolver.resolve(alias, references[alias])
+            except SecretResolutionError:
+                continue
+        return resolved
 
     return provide, dropped
 
@@ -157,12 +171,23 @@ def build_engine_service(
     )
     consumer = CaptureConsumer(store=store, engine=engine, leases=plan)
     holder["consumer"] = consumer
+    from ..config import xhs_settings
+    from ..xhs.drain import PIPELINE_HANDLERS, XhsDrain
+
+    # Built always and run only when both plugin rows are armed, `[xhs]
+    # enabled` is set and both asset roots are ready.
+    xhs = XhsDrain(
+        store=store,
+        supervisor=supervisor,
+        settings=xhs_settings(config or {}),
+        handlers=PIPELINE_HANDLERS,
+    )
     return EngineService(
         roots=roots,
         supervisor=supervisor,
         engine=engine,
         consumer=consumer,
-        tick=ResearchScheduleTick(store=store, consumer=consumer),
+        tick=ResearchScheduleTick(store=store, consumer=consumer, xhs=xhs),
         dropped_secret_aliases=dropped,
     )
 

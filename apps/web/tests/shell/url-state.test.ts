@@ -17,6 +17,14 @@ describe("shell url state", () => {
     writeShellLocation({ project: "ws_1", thread: "thread_2", item: null, view: "library" });
     expect(window.location.search).toBe("?project=ws_1&thread=thread_2&view=library");
   });
+  it("keeps the Library kind filter only for a kind it knows, and only in the Library", () => {
+    expect(readShellLocation("?view=library&kind=xhs_note")).toEqual({ project: null, thread: null, item: null, view: "library", kind: "xhs_note" });
+    expect(readShellLocation("?view=library&kind=web")).not.toHaveProperty("kind");
+    writeShellLocation({ project: "ws_1", thread: null, item: null, view: "library", kind: "blog" });
+    expect(window.location.search).toBe("?project=ws_1&view=library&kind=blog");
+    writeShellLocation({ project: "ws_1", thread: null, item: null, view: "status", kind: "blog" });
+    expect(window.location.search).toBe("?project=ws_1&view=status");
+  });
   it("writes the selected research item beside the view", () => {
     const id = `ri_${"b".repeat(32)}`;
     writeShellLocation({ project: "ws_1", thread: null, item: id, view: "research" });

@@ -181,4 +181,7 @@ def test_registration_replays_rather_than_duplicating(store: ControlStore) -> No
     first = _register(store)
     second = _register(store)
     assert first["job_key"] == second["job_key"]
-    assert len(store.list_research_schedules()) == 1
+    # Beside the two XHS rows migration 21 seeds, exactly one row.
+    assert sorted(
+        item["job_key"] for item in store.list_research_schedules()
+    ) == ["capture-drain", "xhs-drain", "xhs-pull"]

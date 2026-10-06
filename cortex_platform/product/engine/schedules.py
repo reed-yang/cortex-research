@@ -13,6 +13,7 @@ by the same call.
 
 Exactly one job is enabled. The thirteen legacy rows beside it exist so the
 inventory is auditable and are `legacy`, an operation the store refuses to arm.
+The two XHS plugin jobs are registered disabled; only the operator arms them.
 """
 
 from __future__ import annotations
@@ -30,6 +31,15 @@ from .capture_consumer import CaptureConsumer, MACHINE_ACTOR, _idempotency_key
 
 CAPTURE_DRAIN_JOB = "capture-drain"
 DEFAULT_CAPTURE_INTERVAL_SECONDS = 300
+XHS_PULL_JOB = "xhs-pull"
+XHS_DRAIN_JOB = "xhs-drain"
+# The first-party XHS plugin: a daily scan and a bounded drain. Migration 21
+# seeds both rows disabled; they are listed here too so the inventory states
+# them, and `cortex xhs enable` is the only thing that arms them.
+XHS_JOBS: tuple[tuple[str, str, int], ...] = (
+    (XHS_PULL_JOB, "xhs_pull", 86_400),
+    (XHS_DRAIN_JOB, "xhs_drain", 300),
+)
 # The thirteen legacy Hermes cron scripts, whose sources stay in the old
 # repository. Represented so the inventory is complete and disabled so an
 # unknown cadence cannot fire.
@@ -151,7 +161,8 @@ def seed_schedules(
     reading: JobsFileReading,
     capture_interval_seconds: int = DEFAULT_CAPTURE_INTERVAL_SECONDS,
 ) -> list[Mapping[str, Any]]:
-    """Land the whole inventory: one enabled job, thirteen legacy rows.
+    """Land the whole inventory: one enabled job, two disabled XHS jobs and
+    thirteen legacy rows.
 
     Idempotent by registration receipt, so a restart re-registers nothing.
     """
@@ -167,6 +178,8 @@ def seed_schedules(
             None,
         )
     ]
+    for job_key, operation, interval in XHS_JOBS:
+        plan.append((job_key, operation, False, interval, "product", None))
     for job_key in LEGACY_JOBS:
         job = migrated.get(job_key)
         if job is not None:
@@ -247,11 +260,15 @@ class ResearchScheduleTick:
         consumer: CaptureConsumer,
         max_captures_per_tick: int = 1,
         max_jobs_per_tick: int = 5,
+        xhs: Any | None = None,
     ) -> None:
         if not 1 <= max_captures_per_tick <= 20:
             raise ValueError("max_captures_per_tick must be between 1 and 20")
         self._store = store
         self._consumer = consumer
+        # `xhs.drain.XhsDrain`, which runs both plugin jobs. Without it an
+        # armed plugin row is refused rather than run.
+        self._xhs = xhs
         self._max_captures = max_captures_per_tick
         self._max_jobs = max_jobs_per_tick
 
@@ -294,6 +311,17 @@ class ResearchScheduleTick:
         )
 
     def _run_job(self, schedule: Mapping[str, Any]) -> tuple[str, int]:
+        if str(schedule["operation"]) in {"xhs_pull", "xhs_drain"}:
+            if self._xhs is None:
+                return "refused", 0
+            try:
+                # `drained` counts Captures; the plugin's own count stays its own.
+                outcome, _ = self._xhs.run_job(str(schedule["operation"]))
+                return outcome, 0
+            except Exception:  # noqa: BLE001 - one job's failure is not the tick's
+                # A task whose unit escaped keeps its lease until it expires;
+                # the next claim then recovers it as an unknown outcome.
+                return "failed", 0
         if str(schedule["operation"]) != "capture_drain":
             # Unreachable through the store, which refuses to enable a legacy
             # row. Kept as a refusal rather than an assertion because a row

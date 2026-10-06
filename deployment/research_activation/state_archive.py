@@ -2,7 +2,7 @@
 """Capture or verify a stopped product archive; emit recovery commands only.
 
 The before/after schema pair is an input, not a literal, so the same tool covers
-16->17 through 19->20. A capture that names a `--target-schema` is the BASELINE of
+16->17 through 20->21. A capture that names a `--target-schema` is the BASELINE of
 that pair and is what gets a `restore-paths.sh`; one that does not is a
 preservation archive. Omitting it on `--schema 16` keeps the original 16->17
 invocation working unchanged.
@@ -30,7 +30,7 @@ ARCHIVE_SCHEMA = "cortex-offline-recovery-archive/2"
 LEGACY_ARCHIVE_SCHEMA = "cortex-offline-recovery-archive/1"
 #: The pair every `/1` archive was written for; it carried no target of its own.
 LEGACY_PAIR = (16, 17)
-SUPPORTED_SCHEMAS = (16, 17, 18, 19, 20)
+SUPPORTED_SCHEMAS = (16, 17, 18, 19, 20, 21)
 
 
 def staging_suffixes(source_schema, target_schema):

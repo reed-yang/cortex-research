@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from ..artifacts.materializer import _open_directory, _read_regular
 from .adoption import decode_engine_ref, encode_engine_ref
+from .models import CONTENT_SOURCE_KINDS
 
 if TYPE_CHECKING:
     from ..control import ControlStore
@@ -29,6 +30,8 @@ MAX_SOURCES = 10_000
 KINDS = {"notes": "notes.md", "full_text": "full_text.md", "grounding": "grounding.md"}
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 MAX_ASSET_BYTES = 8 * 1024 * 1024
+# A note or blog screenshot is served up to the size its download accepts.
+MAX_CONTENT_ASSET_BYTES = 20 * 1024 * 1024
 MAX_ASSET_PATH_BYTES = 512
 _ENCODED_SEPARATOR = re.compile(r"%(?:2f|5c|2e|00)", re.IGNORECASE)
 
@@ -73,6 +76,21 @@ class SourceAssetUnsupported(RuntimeError):
     """The referenced asset is not a PNG, JPEG, GIF or WebP image."""
 
     category = "source_asset_unsupported"
+
+
+def _content_file(source: dict, kind: str) -> str:
+    """The retained file one content kind names for this source's kind.
+
+    A paper keeps its three files. A blog or XHS note maps `notes` and
+    `full_text` onto its own files and retains no grounding.
+    """
+    content_kind = CONTENT_SOURCE_KINDS.get(source["source_kind"])
+    if content_kind is None:
+        return KINDS[kind]
+    name = content_kind.files.get(kind)
+    if name is None:
+        raise SourceContentUnavailable("content kind is not retained for this source")
+    return name
 
 
 def _integer_limit(value: object, maximum: int) -> int:
@@ -296,6 +314,18 @@ class SourceKnowledgeReader:
 
     @staticmethod
     def _registration(control, source_id):
+        if source_id is not None:
+            row = control.execute(
+                "SELECT source_kind FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
+            content_kind = (
+                CONTENT_SOURCE_KINDS.get(row["source_kind"]) if row is not None else None
+            )
+            if content_kind is not None:
+                return SourceKnowledgeReader._content_registration(
+                    control, source_id, content_kind
+                )
+        # Papers only, including every search: other kinds are not indexed.
         root = control.execute(
             "SELECT * FROM asset_roots WHERE root_id = ? AND enabled = 1", (ROOT_ID,)
         ).fetchone()
@@ -308,7 +338,8 @@ class SourceKnowledgeReader:
             params.append(source_id)
         rows = control.execute(
             """SELECT DISTINCT s.id, s.canonical_id, s.official_title,
-                      s.engine_ref, s.revision, s.import_state, e.paper_dir
+                      s.engine_ref, s.revision, s.import_state, s.source_kind,
+                      e.paper_dir
                FROM sources s
                JOIN adoption_entries e ON e.source_id = s.id
                     AND e.engine_ref = s.engine_ref
@@ -335,6 +366,46 @@ class SourceKnowledgeReader:
         if source_id is not None and len(sources) != 1:
             raise SourceContentUnavailable("source is not adopted in this root")
         return dict(root), sources
+
+    @staticmethod
+    def _content_registration(control, source_id, content_kind):
+        """A blog or XHS note: its highest content version in its own root.
+
+        The directory comes from the binding and must be the one its identity
+        and version name, so a binding can never point at another source's
+        files.
+        """
+        root = control.execute(
+            "SELECT * FROM asset_roots WHERE root_id = ? AND enabled = 1",
+            (content_kind.root_id,),
+        ).fetchone()
+        if root is None:
+            raise SourceContentUnavailable("knowledge root is unavailable")
+        row = control.execute(
+            """SELECT s.id, s.canonical_id, s.official_title, s.engine_ref,
+                      s.revision, s.import_state, s.source_kind, s.authority_id,
+                      b.version, b.root_id, b.directory, b.tree_sha256
+               FROM sources s
+               JOIN source_content_bindings b ON b.source_id = s.id
+               WHERE s.id = ? AND s.source_kind = ? AND s.authority = ?
+                 AND s.import_state IN ('existing', 'imported')
+               ORDER BY b.version DESC LIMIT 1""",
+            (source_id, content_kind.source_kind, content_kind.authority),
+        ).fetchone()
+        if row is None:
+            raise SourceContentUnavailable("source is not bound in this root")
+        try:
+            consistent = (
+                row["root_id"] == content_kind.root_id
+                and row["engine_ref"] == content_kind.engine_ref(row["authority_id"])
+                and row["directory"]
+                == content_kind.directory(row["authority_id"], row["version"])
+            )
+        except ValueError:
+            consistent = False
+        if not consistent:
+            raise SourceContentUnavailable("source identity is inconsistent")
+        return dict(root), {row["directory"]: dict(row)}
 
     @contextmanager
     def _registered(self, source_id: str | None = None):
@@ -399,9 +470,10 @@ class SourceKnowledgeReader:
         try:
             with self._registered(source_id) as (root, path, sources):
                 paper_dir, source = next(iter(sources.items()))
+                name = _content_file(source, kind)
                 with _directory(path / paper_dir) as directory:
                     raw = _read_checked(
-                        directory, KINDS[kind], min(root["max_bytes"], MAX_FILE_BYTES)
+                        directory, name, min(root["max_bytes"], MAX_FILE_BYTES)
                     )
                 _check_text(raw)
                 digest = hashlib.sha256(raw).hexdigest()
@@ -451,9 +523,10 @@ class SourceKnowledgeReader:
         try:
             with self._registered(source_id) as (root, path, sources):
                 paper_dir, source = next(iter(sources.items()))
+                name = _content_file(source, kind)
                 retained_limit = min(root["max_bytes"], MAX_FILE_BYTES)
                 with _directory(path / paper_dir) as directory:
-                    info = os.stat(KINDS[kind], dir_fd=directory, follow_symlinks=False)
+                    info = os.stat(name, dir_fd=directory, follow_symlinks=False)
                     # Refuse by retained size before reading or decoding. A
                     # file over the root limit stays unavailable, as on pages.
                     too_large = (
@@ -462,7 +535,7 @@ class SourceKnowledgeReader:
                     )
                     if not too_large:
                         raw = _read_checked(
-                            directory, KINDS[kind], min(retained_limit, MAX_DOCUMENT_BYTES)
+                            directory, name, min(retained_limit, MAX_DOCUMENT_BYTES)
                         )
                 if not too_large:
                     _check_text(raw)
@@ -491,8 +564,9 @@ class SourceKnowledgeReader:
     def asset(self, source_id, path) -> tuple[str, bytes]:
         """Read one image from the source's own `assets/` directory.
 
-        The directory comes from the authorized adoption binding, never from
-        the request; a `papers/<dir>/` prefix may only name that directory.
+        The directory comes from the authorized adoption or content binding,
+        never from the request; a `papers/<dir>/` prefix may only name a
+        paper's own directory and is refused for every other kind.
         """
         prefix, segments = _asset_reference(path)
         if not isinstance(source_id, str) or not source_id or len(source_id) > 200:
@@ -500,10 +574,17 @@ class SourceKnowledgeReader:
         refusal = None
         try:
             with self._registered(source_id) as (root, root_path, sources):
-                paper_dir = next(iter(sources))
-                if prefix is not None and prefix != paper_dir:
+                paper_dir, source = next(iter(sources.items()))
+                if prefix is not None and (
+                    prefix != paper_dir or source["source_kind"] != "paper"
+                ):
                     raise SourceAssetUnavailable("source asset is unavailable")
-                limit = min(root["max_bytes"], MAX_ASSET_BYTES)
+                limit = min(
+                    root["max_bytes"],
+                    MAX_CONTENT_ASSET_BYTES
+                    if source["source_kind"] in CONTENT_SOURCE_KINDS
+                    else MAX_ASSET_BYTES,
+                )
                 with _directory(root_path.joinpath(paper_dir, "assets", *segments[:-1])) as directory:
                     info = os.stat(segments[-1], dir_fd=directory, follow_symlinks=False)
                     if stat.S_ISREG(info.st_mode) and info.st_size > limit:

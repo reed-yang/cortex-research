@@ -38,9 +38,16 @@ from .bindings import (
     EFFECT_MARKER_VARIABLE,
     CorpusBindingError,
     EngineRoots,
+    operation_secret_scope,
     research_effect_environment,
 )
-from .protocol import EffectRequest, read_result
+from .protocol import (
+    PROVIDER_FAILURE_CATEGORIES,
+    PROVIDER_OPERATIONS,
+    PROVIDER_WRITE_ROOTS,
+    EffectRequest,
+    read_result,
+)
 
 CHILD_MODULE = "cortex_platform.product.engine.child"
 # What a detached engine descendant looks like in `ps` output. `detached_run.py`
@@ -102,7 +109,7 @@ class ResearchEffectSupervisor:
         store: Any,
         roots: EngineRoots,
         python_executable: Path | None = None,
-        secret_provider: Callable[[], Mapping[str, SecretValue]] | None = None,
+        secret_provider: Callable[[str], Mapping[str, SecretValue]] | None = None,
         skip_embed: bool = False,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         watch_roots: Mapping[str, Path] | None = None,
@@ -130,10 +137,17 @@ class ResearchEffectSupervisor:
         # The child of the effect currently running, so a daemon shutdown can
         # end it rather than orphan it.
         self._in_flight: subprocess.Popen[str] | None = None
+        self._stopping = False
 
     @property
     def timeout_seconds(self) -> int:
         return self._timeout
+
+    @property
+    def stopping(self) -> bool:
+        """True once a daemon shutdown has ended the in-flight child."""
+
+        return self._stopping
 
     @property
     def in_flight(self) -> subprocess.Popen[str] | None:
@@ -149,9 +163,11 @@ class ResearchEffectSupervisor:
         the copied `research.db` -- after `cortex stop` returned. Killing it
         first turns that orphan into the killed-child path V3 and ⟦AMD-5⟧
         already model: the supervisor reads no result, judges `outcome_unknown`,
-        and the capture waits for the operator.
+        and the capture waits for the operator. A batch that asks `stopping`
+        before its next claim then launches no further child.
         """
 
+        self._stopping = True
         process = self._in_flight
         if process is None or process.poll() is not None:
             return
@@ -167,7 +183,7 @@ class ResearchEffectSupervisor:
     def require_activation(self) -> None:
         """D6's choke point, re-evaluated per effect.
 
-        A bounded window expires as a stored fact on read (`control/store.py:1961`), so a
+        A bounded window expires as a stored fact on read (`control/store.py:2014`), so a
         batch can straddle its own expiry; the answer has to be asked again for
         every child rather than once for the batch.
         """
@@ -186,14 +202,25 @@ class ResearchEffectSupervisor:
             return {}
 
     def _environment(
-        self, marker: str, capabilities: Mapping[str, CapabilityStatus] | None = None
+        self,
+        marker: str,
+        capabilities: Mapping[str, CapabilityStatus] | None = None,
+        operation: str = "",
     ) -> dict[str, str]:
         try:
-            resolved = self._secret_provider() if self._secret_provider else {}
+            # The provider is asked for this operation's credentials only, so
+            # a reference this operation does not use is never even resolved.
+            resolved = self._secret_provider(operation) if self._secret_provider else {}
         except SecretResolutionError as error:
             # The reference was well formed and nothing stood behind it, or the
             # keychain refused. Never carries the value.
             raise EffectPermanentlyRejected("adapter_unavailable") from error
+        scope = operation_secret_scope(operation)
+        resolved = {
+            alias: value
+            for alias, value in resolved.items()
+            if alias in scope.aliases | scope.optional
+        }
         slots: dict[str, str] = {}
         for status in (capabilities or {}).values():
             slots.update(status.binding_values())
@@ -212,11 +239,26 @@ class ResearchEffectSupervisor:
         payload: Mapping[str, Any] | None = None,
         *,
         watch_roots: Mapping[str, Path] | None = None,
+        write_roots: Sequence[Path] | None = None,
     ) -> EffectExecution:
+        """Run one operation in a fresh child.
+
+        `write_roots` is for the writing provider operations only
+        (`PROVIDER_WRITE_ROOTS`): the caller binds exactly that operation's
+        asset root. Every other provider operation may write nothing outside
+        its own effect directory, and an arXiv operation keeps the engine
+        roots.
+        """
+
+        if operation in PROVIDER_WRITE_ROOTS:
+            if not write_roots:
+                raise ValueError(f"{operation} needs its asset root as its write root")
+        elif write_roots:
+            raise ValueError(f"{operation} takes no caller write roots")
         self.require_activation()
         marker = _secrets.token_hex(16)
         capabilities = self._capabilities()
-        environment = self._environment(marker, capabilities)
+        environment = self._environment(marker, capabilities, operation)
         try:
             self._roots.prepare()
         except CorpusBindingError as error:
@@ -228,6 +270,12 @@ class ResearchEffectSupervisor:
         run_root = self._roots.state / "effects" / marker
         run_root.mkdir(parents=True, exist_ok=True)
         result_path = run_root / "result.json"
+        if operation in PROVIDER_WRITE_ROOTS:
+            bound_roots = tuple(Path(root) for root in write_roots or ())
+        elif operation in PROVIDER_OPERATIONS:
+            bound_roots = (run_root,)
+        else:
+            bound_roots = tuple(self._roots.write_roots)
         request = EffectRequest(
             operation=operation,
             payload=dict(payload or {}),
@@ -235,7 +283,7 @@ class ResearchEffectSupervisor:
             result_path=str(result_path),
             research_db=str(self._roots.research_db),
             state_dir=str(self._roots.state),
-            write_roots=tuple(str(root) for root in self._roots.write_roots),
+            write_roots=tuple(str(root) for root in bound_roots),
             watch_roots={
                 name: str(root)
                 for name, root in {**self._watch_roots, **(watch_roots or {})}.items()
@@ -356,6 +404,14 @@ class ResearchEffectSupervisor:
             # V3: a survivor is never a success path -- the refusal arrives
             # after the write, so the outcome is unknown rather than failed.
             ok, category = False, "outcome_unknown"
+        if (
+            not ok
+            and request.operation in PROVIDER_OPERATIONS
+            and category not in PROVIDER_FAILURE_CATEGORIES
+        ):
+            # The XHS task store accepts only its own categories; anything
+            # else from a provider child is a result nobody can vouch for.
+            category = "outcome_unknown"
         child_report = raw.get("survivors") or {}
         merged = {
             "child": child_report,

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, replace
 from urllib.parse import unquote, urlsplit
 
 from ..resources import parse_resource_uri
-from .models import CanonicalLocator, normalize_source_text
+from .models import CanonicalLocator, normalize_source_text, normalize_xhs_id
 
 
 _ARXIV_RE = re.compile(
@@ -255,6 +256,59 @@ def canonicalize_doi(value: str) -> CanonicalLocator:
         normalized_locator=f"https://doi.org/{authority_id}",
         claim_kind="url" if "://" in value else "doi",
     )
+
+
+_URL_DEFAULT_PORTS = {"http": 80, "https": 443}
+# Printable ASCII without space: an IRI must arrive percent-encoded.
+_URL_CHARACTERS_RE = re.compile(r"[\x21-\x7e]{1,2000}\Z")
+
+
+def normalize_url(value: str) -> str:
+    """Normalize one http(s) URL conservatively for blog identity.
+
+    The scheme and host are lowercased; the default port and the fragment are
+    dropped and an absent path becomes `/`. Path case, the query and any
+    trailing slash are kept as given. A URL with credentials, another scheme,
+    no host or a malformed port is refused. Nothing is fetched or resolved.
+    """
+
+    if not isinstance(value, str):
+        raise ValueError("URL is invalid")
+    value = value.strip()
+    if _URL_CHARACTERS_RE.fullmatch(value) is None:
+        raise ValueError("URL is invalid")
+    try:
+        split = urlsplit(value)
+        port = split.port
+    except ValueError:
+        raise ValueError("URL is invalid") from None
+    scheme = split.scheme.lower()
+    if scheme not in _URL_DEFAULT_PORTS:
+        raise ValueError("URL scheme is unsupported")
+    if split.username is not None or split.password is not None or "@" in split.netloc:
+        raise ValueError("URL must not carry credentials")
+    host = (split.hostname or "").lower()
+    if not host or "%" in host:
+        raise ValueError("URL host is invalid")
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None and port != _URL_DEFAULT_PORTS[scheme]:
+        host = f"{host}:{port}"
+    query = f"?{split.query}" if split.query else ""
+    return f"{scheme}://{host}{split.path or '/'}{query}"
+
+
+def blog_url_identity(value: str) -> tuple[str, str]:
+    """The normalized URL and its blog `authority_id`, the hex SHA-256 of it."""
+
+    normalized = normalize_url(value)
+    return normalized, hashlib.sha256(normalized.encode("ascii")).hexdigest()
+
+
+def xhs_note_permalink(note_id: str) -> str:
+    """The public note page. Identity is the note ID, never this URL."""
+
+    return f"https://www.xiaohongshu.com/explore/{normalize_xhs_id(note_id, 'note_id')}"
 
 
 def canonicalize_source_locator(

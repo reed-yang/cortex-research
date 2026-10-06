@@ -1,7 +1,7 @@
 import type { PreparedMutation } from "../control/client";
 import type { ReplayState } from "../control/event-replay";
 import type { Capture, Decision, Fragment, Message, Run, RunEvent, Thread, Workspace } from "../control/contracts";
-import type { ResearchWorkflowProjection, SourceProjection } from "../control/research-contracts";
+import type { ResearchWorkflowProjection, SourceKind, SourceProjection } from "../control/research-contracts";
 import type {
   ResearchItem,
   ResearchItemDetail,
@@ -56,6 +56,8 @@ export type ControlState = {
   fragments: Fragment[];
   fragmentsLoading: boolean;
   fragmentsError: string | null;
+  // The Library listing, newest first, of one kind or (null) of every kind.
+  sourceKind: SourceKind | null;
   sources: SourceProjection[];
   sourcesLoading: boolean;
   sourcesError: string | null;
@@ -127,6 +129,9 @@ export type ControlActions = {
   // Read-only: it sends no command.
   openSource(id: string): void;
   refreshSources(): void;
+  // Lists one kind of source, or every kind for null, and keeps the choice in
+  // the query. The open record stays open.
+  selectSourceKind(kind: SourceKind | null): void;
   // Ideas, Explorations or Projects: a new kind reads the first page and drops
   // whatever dossier was open, because the item behind it is not in this list.
   selectResearchKind(kind: ResearchItemKind): void;

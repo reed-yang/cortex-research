@@ -15,6 +15,7 @@ from .paths import resolve_paths
 from .runtime_update.cli import add_runtime_parser, run_runtime_command
 from .runtime_update.service import RuntimeUpdateError
 from .transport_cli import add_transport_parser, run_transport_command
+from .xhs_cli import add_xhs_parser, run_xhs_command
 
 
 def _common_parser() -> argparse.ArgumentParser:
@@ -43,6 +44,7 @@ def _parser() -> argparse.ArgumentParser:
     stop_parser.add_argument("--timeout", type=float, default=10.0)
     add_runtime_parser(subparsers, common=common)
     add_transport_parser(subparsers, common=common)
+    add_xhs_parser(subparsers, common=common)
     readings = subparsers.add_parser("readings")
     actions = readings.add_subparsers(dest="readings_action", required=True)
     actions.add_parser("status", parents=[common])
@@ -119,6 +121,8 @@ def main(
             return run_runtime_command(arguments, paths, environ=environment)
         if arguments.command == "transport":
             return run_transport_command(arguments, paths)
+        if arguments.command == "xhs":
+            return run_xhs_command(arguments, paths)
         if arguments.command == "readings":
             from .config import load_config
             from .control import ControlStore

@@ -31,8 +31,9 @@ Hermes gen10 runtime is supplied separately. See
 - **Adopted documents and sources.** Dossiers and papers are adopted as
   immutable versioned documents, readable through Preview/Source with their
   provenance and evidence labels.
-- **Library and Inbox.** Search adopted sources, read their notes, full text and
-  grounding, and triage captures and pending decisions. Save an idea as written
+- **Library and Inbox.** Browse sources by kind (papers, blogs, XHS notes),
+  search adopted papers, read their notes, full text and grounding, and triage
+  captures and pending decisions. Save an idea as written
   from the Inbox or with Telegram `/idea`; saving starts no model turn, run or
   import ([user guide](docs/runbooks/cortex-web-user-guide.md#save-an-idea)).
 - **Research turns.** `/research <question>` builds one bounded, hashed evidence
@@ -41,7 +42,7 @@ Hermes gen10 runtime is supplied separately. See
   artifact. `/chat` leaves research mode. Follow-ups reuse the same packet.
 - **Saved Outputs.** Artifacts are immutable, render Markdown and KaTeX math,
   and expose exact source bytes and hashes.
-- **arXiv ingestion.** The engine's supported child operations are
+- **arXiv ingestion.** The engine's supported paper operations are
   `ingest_arxiv`, `checkpoint`, `reconcile_arxiv` and `self_check`. Ingestion is
   strict: a paper with no arXiv HTML is never silently degraded. It is OCRed
   only by an OCR skill the operator has installed and accepted
@@ -59,6 +60,15 @@ Hermes gen10 runtime is supplied separately. See
   another paper's ID-shaped number in that text), or a link on another host,
   are refused as `invalid_source`
   ([user guide](docs/runbooks/cortex-web-user-guide.md#retry-a-failed-paper-capture)).
+- **XHS notes and blogs.** An opt-in, disabled-by-default plugin follows
+  chosen Xiaohongshu bloggers through TikHub, saves each image note with a
+  verbatim OCR transcription of its images, and lists the papers and blogs it
+  recommends. You choose what to import: a paper becomes an ordinary Capture
+  you approve, and a blog is fetched, extracted and saved as a `blog` source
+  linked back to the note. `cortex xhs` follows bloggers, arms the plugin,
+  starts scans and shows status; TikHub, OCR and model calls have daily caps.
+  Notes and blogs are Library sources only, not research evidence
+  ([runbook](docs/runbooks/xhs.md)).
 - **External readings publication.** Opt-in macOS publication to an existing
   readings directory, with automatic additions, generated-file updates and
   protected notes. Publication runs in a no-delete sandbox and has separate
@@ -80,17 +90,19 @@ Hermes gen10 runtime is supplied separately. See
 
 Investment or any second agent profile; multi-profile dispatch (`HERMES_PROFILE`
 is denied); autonomous idea/exploration rounds, bulk revival, experiment
-execution and schedulers beyond the existing capture drain; generic HTML or PDF
-URL ingestion; a research MCP server, Kanban board, webhook or gateway;
+execution and schedulers beyond the existing capture drain and the opt-in XHS
+scan and drain; generic HTML or PDF URL ingestion (a blog page is fetched only
+when you import it from an XHS note); a research MCP server, Kanban board,
+webhook or gateway;
 multi-user hosting, public exposure and account management.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
-| `cortex_platform/product/` | Control store and API, orchestration, transports, engine, sources, artifacts, runtime updater |
+| `cortex_platform/product/` | Control store and API, orchestration, transports, engine, sources, artifacts, runtime updater and the XHS plugin, with no third-party imports |
 | `cortex_platform/runtime/` | The managed Hermes worker backend |
-| `profiles/research/src/cortex_research/` | Paper ingestion, arXiv client, indexing, chunking, embedding and catalog schemas |
+| `profiles/research/src/cortex_research/` | Paper ingestion, arXiv client, indexing, chunking, embedding and catalog schemas; the XHS, OCR, Responses and blog provider clients used only by engine children |
 | `apps/web/` | The Web and PWA client, its Node front door and its tests |
 | `distribution/` | Bundle composition, verification and the installed lifecycle (`cortex-dist`) |
 | `deployment/private_access/` | The optional private remote-access package |
@@ -152,7 +164,7 @@ All configuration is one versioned TOML file, parsed by
 `cortex_platform/product/config.py`. `cortex init` writes a starting file;
 `cortex doctor` explains what an installation is still missing. The sections are
 `paths`, `asset_roots`, `secret_refs`, `transports`, `runtime`, `web`,
-`readings` and `skills`; an unknown key is refused rather than ignored.
+`readings`, `skills` and `xhs`; an unknown key is refused rather than ignored.
 
 Filesystem roles come from `cortex_platform/product/paths.py`'s `PathRegistry`,
 which resolves a config, data, state, cache and log directory. Each can be
@@ -208,7 +220,12 @@ artifact metadata live in one `control.db` under the data directory. Artifact
 bytes live under the state directory; absolute asset paths never enter a public
 DTO. The Web listener is loopback-only and the Control token stays server-side.
 Nothing is uploaded anywhere except the model turns you send to the provider you
-configured.
+configured, and, only when you enable the XHS plugin, its provider calls:
+followed blogger and note IDs go to TikHub, note images go to Novita or GLM for
+OCR, captions, transcriptions and blog titles go to the configured Responses
+endpoint, and blog links go to the blog's own site and, as a fallback, to Jina
+Reader. The [XHS runbook](docs/runbooks/xhs.md#provider-data-disclosure) lists
+exactly what each recipient receives.
 
 `runtime.tools = "local"` requires a worker carrying managed tool policy v1.
 It enables commands in the private worker workspace and read-only access to
