@@ -219,6 +219,16 @@ def test_a_body_over_the_limit_is_refused() -> None:
     assert caught.value.category == "invalid_response"
 
 
+def test_a_malformed_compressed_body_is_an_invalid_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        # A stream, so the body is decoded while it is read, as from a server.
+        return httpx.Response(200, stream=httpx.ByteStream(b"not gzip at all"), headers={"content-encoding": "gzip"})
+
+    with pytest.raises(ProviderError) as caught:
+        fetch(handler)
+    assert caught.value.category == "invalid_response"
+
+
 def test_a_timeout_is_transient() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("slow", request=request)

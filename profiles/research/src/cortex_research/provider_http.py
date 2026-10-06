@@ -130,13 +130,18 @@ def read_bounded(
         raise ProviderError("invalid_response", f"{provider}: body exceeds {limit} bytes")
     chunks: list[bytes] = []
     size = 0
-    for chunk in response.iter_bytes():
-        size += len(chunk)
-        if size > limit:
-            raise ProviderError("invalid_response", f"{provider}: body exceeds {limit} bytes")
-        chunks.append(chunk)
-        if deadline is not None and deadline.expired():
-            raise ProviderError("transient", f"{provider}: deadline exceeded")
+    try:
+        for chunk in response.iter_bytes():
+            size += len(chunk)
+            if size > limit:
+                raise ProviderError("invalid_response", f"{provider}: body exceeds {limit} bytes")
+            chunks.append(chunk)
+            if deadline is not None and deadline.expired():
+                raise ProviderError("transient", f"{provider}: deadline exceeded")
+    except httpx.DecodingError as error:
+        # A malformed compressed body is neither a transport failure nor
+        # retryable; untyped, it would skip every caller's fallback.
+        raise ProviderError("invalid_response", f"{provider}: body could not be decoded") from error
     return b"".join(chunks)
 
 
