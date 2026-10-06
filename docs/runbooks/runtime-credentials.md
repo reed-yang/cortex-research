@@ -41,7 +41,7 @@ The opt-in [XHS plugin](xhs.md) adds `tikhub`, `sub2api-gpt` and the optional
 | --- | --- |
 | `xhs_list_page`, `xhs_note_detail` | `tikhub` |
 | `xhs_download_image` | none |
-| `xhs_ocr_image` | `novita`, `glm`, `glm-app-id` |
+| `xhs_ocr_image` | `novita`, `glm`, `glm-app-id`; `sub2api-gpt`, omitted when it does not resolve |
 | `xhs_identify`, `xhs_resolve_link` | `sub2api-gpt` |
 | `blog_fetch` | `jina`, omitted when it does not resolve |
 
@@ -49,8 +49,9 @@ The arXiv operations never resolve the three XHS aliases, so a missing or
 broken XHS reference cannot block paper ingestion. A configured XHS reference
 that fails to resolve fails that task as `auth` and stops the drain for that
 tick; fix it, then run `cortex xhs retry --failed`. Image OCR is first-party
-and uses `novita` (DeepSeek-OCR-2) with `glm` and `glm-app-id` as the
-fallback; it is separate from the PDF OCR skill.
+and uses `novita` (DeepSeek-OCR-2), then the Responses model through
+`sub2api-gpt` as the backup, then `glm` and `glm-app-id`; it is separate from
+the PDF OCR skill.
 
 For a trusted operator command from the checkout:
 

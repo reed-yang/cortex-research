@@ -70,12 +70,16 @@ Each provider operation receives only its own credentials:
 | --- | --- |
 | list page, note detail | `tikhub` |
 | image download | none |
-| image OCR | `novita`, `glm`, `glm-app-id` |
+| image OCR | `novita`, `glm`, `glm-app-id`; `sub2api-gpt`, optional |
 | identification, link search | `sub2api-gpt` |
 | blog fetch | `jina`, optional |
 
-Image OCR needs `novita`, or `glm` with `glm-app-id`, or both; without either
-every OCR task fails as `auth`. A missing XHS credential never affects arXiv
+Image OCR tries Novita (DeepSeek-OCR-2) first. When Novita fails or answers
+empty text, the Responses model (`gpt_model` at `gpt_base`, at low effort)
+transcribes the image, and GLM is the last resort. Each engine runs only when
+it is configured: Novita needs `novita`, the backup needs `gpt_base` and a
+resolvable `sub2api-gpt`, and GLM needs `glm` with `glm-app-id`. Without any
+of them every OCR task fails as `auth`. A missing XHS credential never affects arXiv
 ingestion. See
 [runtime credentials](runtime-credentials.md) for references and stores.
 
@@ -119,8 +123,8 @@ estimated calls with the newly queued scans.
 ## Caps
 
 `daily_calls` caps provider calls per UTC day. `tikhub` counts list and
-detail calls, `ocr` one per OCR task, and `gpt` identification and link
-search calls. Image downloads and blog fetches are not capped. Calls refused
+detail calls, `ocr` one per OCR task whichever engines it uses, and `gpt`
+identification and link search calls. Image downloads and blog fetches are not capped. Calls refused
 for `auth` or `payment` are not counted. When a provider reaches its cap, its
 tasks stay pending until the next UTC day; the other providers' tasks keep
 running. `cortex xhs status` shows today's calls against each cap.
@@ -208,8 +212,8 @@ With the plugin enabled, these leave the machine:
 | TikHub (`tikhub_base`) | The TikHub key, each followed blogger's user ID and list cursor, and each note ID for its detail |
 | XHS image CDN | One request per carousel image at its signed URL, without cookies |
 | Novita (DeepSeek-OCR-2) | Every downloaded image, with the `novita` key |
-| GLM (`layout_parsing`) | An image whose Novita OCR failed or came back empty, or every image when no `novita` key is configured, with the GLM credentials |
-| The Responses endpoint (`gpt_base`) | Each note's caption and every image transcription, and the title of each blog recommendation without a link, which the model searches the web for |
+| GLM (`layout_parsing`) | An image that no earlier OCR engine read, with the GLM credentials |
+| The Responses endpoint (`gpt_base`) | Each note's caption and every image transcription, the title of each blog recommendation without a link, which the model searches the web for, and each image whose Novita OCR failed or came back empty (every image when no `novita` key is configured) |
 | Blog sites | A request from this machine to check a found link (at most 2 MiB) and to import a blog (at most 5 MiB of HTML), without cookies, to public addresses only |
 | Jina Reader (`r.jina.ai`) | A blog URL whose page could not be fetched or yielded under 200 characters, with the `jina` key when one is configured |
 

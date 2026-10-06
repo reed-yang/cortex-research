@@ -316,6 +316,36 @@ def test_ocr_reads_local_bytes_and_uses_only_ocr_keys(monkeypatch, credentials, 
     assert changed.category == "invalid_response"
 
 
+def test_ocr_uses_the_responses_backup_only_with_a_configured_base(
+    monkeypatch, credentials, tmp_path
+) -> None:
+    image = png()
+    path = tmp_path / "image.png"
+    path.write_bytes(image)
+    answers = {
+        "api.novita.ai": lambda: httpx.Response(503),
+        "gpt.example": lambda: httpx.Response(200, json=responses_answer("第一页 backup")),
+        "open.bigmodel.cn": lambda: httpx.Response(200, json={"md_results": "glm text"}),
+    }
+    recorder = Recorder(lambda request: answers[request.url.host]())
+    fake_http(monkeypatch, recorder)
+    payload = {"image_path": str(path), "sha256": hashlib.sha256(image).hexdigest()}
+
+    engine = dispatch("xhs_ocr_image", {**payload, "gpt_base": "https://gpt.example/v1",
+                                         "gpt_model": "gpt-6-luna"})["engine"]
+    assert [request.url.host for request in recorder.requests] == ["api.novita.ai", "gpt.example"]
+    assert engine["engine"] == "responses" and engine["markdown"] == "第一页 backup"
+    backup = recorder.requests[1]
+    assert backup.url.path == "/v1/responses"
+    assert backup.headers["authorization"] == "Bearer dummy-gpt"
+    assert json.loads(backup.content)["reasoning"] == {"effort": "low"}
+
+    recorder.requests.clear()
+    engine = dispatch("xhs_ocr_image", {**payload, "gpt_base": "", "gpt_model": "gpt-6-luna"})["engine"]
+    assert [request.url.host for request in recorder.requests] == ["api.novita.ai", "open.bigmodel.cn"]
+    assert engine["engine"] == "glm-ocr"
+
+
 TRANSCRIPTIONS = [
     {"image": 1, "text": "Reading list\nAttention Is All You Need arXiv:1706.03762"},
     {"image": 3, "text": "Blog: The Illustrated Transformer https://jalammar.example/illustrated"},

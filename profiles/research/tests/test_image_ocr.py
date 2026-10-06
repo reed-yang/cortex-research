@@ -32,11 +32,18 @@ def glm_answer(markdown: str) -> dict:
             "usage": {"total_tokens": 5}}
 
 
+def responses_answer(text: str) -> dict:
+    return {"id": "resp-synthetic", "status": "completed", "model": "gpt-6-luna",
+            "output": [{"type": "reasoning", "summary": []},
+                       {"type": "message", "content": [{"type": "output_text", "text": text}]}],
+            "usage": {"input_tokens": 9, "output_tokens": 3}}
+
+
 class Providers:
     """Answers per host, recording each request."""
 
-    def __init__(self, novita=None, glm=None) -> None:
-        self.answers = {"api.novita.ai": novita, "open.bigmodel.cn": glm}
+    def __init__(self, novita=None, glm=None, responses=None) -> None:
+        self.answers = {"api.novita.ai": novita, "open.bigmodel.cn": glm, "gpt.example": responses}
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -57,6 +64,8 @@ class Providers:
 
 
 KEYS = {"novita_key": "nv-key", "glm_app_id": "glm-id", "glm_key": "glm-key"}
+BACKUP = {"responses_key": "gpt-key", "responses_base": "https://gpt.example/v1",
+          "responses_model": "gpt-6-luna"}
 
 
 def test_deepseek_request_shape_and_grounding_removal() -> None:
@@ -148,6 +157,74 @@ def test_a_failure_of_both_engines_keeps_one_category(novita, glm, category) -> 
         image_ocr.ocr_image(IMAGE, "image/png", transport=providers.transport, **KEYS)
     assert caught.value.category == category
     for secret in KEYS.values():
+        assert secret not in caught.value.message
+
+
+def test_a_deepseek_failure_uses_the_responses_backup_before_glm() -> None:
+    providers = Providers(novita=429, responses=responses_answer("  backup text\n"), glm=glm_answer("never"))
+    result = image_ocr.ocr_image(IMAGE, "image/png", transport=providers.transport, **KEYS, **BACKUP)
+    assert providers.hosts() == ["api.novita.ai", "gpt.example"]
+    request = providers.requests[1]
+    assert request.url.path == "/v1/responses"
+    assert request.headers["authorization"] == "Bearer gpt-key"
+    body = json.loads(request.content)
+    assert body["model"] == "gpt-6-luna" and body["stream"] is False
+    assert body["reasoning"] == {"effort": "low"}
+    content = body["input"][0]["content"]
+    assert content[0] == {"type": "input_text", "text": image_ocr.RESPONSES_PROMPT}
+    assert content[1] == {"type": "input_image", "detail": "high",
+                          "image_url": "data:image/png;base64," + base64.b64encode(IMAGE).decode()}
+    assert result.engine == "responses" and result.markdown == "backup text" and result.flags == ()
+    assert [(a.engine, a.ok, a.category) for a in result.attempts] == [
+        ("deepseek-ocr-2", False, "rate_limited"),
+        ("responses", True, None),
+    ]
+    assert set(result.raw) == {"responses"}
+
+
+def test_an_empty_deepseek_answer_uses_the_backup() -> None:
+    providers = Providers(novita=deepseek_answer(""), responses=responses_answer("backup"))
+    result = image_ocr.ocr_image(IMAGE, "image/png", transport=providers.transport, **KEYS, **BACKUP)
+    assert providers.hosts() == ["api.novita.ai", "gpt.example"]
+    assert result.engine == "responses" and set(result.raw) == {"deepseek-ocr-2", "responses"}
+
+
+@pytest.mark.parametrize(
+    ("backup", "category"),
+    [
+        (503, "transient"),
+        ({"status": "incomplete", "output": []}, "invalid_response"),
+        (responses_answer("   "), "invalid_response"),
+    ],
+)
+def test_a_failed_backup_falls_back_to_glm(backup, category) -> None:
+    providers = Providers(novita=500, responses=backup, glm=glm_answer("glm text"))
+    result = image_ocr.ocr_image(IMAGE, "image/png", transport=providers.transport, **KEYS, **BACKUP)
+    assert providers.hosts() == ["api.novita.ai", "gpt.example", "open.bigmodel.cn"]
+    assert result.engine == "glm-ocr" and result.markdown == "glm text"
+    assert [(a.engine, a.category) for a in result.attempts][1] == ("responses", category)
+
+
+def test_the_backup_needs_its_key_base_and_model() -> None:
+    for missing in BACKUP:
+        providers = Providers(novita=500, glm=glm_answer("glm text"))
+        partial = {name: value for name, value in BACKUP.items() if name != missing}
+        result = image_ocr.ocr_image(IMAGE, "image/png", transport=providers.transport, **KEYS, **partial)
+        assert providers.hosts() == ["api.novita.ai", "open.bigmodel.cn"] and result.engine == "glm-ocr"
+
+
+def test_the_backup_alone_is_enough() -> None:
+    providers = Providers(responses=responses_answer("only backup"))
+    result = image_ocr.ocr_image(IMAGE, "image/png", transport=providers.transport, **BACKUP)
+    assert providers.hosts() == ["gpt.example"] and result.engine == "responses"
+
+
+def test_a_failure_of_all_three_engines_keeps_one_category_and_no_secret() -> None:
+    providers = Providers(novita=401, responses=429, glm=400)
+    with pytest.raises(ProviderError) as caught:
+        image_ocr.ocr_image(IMAGE, "image/png", transport=providers.transport, **KEYS, **BACKUP)
+    assert caught.value.category == "rate_limited"
+    for secret in (*KEYS.values(), BACKUP["responses_key"]):
         assert secret not in caught.value.message
 
 

@@ -396,7 +396,13 @@ class OcrHandler(TaskHandler):
         path = drain.staging_dir(payload["note_id"]) / payload["name"]
         if not path.is_file():
             raise ValueError("staged image is missing")
-        return {"image_path": str(path), "sha256": payload["sha256"]}
+        return {
+            "image_path": str(path),
+            "sha256": payload["sha256"],
+            # The OCR backup's endpoint and model; its effort is fixed in the client.
+            "gpt_base": drain.settings.gpt_base,
+            "gpt_model": drain.settings.gpt_model,
+        }
 
     def finish(self, drain, task, engine):
         payload = task["payload"]
