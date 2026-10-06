@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { copy } from "../../app/shell/copy";
@@ -283,7 +283,8 @@ describe("XHS note record", () => {
       })),
     });
     const region = await openNote(control);
-    for (const box of within(region).getAllByRole("checkbox")) await userEvent.click(box);
+    // fireEvent keeps 101 clicks well inside the default timeout; userEvent took ~5 s on CI.
+    for (const box of within(region).getAllByRole("checkbox")) fireEvent.click(box);
     const importButton = within(region).getByRole("button", { name: copy.xhs.importSelected });
     expect((importButton as HTMLButtonElement).disabled).toBe(true);
     expect(within(region).getByText(copy.xhs.importTooMany)).toBeTruthy();
