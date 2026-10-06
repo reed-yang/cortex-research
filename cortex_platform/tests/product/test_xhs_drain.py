@@ -179,6 +179,7 @@ class ScriptedSupervisor:
     calls: list[tuple[str, dict[str, Any], Any]] = field(default_factory=list)
     discarded: list[str] = field(default_factory=list)
     timeout_seconds: int = 600
+    stopping: bool = False
 
     def run(self, operation: str, payload, *, write_roots=None) -> Execution:
         if not self.store.runtime_dispatch_enabled():
@@ -369,6 +370,18 @@ def test_a_closed_dispatch_gate_claims_nothing(
     assert {task["state"] for task in tasks(store)} == {"pending"}
     tick = ResearchScheduleTick(store=store, consumer=_NoCaptures(), xhs=drain)
     assert tick.run().gate_enabled is False
+
+
+def test_a_daemon_shutdown_launches_no_further_child(
+    store: ControlStore, supervisor: ScriptedSupervisor
+) -> None:
+    drain = drain_for(store, supervisor)
+    drain.pull()
+    supervisor.stopping = True
+    assert drain.drain().stopped == "stopping"
+    assert drain.run_job("xhs_drain") == ("skipped", 0)
+    assert supervisor.calls == []
+    assert {task["state"] for task in tasks(store)} == {"pending"}
 
 
 class _NoCaptures:

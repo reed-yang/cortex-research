@@ -137,10 +137,17 @@ class ResearchEffectSupervisor:
         # The child of the effect currently running, so a daemon shutdown can
         # end it rather than orphan it.
         self._in_flight: subprocess.Popen[str] | None = None
+        self._stopping = False
 
     @property
     def timeout_seconds(self) -> int:
         return self._timeout
+
+    @property
+    def stopping(self) -> bool:
+        """True once a daemon shutdown has ended the in-flight child."""
+
+        return self._stopping
 
     @property
     def in_flight(self) -> subprocess.Popen[str] | None:
@@ -156,9 +163,11 @@ class ResearchEffectSupervisor:
         the copied `research.db` -- after `cortex stop` returned. Killing it
         first turns that orphan into the killed-child path V3 and ⟦AMD-5⟧
         already model: the supervisor reads no result, judges `outcome_unknown`,
-        and the capture waits for the operator.
+        and the capture waits for the operator. A batch that asks `stopping`
+        before its next claim then launches no further child.
         """
 
+        self._stopping = True
         process = self._in_flight
         if process is None or process.poll() is not None:
             return

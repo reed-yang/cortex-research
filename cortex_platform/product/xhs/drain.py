@@ -628,7 +628,8 @@ class XhsDrain:
             report = self.drain()
             if report.stopped == "runtime_activation_disabled":
                 return "refused", len(report.units)
-            if report.stopped is not None:
+            # A daemon shutdown ends the batch early; it is not the job's failure.
+            if report.stopped not in (None, "stopping"):
                 return "failed", len(report.units)
             return ("ran" if report.units else "skipped"), len(report.units)
         return "skipped", 0
@@ -662,6 +663,9 @@ class XhsDrain:
         capped: set[str] = set()
         counted = 0
         while counted < self.settings.drain_units_per_tick:
+            # A shutdown ended the last child; the next would outlive cortexd.
+            if getattr(self._supervisor, "stopping", False):
+                return DrainReport(tuple(units), "stopping")
             # Asked again before every claim: a window can lapse mid-tick.
             if not self.store.runtime_dispatch_enabled():
                 return DrainReport(tuple(units), "runtime_activation_disabled")
