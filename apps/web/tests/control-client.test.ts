@@ -1242,6 +1242,12 @@ describe("XHS note, link and status contracts", () => {
     expect(() => decodeXhsNote(withRecommendation(extra))).toThrowError(ContractDecodeError);
   });
 
+  it("bounds XHS text in code points, as Control does", () => {
+    const quote = "📄".repeat(4_000);
+    expect(decodeXhsNote(withRecommendation({ quote })).recommendations[0]!.quote).toBe(quote);
+    expect(() => decodeXhsNote(withRecommendation({ quote: quote + "📄" }))).toThrowError(ContractDecodeError);
+  });
+
   it("accepts a link-bearing state whose link Control withheld", () => {
     const decoded = decodeXhsNote(withRecommendation({ kind: "blog", arxiv_id: null, url: null, url_state: "operator_set" }));
     expect(decoded.recommendations[0]).toMatchObject({ url: null, url_state: "operator_set" });

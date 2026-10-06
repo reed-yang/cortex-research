@@ -1249,8 +1249,18 @@ function nullableBoundedInteger(value: unknown, path: string, minimum: number, m
   return value === null ? null : boundedInteger(value, path, minimum, maximum);
 }
 
-function nullableSourceText(value: unknown, path: string, maximum: number): string | null {
-  return value === null ? null : sourceText(value, path, maximum);
+// Control bounds XHS text with Python's len(), which counts code points. An
+// emoji is one code point but two UTF-16 units, so `.length` would refuse text
+// Control accepted.
+function codePointText(value: unknown, path: string, maximum: number, minimum = 1): string {
+  const decoded = decodeString(value, path);
+  const length = Array.from(decoded).length;
+  if (length < minimum || length > maximum) fail(path, "string length is outside the contract bound");
+  return publicSourceText(decoded, path);
+}
+
+function nullableCodePointText(value: unknown, path: string, maximum: number): string | null {
+  return value === null ? null : codePointText(value, path, maximum);
 }
 
 function category(value: unknown, path: string): string | null {
@@ -1278,7 +1288,7 @@ function noteHeader(record: ObjectValue, path: string): XhsNoteHeader {
   return {
     source_id: identifier(record.source_id, path + ".source_id"),
     note_id: matching(record.note_id, path + ".note_id", XHS_ID),
-    title: sourceText(record.title, path + ".title", 500, 0),
+    title: codePointText(record.title, path + ".title", 500, 0),
     state: oneOf(record.state, path + ".state", XHS_NOTE_STATES),
     last_error: category(record.last_error, path + ".last_error"),
     content_version: positiveInteger(record.content_version, path + ".content_version"),
@@ -1359,12 +1369,12 @@ export function decodeXhsRecommendation(value: unknown, path = "xhs_recommendati
     id: matching(record.id, path + ".id", PUBLIC_ID),
     image_ordinal: nullableBoundedInteger(record.image_ordinal, path + ".image_ordinal", 1, MAX_XHS_IMAGES),
     kind,
-    title: sourceText(record.title, path + ".title", 1_000),
-    quote: sourceText(record.quote, path + ".quote", 4_000),
+    title: codePointText(record.title, path + ".title", 1_000),
+    quote: codePointText(record.quote, path + ".quote", 4_000),
     arxiv_id: arxivId,
     url,
     url_state: urlState,
-    url_checked_title: nullableSourceText(record.url_checked_title, path + ".url_checked_title", 1_000),
+    url_checked_title: nullableCodePointText(record.url_checked_title, path + ".url_checked_title", 1_000),
     origin: oneOf(record.origin, path + ".origin", XHS_ORIGINS),
     identify_run: matching(record.identify_run, path + ".identify_run", XHS_TASK_ID),
     capture_id: captureId,
@@ -1403,12 +1413,12 @@ export function decodeXhsNote(value: unknown, path = "xhs_note"): XhsNote {
     ...header,
     blogger: {
       user_id: matching(blogger.user_id, path + ".blogger.user_id", XHS_ID),
-      name: nullableSourceText(blogger.name, path + ".blogger.name", 200),
+      name: nullableCodePointText(blogger.name, path + ".blogger.name", 200),
       role: nullableOneOf(blogger.role, path + ".blogger.role", XHS_ROLES),
     },
     permalink,
     published_at: nullableTimestamp(record.published_at, path + ".published_at"),
-    caption: sourceText(record.caption, path + ".caption", 20_000, 0),
+    caption: codePointText(record.caption, path + ".caption", 20_000, 0),
     caption_complete: decodeBoolean(record.caption_complete, path + ".caption_complete"),
     images,
     recommendations,
@@ -1420,7 +1430,7 @@ function decodeSourceLinkEntry(value: unknown, path: string): SourceLinkEntry {
   return {
     source_id: identifier(record.source_id, path + ".source_id"),
     source_kind: oneOf(record.source_kind, path + ".source_kind", SOURCE_KINDS),
-    title: sourceText(record.title, path + ".title", 2_000),
+    title: codePointText(record.title, path + ".title", 2_000),
     image_ordinal: nullableBoundedInteger(record.image_ordinal, path + ".image_ordinal", 1, MAX_XHS_IMAGES),
     recommendation_id: matching(record.recommendation_id, path + ".recommendation_id", PUBLIC_ID),
     created_at: timestamp(record.created_at, path + ".created_at"),
@@ -1513,7 +1523,7 @@ function decodeXhsBloggerStatus(value: unknown, path: string): XhsBloggerStatus 
   if ((error !== null) !== (outcome === "failed")) fail(path + ".last_scan_error", "a failed scan, and only a failed scan, carries a category");
   return {
     user_id: matching(record.user_id, path + ".user_id", XHS_ID),
-    display_name: nullableSourceText(record.display_name, path + ".display_name", 200),
+    display_name: nullableCodePointText(record.display_name, path + ".display_name", 200),
     role: oneOf(record.role, path + ".role", XHS_ROLES),
     followed: decodeBoolean(record.followed, path + ".followed"),
     last_scan_at: scannedAt,
