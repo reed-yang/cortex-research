@@ -1,8 +1,9 @@
 # XHS notes, blogs and recommendation import
 
-Status: implemented on `feat/xhs-sources` (stacked on the Library reader,
-`docs/plans/library-reader.md`). Provider-free tests only; live provider
-acceptance is still pending (see the end of this file). Where the
+Status: implemented in #52 and released in product 0.1.30, with the plugin
+off by default. It builds on the Library reader (`docs/plans/library-reader.md`).
+Provider-free tests only; live provider acceptance is still pending (see the
+end of this file). Where the
 implementation differs from the first draft, the text below describes what was
 built; open limits are listed under [Known limits](#known-limits). Operator
 procedures are in `docs/runbooks/xhs.md`.
