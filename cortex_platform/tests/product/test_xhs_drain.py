@@ -519,7 +519,7 @@ def test_a_failed_image_keeps_its_ordinal_while_later_images_proceed(
         hashlib.sha256(first).hexdigest(): ("# Speculative decoding\narXiv:2601.00042", []),
         hashlib.sha256(third).hexdigest(): ("推荐阅读 Attention sinks", ["truncated"]),
     })
-    drain = drain_for(store, supervisor)
+    drain = drain_for(store, supervisor, gpt_base="https://gpt.example/v1")
     drain.pull()
     drain.drain()
     note = store.get_xhs_note(note_id(1))
@@ -544,6 +544,9 @@ def test_a_failed_image_keeps_its_ordinal_while_later_images_proceed(
         assert SIGNATURE not in path.read_text(encoding="utf-8")
     assert all(SIGNATURE not in json.dumps(task["result"]) for task in tasks(store))
     assert supervisor.operations().count("xhs_ocr_image") == 2
+    # Each OCR child gets the backup's endpoint and model from the settings.
+    assert {(payload["gpt_base"], payload["gpt_model"]) for operation, payload, _ in supervisor.calls
+            if operation == "xhs_ocr_image"} == {("https://gpt.example/v1", "gpt-6-luna")}
     assert store.xhs_usage() == {"gpt": 0, "ocr": 2, "tikhub": 3}
     assert len(supervisor.discarded) == len(supervisor.calls)
 

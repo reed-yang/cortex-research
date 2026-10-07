@@ -14,7 +14,7 @@ entry point unless you configure the optional private-access path.
 [`docs/runbooks/cortex-web-user-guide.md`](docs/runbooks/cortex-web-user-guide.md)
 walks through the surfaces once it is running.
 
-Product 0.1.30 uses installation sequence 30 and Control schema 21. The qualified
+Product 0.1.31 uses installation sequence 31 and Control schema 21. The qualified
 Hermes gen10 runtime is supplied separately. See
 [`CHANGELOG.md`](CHANGELOG.md) for changes through 0.1.23 and
 [`docs/releases/`](docs/releases/) for later releases and their validation boundaries.
@@ -221,9 +221,9 @@ bytes live under the state directory; absolute asset paths never enter a public
 DTO. The Web listener is loopback-only and the Control token stays server-side.
 Nothing is uploaded anywhere except the model turns you send to the provider you
 configured, and, only when you enable the XHS plugin, its provider calls:
-followed blogger and note IDs go to TikHub, note images go to Novita or GLM for
-OCR, captions, transcriptions and blog titles go to the configured Responses
-endpoint, and blog links go to the blog's own site and, as a fallback, to Jina
+followed blogger and note IDs go to TikHub, note images go to the configured
+Responses endpoint for OCR and, when it cannot read one, to Novita and then
+GLM, captions, transcriptions and blog titles go to that Responses endpoint, and blog links go to the blog's own site and, as a fallback, to Jina
 Reader. The [XHS runbook](docs/runbooks/xhs.md#provider-data-disclosure) lists
 exactly what each recipient receives.
 

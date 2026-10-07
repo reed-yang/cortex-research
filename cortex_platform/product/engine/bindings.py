@@ -243,7 +243,10 @@ OPERATION_SECRET_SCOPES: Mapping[str, SecretScope] = MappingProxyType(
         "xhs_list_page": SecretScope(frozenset({"tikhub"})),
         "xhs_note_detail": SecretScope(frozenset({"tikhub"})),
         "xhs_download_image": SecretScope(frozenset()),
-        "xhs_ocr_image": SecretScope(frozenset({"novita", "glm", "glm-app-id"})),
+        # The GPT key serves the first OCR engine; an unreadable one skips it.
+        "xhs_ocr_image": SecretScope(
+            frozenset({"novita", "glm", "glm-app-id"}), optional=frozenset({"sub2api-gpt"})
+        ),
         "xhs_identify": SecretScope(frozenset({"sub2api-gpt"})),
         "xhs_resolve_link": SecretScope(frozenset({"sub2api-gpt"})),
         "blog_fetch": SecretScope(frozenset(), optional=frozenset({"jina"})),

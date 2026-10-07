@@ -385,6 +385,11 @@ def _xhs_ocr_image(payload: Mapping[str, Any]) -> dict[str, Any]:
         for name in ("novita_base", "glm_url")
         if payload.get(name)
     }
+    # The Responses engine runs first, and only with a configured `gpt_base`
+    # and a resolved `sub2api-gpt`; without either, OCR is DeepSeek then GLM.
+    if payload.get("gpt_base") and payload.get("gpt_model"):
+        overrides["responses_base"] = _payload_text(payload, "gpt_base")
+        overrides["responses_model"] = _payload_text(payload, "gpt_model", maximum=200)
     result = _provider_call(
         image_ocr.ocr_image,
         data,
@@ -392,6 +397,7 @@ def _xhs_ocr_image(payload: Mapping[str, Any]) -> dict[str, Any]:
         novita_key=_credential("novita") or None,
         glm_app_id=_credential("glm-app-id") or None,
         glm_key=_credential("glm") or None,
+        responses_key=_credential("sub2api-gpt") or None,
         **overrides,
     )
     return {

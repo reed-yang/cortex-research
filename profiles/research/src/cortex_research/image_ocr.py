@@ -1,10 +1,13 @@
-"""Single-image OCR: Novita DeepSeek-OCR-2, with GLM-OCR as the fallback.
+"""Single-image OCR: the Responses model, then Novita DeepSeek-OCR-2, then GLM-OCR.
 
 This is first-party image OCR for XHS carousel images. PDF OCR stays the
-operator skill's (`paper_ingest.py`). The request shapes match the skill's
-recorded ones: DeepSeek through Novita's OpenAI-compatible chat endpoint with
-the grounding prompt, GLM through `layout_parsing` with the image as a data
-URL and no prompt.
+operator skill's (`paper_ingest.py`). The first engine is the operator's
+Responses endpoint (`[xhs] gpt_base` and `gpt_model`) with the image as an
+`input_image`: unlike DeepSeek it reads the vertical arXiv stamp on a paper's
+first page, and identification keeps only arXiv IDs a transcription writes.
+The DeepSeek and GLM request shapes match the skill's recorded ones: DeepSeek
+through Novita's OpenAI-compatible chat endpoint with the grounding prompt, GLM
+through `layout_parsing` with the image as a data URL and no prompt.
 
 One call has an aggregate deadline (300 s by default). Each engine gets one
 request inside it and there is no retry loop: a later attempt is the task
@@ -16,11 +19,12 @@ from __future__ import annotations
 import base64
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import httpx
 
 from .provider_http import RETRYABLE, Deadline, ProviderError, client, request_json
+from .responses_client import output_text
 
 NOVITA_BASE = "https://api.novita.ai/openai"
 NOVITA_MODEL = "deepseek/deepseek-ocr-2"
@@ -33,7 +37,20 @@ NOVITA_TIMEOUT_SECONDS = 180.0
 GLM_TIMEOUT_SECONDS = 120.0
 MAX_ANSWER_BYTES = 32 * 1024 * 1024
 ENGINE_DEEPSEEK = "deepseek-ocr-2"
+ENGINE_RESPONSES = "responses"
 ENGINE_GLM = "glm-ocr"
+# Low effort: in a blind comparison on carousel images, higher effort read
+# illegible small text more eagerly and invented more of it; low skipped it.
+RESPONSES_EFFORT = "low"
+RESPONSES_TIMEOUT_SECONDS = 120.0
+RESPONSES_PROMPT = (
+    "Transcribe every piece of visible text in this image exactly as written. Keep the "
+    "original language, reading order and line breaks. Render headings, lists and tables "
+    "as Markdown and equations as LaTeX. Copy titles, author names, URLs and arXiv IDs "
+    "character for character. Leave out text inside charts, plots and diagrams. Do not "
+    "summarize, translate, correct, complete or add anything that is not visible; write "
+    "[?] for a glyph you cannot read. Output only the transcription."
+)
 
 # DeepSeek grounding headers: `label[[x1, y1, x2, y2]]`, optionally several
 # boxes. Anchored on four integers, so `W[[i]]` in body text is never a header.
@@ -154,6 +171,53 @@ def _deepseek(
     )
 
 
+def _responses(
+    http: httpx.Client,
+    data: bytes,
+    media_type: str,
+    *,
+    api_key: str,
+    base: str,
+    model: str,
+    deadline: Deadline,
+) -> OcrResult:
+    document = request_json(
+        http,
+        "POST",
+        base.rstrip("/") + "/responses",
+        provider="responses",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_body={
+            "model": model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": RESPONSES_PROMPT},
+                        {"type": "input_image", "image_url": _data_url(data, media_type), "detail": "high"},
+                    ],
+                }
+            ],
+            "stream": False,
+            "reasoning": {"effort": RESPONSES_EFFORT},
+        },
+        timeout=deadline.timeout(RESPONSES_TIMEOUT_SECONDS, provider="responses"),
+        max_bytes=MAX_ANSWER_BYTES,
+        deadline=deadline,
+    )
+    # An incomplete or textless answer is `invalid_response`, so the next engine runs.
+    markdown = output_text(document).strip()
+    usage = document.get("usage") if isinstance(document.get("usage"), dict) else None
+    return OcrResult(
+        engine=ENGINE_RESPONSES,
+        markdown=markdown,
+        flags=(),
+        finish_reason=None,
+        usage=usage,
+        raw={ENGINE_RESPONSES: document},
+    )
+
+
 def _glm(
     http: httpx.Client,
     data: bytes,
@@ -216,6 +280,9 @@ def ocr_image(
     novita_key: str | None = None,
     glm_app_id: str | None = None,
     glm_key: str | None = None,
+    responses_key: str | None = None,
+    responses_base: str | None = None,
+    responses_model: str | None = None,
     novita_base: str = NOVITA_BASE,
     glm_url: str = GLM_URL,
     deadline_seconds: float = DEADLINE_SECONDS,
@@ -224,55 +291,52 @@ def ocr_image(
 ) -> OcrResult:
     """Transcribe one image verbatim.
 
-    DeepSeek runs first when its key is present. GLM runs when DeepSeek failed,
-    answered empty text, or has no key. A truncated DeepSeek answer is kept
-    and flagged rather than replaced. When GLM also fails after an empty
-    DeepSeek answer, the empty answer is the result, flagged `empty`.
+    The engines run in order, each only when configured: the Responses model,
+    then DeepSeek, then GLM. The next one runs when the previous failed or
+    answered empty text. A truncated DeepSeek answer is kept and flagged
+    rather than replaced. When every later engine fails or is empty too, the
+    first empty answer is the result, flagged `empty`.
     """
 
     if not data:
         raise ValueError("image bytes are empty")
-    have_glm = bool(glm_app_id and glm_key)
-    if not novita_key and not have_glm:
-        raise ProviderError("auth", "ocr: no novita or glm credential is configured")
     deadline = deadline or Deadline(deadline_seconds)
+    engines: list[tuple[str, Callable[[httpx.Client], OcrResult]]] = []
+    if responses_key and responses_base and responses_model:
+        engines.append((ENGINE_RESPONSES, lambda http: _responses(
+            http, data, media_type, api_key=responses_key, base=responses_base,
+            model=responses_model, deadline=deadline,
+        )))
+    if novita_key:
+        engines.append((ENGINE_DEEPSEEK, lambda http: _deepseek(
+            http, data, media_type, api_key=novita_key, base=novita_base, deadline=deadline
+        )))
+    if glm_app_id and glm_key:
+        engines.append((ENGINE_GLM, lambda http: _glm(
+            http, data, media_type, app_id=str(glm_app_id), api_key=str(glm_key), url=glm_url,
+            deadline=deadline,
+        )))
+    if not engines:
+        raise ProviderError("auth", "ocr: no novita, responses or glm credential is configured")
     attempts: list[OcrAttempt] = []
     failures: list[ProviderError] = []
     raw: dict[str, Any] = {}
-    primary: OcrResult | None = None
+    empty: OcrResult | None = None
     with client(transport) as http:
-        if novita_key:
+        for engine, run in engines:
             try:
-                primary = _deepseek(
-                    http, data, media_type, api_key=novita_key, base=novita_base, deadline=deadline
-                )
-                raw.update(primary.raw)
-                attempts.append(OcrAttempt(ENGINE_DEEPSEEK, True))
-                if "empty" not in primary.flags:
-                    return _with(primary, raw, attempts)
+                result = run(http)
             except ProviderError as error:
                 failures.append(error)
-                attempts.append(OcrAttempt(ENGINE_DEEPSEEK, False, error.category, error.message))
-        if have_glm:
-            try:
-                fallback = _glm(
-                    http,
-                    data,
-                    media_type,
-                    app_id=str(glm_app_id),
-                    api_key=str(glm_key),
-                    url=glm_url,
-                    deadline=deadline,
-                )
-                raw.update(fallback.raw)
-                attempts.append(OcrAttempt(ENGINE_GLM, True))
-                if "empty" not in fallback.flags or primary is None:
-                    return _with(fallback, raw, attempts)
-            except ProviderError as error:
-                failures.append(error)
-                attempts.append(OcrAttempt(ENGINE_GLM, False, error.category, error.message))
-    if primary is not None:
-        return _with(primary, raw, attempts)
+                attempts.append(OcrAttempt(engine, False, error.category, error.message))
+                continue
+            raw.update(result.raw)
+            attempts.append(OcrAttempt(engine, True))
+            if "empty" not in result.flags:
+                return _with(result, raw, attempts)
+            empty = empty or result
+    if empty is not None:
+        return _with(empty, raw, attempts)
     raise _combined_failure(failures)
 
 

@@ -72,6 +72,7 @@ def test_every_operation_has_a_scope_and_arxiv_keeps_its_credentials() -> None:
     for operation, aliases in expected.items():
         assert operation_secret_scope(operation).aliases == aliases
     assert operation_secret_scope("blog_fetch").optional == {"jina"}
+    assert operation_secret_scope("xhs_ocr_image").optional == {"sub2api-gpt"}
     unknown = operation_secret_scope("not_an_operation")
     assert not unknown.aliases and not unknown.optional
 
