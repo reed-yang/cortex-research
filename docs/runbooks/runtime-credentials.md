@@ -49,9 +49,9 @@ The arXiv operations never resolve the three XHS aliases, so a missing or
 broken XHS reference cannot block paper ingestion. A configured XHS reference
 that fails to resolve fails that task as `auth` and stops the drain for that
 tick; fix it, then run `cortex xhs retry --failed`. Image OCR is first-party
-and uses `novita` (DeepSeek-OCR-2), then the Responses model through
-`sub2api-gpt` as the backup, then `glm` and `glm-app-id`; it is separate from
-the PDF OCR skill.
+and uses the Responses model through `sub2api-gpt`, then `novita`
+(DeepSeek-OCR-2), then `glm` and `glm-app-id`; it is separate from the PDF OCR
+skill.
 
 For a trusted operator command from the checkout:
 

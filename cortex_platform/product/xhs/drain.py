@@ -399,7 +399,7 @@ class OcrHandler(TaskHandler):
         return {
             "image_path": str(path),
             "sha256": payload["sha256"],
-            # The OCR backup's endpoint and model; its effort is fixed in the client.
+            # The Responses OCR engine's endpoint and model; its effort is fixed in the client.
             "gpt_base": drain.settings.gpt_base,
             "gpt_model": drain.settings.gpt_model,
         }

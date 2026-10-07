@@ -221,8 +221,8 @@ bytes live under the state directory; absolute asset paths never enter a public
 DTO. The Web listener is loopback-only and the Control token stays server-side.
 Nothing is uploaded anywhere except the model turns you send to the provider you
 configured, and, only when you enable the XHS plugin, its provider calls:
-followed blogger and note IDs go to TikHub, note images go to Novita for OCR
-and, when Novita cannot read one, to the configured Responses endpoint and then
+followed blogger and note IDs go to TikHub, note images go to the configured
+Responses endpoint for OCR and, when it cannot read one, to Novita and then
 GLM, captions, transcriptions and blog titles go to that Responses endpoint, and blog links go to the blog's own site and, as a fallback, to Jina
 Reader. The [XHS runbook](docs/runbooks/xhs.md#provider-data-disclosure) lists
 exactly what each recipient receives.

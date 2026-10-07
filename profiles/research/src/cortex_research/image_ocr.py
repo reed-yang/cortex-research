@@ -1,12 +1,13 @@
-"""Single-image OCR: Novita DeepSeek-OCR-2, then the Responses model, then GLM-OCR.
+"""Single-image OCR: the Responses model, then Novita DeepSeek-OCR-2, then GLM-OCR.
 
 This is first-party image OCR for XHS carousel images. PDF OCR stays the
-operator skill's (`paper_ingest.py`). The DeepSeek and GLM request shapes match
-the skill's recorded ones: DeepSeek through Novita's OpenAI-compatible chat
-endpoint with the grounding prompt, GLM through `layout_parsing` with the image
-as a data URL and no prompt. The backup between them is the operator's
+operator skill's (`paper_ingest.py`). The first engine is the operator's
 Responses endpoint (`[xhs] gpt_base` and `gpt_model`) with the image as an
-`input_image`.
+`input_image`: unlike DeepSeek it reads the vertical arXiv stamp on a paper's
+first page, and identification keeps only arXiv IDs a transcription writes.
+The DeepSeek and GLM request shapes match the skill's recorded ones: DeepSeek
+through Novita's OpenAI-compatible chat endpoint with the grounding prompt, GLM
+through `layout_parsing` with the image as a data URL and no prompt.
 
 One call has an aggregate deadline (300 s by default). Each engine gets one
 request inside it and there is no retry loop: a later attempt is the task
@@ -204,7 +205,7 @@ def _responses(
         max_bytes=MAX_ANSWER_BYTES,
         deadline=deadline,
     )
-    # An incomplete or textless answer is `invalid_response`, so GLM runs next.
+    # An incomplete or textless answer is `invalid_response`, so the next engine runs.
     markdown = output_text(document).strip()
     usage = document.get("usage") if isinstance(document.get("usage"), dict) else None
     return OcrResult(
@@ -290,8 +291,8 @@ def ocr_image(
 ) -> OcrResult:
     """Transcribe one image verbatim.
 
-    The engines run in order, each only when configured: DeepSeek, then the
-    Responses model, then GLM. The next one runs when the previous failed or
+    The engines run in order, each only when configured: the Responses model,
+    then DeepSeek, then GLM. The next one runs when the previous failed or
     answered empty text. A truncated DeepSeek answer is kept and flagged
     rather than replaced. When every later engine fails or is empty too, the
     first empty answer is the result, flagged `empty`.
@@ -301,14 +302,14 @@ def ocr_image(
         raise ValueError("image bytes are empty")
     deadline = deadline or Deadline(deadline_seconds)
     engines: list[tuple[str, Callable[[httpx.Client], OcrResult]]] = []
-    if novita_key:
-        engines.append((ENGINE_DEEPSEEK, lambda http: _deepseek(
-            http, data, media_type, api_key=novita_key, base=novita_base, deadline=deadline
-        )))
     if responses_key and responses_base and responses_model:
         engines.append((ENGINE_RESPONSES, lambda http: _responses(
             http, data, media_type, api_key=responses_key, base=responses_base,
             model=responses_model, deadline=deadline,
+        )))
+    if novita_key:
+        engines.append((ENGINE_DEEPSEEK, lambda http: _deepseek(
+            http, data, media_type, api_key=novita_key, base=novita_base, deadline=deadline
         )))
     if glm_app_id and glm_key:
         engines.append((ENGINE_GLM, lambda http: _glm(

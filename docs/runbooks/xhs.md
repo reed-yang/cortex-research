@@ -74,12 +74,14 @@ Each provider operation receives only its own credentials:
 | identification, link search | `sub2api-gpt` |
 | blog fetch | `jina`, optional |
 
-Image OCR tries Novita (DeepSeek-OCR-2) first. When Novita fails or answers
-empty text, the Responses model (`gpt_model` at `gpt_base`, at low effort)
-transcribes the image, and GLM is the last resort. Each engine runs only when
-it is configured: Novita needs `novita`, the backup needs `gpt_base` and a
-resolvable `sub2api-gpt`, and GLM needs `glm` with `glm-app-id`. Without any
-of them every OCR task fails as `auth`. A missing XHS credential never affects arXiv
+Image OCR tries the Responses model (`gpt_model` at `gpt_base`, at low effort)
+first: it reads the vertical arXiv stamp on a paper's first page, and a paper
+recommendation is importable only with an arXiv ID its image writes. When it
+fails or answers empty text, Novita (DeepSeek-OCR-2) transcribes the image,
+and GLM is the last resort. Each engine runs only when it is configured: the
+Responses model needs `gpt_base` and a resolvable `sub2api-gpt`, Novita needs
+`novita`, and GLM needs `glm` with `glm-app-id`. Without any of them every OCR
+task fails as `auth`. A missing XHS credential never affects arXiv
 ingestion. See
 [runtime credentials](runtime-credentials.md) for references and stores.
 
@@ -211,9 +213,9 @@ With the plugin enabled, these leave the machine:
 | --- | --- |
 | TikHub (`tikhub_base`) | The TikHub key, each followed blogger's user ID and list cursor, and each note ID for its detail |
 | XHS image CDN | One request per carousel image at its signed URL, without cookies |
-| Novita (DeepSeek-OCR-2) | Every downloaded image, with the `novita` key |
+| Novita (DeepSeek-OCR-2) | An image the Responses model did not read (every image when `gpt_base` or `sub2api-gpt` is missing), with the `novita` key |
 | GLM (`layout_parsing`) | An image that no earlier OCR engine read, with the GLM credentials |
-| The Responses endpoint (`gpt_base`) | Each note's caption and every image transcription, the title of each blog recommendation without a link, which the model searches the web for, and each image whose Novita OCR failed or came back empty (every image when no `novita` key is configured) |
+| The Responses endpoint (`gpt_base`) | Every downloaded image, each note's caption and every image transcription, and the title of each blog recommendation without a link, which the model searches the web for |
 | Blog sites | A request from this machine to check a found link (at most 2 MiB) and to import a blog (at most 5 MiB of HTML), without cookies, to public addresses only |
 | Jina Reader (`r.jina.ai`) | A blog URL whose page could not be fetched or yielded under 200 characters, with the `jina` key when one is configured |
 
