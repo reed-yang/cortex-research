@@ -555,6 +555,8 @@ def _blog_fetch(payload: Mapping[str, Any], write_roots: tuple[Path, ...]) -> di
         files["raw/jina.md"] = _write_file(
             staging / "raw" / "jina.md", article.jina_text.encode("utf-8")
         )
+    for image in article.images:
+        files[f"assets/{image.name}"] = _write_file(staging / "assets" / image.name, image.data)
     return {
         "engine": {
             "normalized_url": normalized,

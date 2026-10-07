@@ -57,7 +57,7 @@ Out of scope, each a follow-up:
 - An unread marker for new notes. New notes sort first.
 - Reclassifying the three legacy web items adopted as papers.
 - Downloading images inside blog pages. Remote images keep the Library reader's
-  host-text rendering.
+  host-text rendering. (Done in product 0.1.32; see `docs/runbooks/xhs.md`.)
 - Release composition. Product 0.1.30 selects Control schema 21 separately
   (`docs/releases/0.1.30.md`).
 

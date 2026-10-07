@@ -14,7 +14,7 @@ entry point unless you configure the optional private-access path.
 [`docs/runbooks/cortex-web-user-guide.md`](docs/runbooks/cortex-web-user-guide.md)
 walks through the surfaces once it is running.
 
-Product 0.1.31 uses installation sequence 31 and Control schema 21. The qualified
+Product 0.1.32 uses installation sequence 32 and Control schema 21. The qualified
 Hermes gen10 runtime is supplied separately. See
 [`CHANGELOG.md`](CHANGELOG.md) for changes through 0.1.23 and
 [`docs/releases/`](docs/releases/) for later releases and their validation boundaries.
@@ -64,8 +64,8 @@ Hermes gen10 runtime is supplied separately. See
   chosen Xiaohongshu bloggers through TikHub, saves each image note with a
   verbatim OCR transcription of its images, and lists the papers and blogs it
   recommends. You choose what to import: a paper becomes an ordinary Capture
-  you approve, and a blog is fetched, extracted and saved as a `blog` source
-  linked back to the note. `cortex xhs` follows bloggers, arms the plugin,
+  you approve, and a blog is fetched, extracted and saved, with copies of its
+  images, as a `blog` source linked back to the note. `cortex xhs` follows bloggers, arms the plugin,
   starts scans and shows status; TikHub, OCR and model calls have daily caps.
   Notes and blogs are Library sources only, not research evidence
   ([runbook](docs/runbooks/xhs.md)).
@@ -224,7 +224,7 @@ configured, and, only when you enable the XHS plugin, its provider calls:
 followed blogger and note IDs go to TikHub, note images go to the configured
 Responses endpoint for OCR and, when it cannot read one, to Novita and then
 GLM, captions, transcriptions and blog titles go to that Responses endpoint, and blog links go to the blog's own site and, as a fallback, to Jina
-Reader. The [XHS runbook](docs/runbooks/xhs.md#provider-data-disclosure) lists
+Reader; an imported blog's images are fetched from their own hosts. The [XHS runbook](docs/runbooks/xhs.md#provider-data-disclosure) lists
 exactly what each recipient receives.
 
 `runtime.tools = "local"` requires a worker carrying managed tool policy v1.

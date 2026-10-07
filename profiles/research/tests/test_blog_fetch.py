@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import socket
 
 import httpx
@@ -191,3 +192,119 @@ def test_html_is_decoded_by_its_declared_charset() -> None:
     body = "<meta charset='gbk'><title>中文标题</title>".encode("gbk")
     assert blog_fetch.page_titles(blog_fetch.decode_html(body, "text/html"))[0] == "中文标题"
     assert blog_fetch.decode_html("é".encode("latin-1"), "text/html; charset=latin-1") == "é"
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x01" * 24
+WEBP = b"RIFF\x20\x00\x00\x00WEBPVP8 " + b"\x02" * 24
+LONG = [" ".join([text] * 3) for text in PARAGRAPHS[:4]]
+IMAGE_HTML = (
+    "<html><head><title>Figures</title></head><body><nav>Home</nav><article>"
+    "<h1>Figures</h1>"
+    f"<p>{LONG[0]}</p><p><img src='/fig/one.png' alt='Figure 1'></p>"
+    f"<p>{LONG[1]}</p><figure><img src='https://cdn.example/two.webp' alt='Figure 2'></figure>"
+    f"<p>{LONG[2]}</p><p><img src='/fig/one.png' alt='again'></p>"
+    "<p><img src='/fig/missing.png' alt='gone'></p><p><img src='/fig/page.png' alt='html'></p>"
+    "<p><img src='https://intranet.example/x.png' alt='inside'></p>"
+    f"<p>{LONG[3]}</p></article><footer>footer links</footer></body></html>"
+)
+
+
+def image_resolver(host: str, port: int, type: int = 0):  # noqa: A002
+    if host == "cdn.example":
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.36", port))]
+    return resolver(host, port, type)
+
+
+class Web:
+    """A public web keyed by host and path; every request is recorded."""
+
+    def __init__(self, pages: dict[str, httpx.Response]) -> None:
+        self.pages = pages
+        self.requests: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        key = request.headers["host"] + request.url.path
+        self.requests.append(key)
+        page = self.pages.get(key)
+        if page is None:
+            return httpx.Response(404, text="missing")
+        return httpx.Response(page.status_code, content=page.content, headers=page.headers)
+
+
+def image(data: bytes, kind: str) -> httpx.Response:
+    return httpx.Response(200, content=data, headers={"content-type": kind})
+
+
+def name(index: int, data: bytes, extension: str) -> str:
+    return f"page-{index:02d}-{hashlib.sha256(data).hexdigest()[:12]}.{extension}"
+
+
+def test_article_images_are_copied_once_and_referenced_locally() -> None:
+    web = Web({
+        "blog.example/post": html(IMAGE_HTML),
+        "blog.example/fig/one.png": image(PNG, "image/png"),
+        "cdn.example/two.webp": image(WEBP, "image/webp"),
+        "blog.example/fig/page.png": html("<html>not an image</html>"),
+    })
+    article = blog_fetch.fetch_blog(
+        "https://blog.example/post", transport=httpx.MockTransport(web), resolver=image_resolver
+    )
+    first, second = name(1, PNG, "png"), name(2, WEBP, "webp")
+    assert [(i.name, i.url, i.data) for i in article.images] == [
+        (first, "https://blog.example/fig/one.png", PNG),
+        (second, "https://cdn.example/two.webp", WEBP),
+    ]
+    assert f"![Figure 1](assets/{first})" in article.markdown
+    assert f"![again](assets/{first})" in article.markdown
+    assert f"![Figure 2](assets/{second})" in article.markdown
+    # Images that were not copied keep their absolute URL for the reader to name.
+    assert "![gone](https://blog.example/fig/missing.png)" in article.markdown
+    assert "![html](https://blog.example/fig/page.png)" in article.markdown
+    assert "![inside](https://intranet.example/x.png)" in article.markdown
+    assert article.metadata()["images"] == 2
+    assert article.metadata()["images_not_copied"] == 3
+    assert web.requests.count("blog.example/fig/one.png") == 1
+    assert not any(request.startswith("intranet.example") for request in web.requests)
+
+
+def test_jina_images_are_copied_too() -> None:
+    jina_text = JINA_TEXT + "\n\n![Image 1: chart](https://cdn.example/two.webp)\n"
+    web = Web({"cdn.example/two.webp": image(WEBP, "image/webp")})
+    article = blog_fetch.fetch_blog(
+        "https://blog.example/post",
+        transport=httpx.MockTransport(web),
+        jina_transport=httpx.MockTransport(Site(httpx.Response(200, text=jina_text))),
+        resolver=image_resolver,
+    )
+    assert article.content_source == "jina"
+    assert [i.name for i in article.images] == [name(1, WEBP, "webp")]
+    assert f"![Image 1: chart](assets/{name(1, WEBP, 'webp')})" in article.markdown
+    # The raw Jina text stays as Jina wrote it.
+    assert article.jina_text == jina_text
+
+
+def test_image_limits_leave_the_rest_remote(monkeypatch) -> None:
+    other = PNG + b"\x03"
+    web = Web({
+        "blog.example/a.png": image(PNG, "image/png"),
+        "blog.example/b.png": image(other, "image/png"),
+    })
+    markdown = '![a](/a.png) ![b](/b.png "title")'
+
+    def copy():
+        return blog_fetch.copy_images(
+            markdown, "https://blog.example/post",
+            transport=httpx.MockTransport(web), resolver=resolver,
+        )
+
+    monkeypatch.setattr(blog_fetch, "MAX_ARTICLE_IMAGES", 1)
+    text, images, not_copied = copy()
+    assert [i.name for i in images] == [name(1, PNG, "png")]
+    assert text == f'![a](assets/{name(1, PNG, "png")}) ![b](https://blog.example/b.png "title")'
+    assert not_copied == 1
+
+    monkeypatch.setattr(blog_fetch, "MAX_ARTICLE_IMAGES", 60)
+    monkeypatch.setattr(blog_fetch, "MAX_IMAGE_BYTES", len(PNG))
+    text, images, not_copied = copy()
+    assert [i.data for i in images] == [PNG] and not_copied == 1
+    assert '![b](https://blog.example/b.png "title")' in text

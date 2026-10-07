@@ -7,15 +7,20 @@ When the origin fetch fails, is not HTML, or trafilatura extracts under 200
 characters, Jina Reader (`https://r.jina.ai/<url>`, key optional) is tried and
 recorded as `content_source="jina"`. A URL the policy refuses is never handed
 to Jina instead. Raw HTML is returned only when the origin fetch succeeded.
+
+The article's own images are then copied under the same policy, so the stored
+version shows them without loading anything remote.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Mapping
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -39,8 +44,15 @@ REQUEST_TIMEOUT_SECONDS = 20.0
 DEADLINE_SECONDS = 120.0
 MIN_ARTICLE_CHARACTERS = 200
 JINA_BASE = "https://r.jina.ai"
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_ARTICLE_IMAGES = 60
+MAX_ARTICLE_IMAGE_BYTES = 60 * 1024 * 1024
+IMAGE_DEADLINE_SECONDS = 120.0
 _HTML_TYPES = ("text/html", "application/xhtml+xml")
 _META_CHARSET_RE = re.compile(rb"""charset\s*=\s*["']?([A-Za-z0-9._-]{1,40})""", re.IGNORECASE)
+# `![alt](src)` or `![alt](src "title")`, as trafilatura and Jina write images.
+_MARKDOWN_IMAGE_RE = re.compile(r'!\[([^\]\n]*)\]\(\s*<?([^\s()<>]+)>?((?:\s+"[^"\n]*")?)\s*\)')
+_IMAGE_ACCEPT = "image/png,image/jpeg,image/gif,image/webp;q=0.9,*/*;q=0.1"
 
 
 def _site_status(status: int) -> str | None:
@@ -55,6 +67,15 @@ def _site_status(status: int) -> str | None:
 
 
 @dataclass(frozen=True)
+class BlogImage:
+    """One copied article image, stored as `assets/<name>`."""
+
+    name: str  # page-<NN>-<first 12 hex of its SHA-256>.<ext>
+    url: str
+    data: bytes
+
+
+@dataclass(frozen=True)
 class BlogArticle:
     requested_url: str
     final_url: str
@@ -66,6 +87,8 @@ class BlogArticle:
     page_html: bytes | None
     jina_text: str | None
     origin_failure: Mapping[str, Any] | None
+    images: tuple[BlogImage, ...] = ()
+    images_not_copied: int = 0
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -79,6 +102,8 @@ class BlogArticle:
             "raw_html": self.page_html is not None,
             "raw_jina": self.jina_text is not None,
             "origin_failure": dict(self.origin_failure) if self.origin_failure else None,
+            "images": len(self.images),
+            "images_not_copied": self.images_not_copied,
         }
 
 
@@ -206,7 +231,7 @@ def extract_article(html: str, url: str) -> tuple[str, dict[str, str | None]]:
         output_format="markdown",
         include_links=True,
         include_tables=True,
-        include_images=False,
+        include_images=True,
         include_comments=False,
         with_metadata=False,
     )
@@ -310,6 +335,9 @@ def fetch_blog(
                     "message": f"blog: extraction failed ({type(error).__name__})",
                 }
             if len(markdown) >= MIN_ARTICLE_CHARACTERS:
+                markdown, images, not_copied = copy_images(
+                    markdown, page.url, transport=transport, resolver=resolver
+                )
                 return BlogArticle(
                     requested_url=url,
                     final_url=page.url,
@@ -321,6 +349,8 @@ def fetch_blog(
                     page_html=page_html,
                     jina_text=None,
                     origin_failure=None,
+                    images=images,
+                    images_not_copied=not_copied,
                 )
             if origin_failure is None:
                 origin_failure = {
@@ -335,6 +365,9 @@ def fetch_blog(
         raise ProviderError(
             "invalid_response", f"jina: reader produced {len(markdown)} characters"
         )
+    markdown, images, not_copied = copy_images(
+        markdown, final_url, transport=transport, resolver=resolver
+    )
     return BlogArticle(
         requested_url=url,
         final_url=final_url,
@@ -346,7 +379,90 @@ def fetch_blog(
         page_html=page_html,
         jina_text=text,
         origin_failure=origin_failure,
+        images=images,
+        images_not_copied=not_copied,
     )
+
+
+def _image_extension(data: bytes) -> str | None:
+    """PNG, JPEG, GIF or WebP by signature; the reader serves nothing else."""
+
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def copy_images(
+    markdown: str,
+    base_url: str,
+    *,
+    transport: httpx.BaseTransport | None = None,
+    resolver: Resolver = socket.getaddrinfo,
+    deadline: Deadline | None = None,
+) -> tuple[str, tuple[BlogImage, ...], int]:
+    """Copy the article's images and point its Markdown at the copies.
+
+    Each image source is resolved against the page URL and fetched under the
+    page's own policy, once per URL. A PNG, JPEG, GIF or WebP of at most
+    `MAX_IMAGE_BYTES` is copied, up to `MAX_ARTICLE_IMAGES` images and
+    `MAX_ARTICLE_IMAGE_BYTES` in all within `IMAGE_DEADLINE_SECONDS`, and its
+    reference becomes `assets/<name>`. Any other image keeps its absolute URL,
+    which the reader names but never loads. A failed image never fails the
+    article. Returns the Markdown, the copies, and how many image URLs were not
+    copied.
+    """
+
+    deadline = deadline or Deadline(IMAGE_DEADLINE_SECONDS)
+    copies: dict[str, BlogImage | None] = {}
+    images: list[BlogImage] = []
+    total = 0
+
+    def copy(url: str) -> BlogImage | None:
+        if urlsplit(url).scheme not in ("http", "https"):
+            return None
+        room = MAX_ARTICLE_IMAGE_BYTES - total
+        if len(images) >= MAX_ARTICLE_IMAGES or room <= 0 or deadline.expired():
+            return None
+        try:
+            fetched = safe_get(
+                url,
+                provider="blog",
+                max_bytes=min(MAX_IMAGE_BYTES, room),
+                deadline=deadline,
+                request_timeout=REQUEST_TIMEOUT_SECONDS,
+                transport=transport,
+                resolver=resolver,
+                accept=_IMAGE_ACCEPT,
+                status_map=_site_status,
+            )
+        except ProviderError:
+            return None
+        extension = _image_extension(fetched.body)
+        if extension is None:
+            return None
+        digest = hashlib.sha256(fetched.body).hexdigest()[:12]
+        return BlogImage(f"page-{len(images) + 1:02d}-{digest}.{extension}", url, fetched.body)
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal total
+        alt, source, title = match.groups()
+        url = urljoin(base_url, source)
+        if url not in copies:
+            copies[url] = copy(url)
+            if copies[url] is not None:
+                images.append(copies[url])
+                total += len(copies[url].data)
+        image = copies[url]
+        return f"![{alt}]({f'assets/{image.name}' if image else url}{title})"
+
+    text = _MARKDOWN_IMAGE_RE.sub(replace, markdown)
+    return text, tuple(images), len(copies) - len(images)
 
 
 def article_markdown(article: BlogArticle) -> str:

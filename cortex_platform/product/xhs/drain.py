@@ -69,6 +69,8 @@ RESOLVABLE_URL_STATES = frozenset({"none", "not_found", "failed"})
 _MAX_TITLE = 1_000
 _MAX_QUOTE = 4_000
 _BLOG_FILES = frozenset({"article.md", "raw/page.html", "raw/jina.md"})
+# An article image the blog fetch copied, as `blog_fetch.copy_images` names it.
+_BLOG_IMAGE_RE = re.compile(r"assets/page-[0-9]{2,3}-[0-9a-f]{12}\.(?:png|jpg|gif|webp)")
 # The TikHub note type of an image note; every other type is unsupported.
 IMAGE_NOTE_TYPE = "normal"
 # Failures after which every later call this tick would fail the same way.
@@ -1018,7 +1020,7 @@ class XhsDrain:
         staging = self.blog_staging_dir(authority_id)
         files: dict[str, bytes] = {}
         for name, described in engine["files"].items():
-            if name not in _BLOG_FILES:
+            if name not in _BLOG_FILES and not _BLOG_IMAGE_RE.fullmatch(name):
                 raise ValueError("blog fetch wrote an unexpected file")
             try:
                 data = (staging / name).read_bytes()
@@ -1036,6 +1038,9 @@ class XhsDrain:
             metadata.get("raw_jina")
         ) != ("raw/jina.md" in files):
             raise ValueError("blog fetch describes its raw files inconsistently")
+        copied = sum(1 for name in files if _BLOG_IMAGE_RE.fullmatch(name))
+        if copied != int(metadata.get("images") or 0):
+            raise ValueError("blog fetch describes its images inconsistently")
         source_id = self.store.content_source_id("blog", authority_id)
         linked = (
             [
@@ -1084,6 +1089,8 @@ class XhsDrain:
                 "raw_html": "raw/page.html" in files,
                 "raw_jina": "raw/jina.md" in files,
                 "origin_failure": origin_failure.get("category"),
+                "images": copied,
+                "images_not_copied": metadata.get("images_not_copied"),
             },
         }
 
