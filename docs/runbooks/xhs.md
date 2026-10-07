@@ -173,6 +173,18 @@ matched their rows and were skipped. A retried image is identified and saved
 again as a new version. The Web note record also has a Retry button per failed
 image.
 
+A blog import extracts the page with trafilatura. When that yields under 2,000
+characters, which is typical of a script-rendered page, Jina's copy is also
+fetched and kept if it is longer. To fetch an imported blog again, for example
+one imported before a fix, run:
+
+```sh
+cortex xhs refetch-blog <blog source id>
+```
+
+Its next version follows at the next drain. The blog stays imported throughout,
+and a failed fetch leaves it at its current version.
+
 ## Status
 
 `cortex xhs status` and the Web Status page read the same state: whether the
@@ -193,8 +205,8 @@ article's own images as `assets/page-<NN>-<sha12>.<ext>`. An article image is
 copied when it is a PNG, JPEG, GIF or WebP of at most 10 MiB, up to 60 images
 and 60 MiB per article; any other image (an SVG, for example) keeps its URL,
 and the Library reader names its host instead of loading it. A
-version is written once; a retry, a link edit or new recommendations write the
-next one.
+version is written once; a retry, a link edit, new recommendations or a blog
+refetch write the next one.
 
 `raw/` (list and detail answers with signed URLs removed, and the fetched page
 or Jina text), `ocr/` (raw OCR answers) and each `staging/` directory are
@@ -221,7 +233,7 @@ With the plugin enabled, these leave the machine:
 | GLM (`layout_parsing`) | An image that no earlier OCR engine read, with the GLM credentials |
 | The Responses endpoint (`gpt_base`) | Every downloaded image, each note's caption and every image transcription, and the title of each blog recommendation without a link, which the model searches the web for |
 | Blog sites and their image hosts | A request from this machine to check a found link (at most 2 MiB), to import a blog (at most 5 MiB of HTML) and to copy each of its images, without cookies, to public addresses only |
-| Jina Reader (`r.jina.ai`) | A blog URL whose page could not be fetched or yielded under 200 characters, with the `jina` key when one is configured |
+| Jina Reader (`r.jina.ai`) | A blog URL whose page could not be fetched or yielded under 2,000 characters, with the `jina` key when one is configured |
 
 Images and captions are other people's posts; transcriptions may contain
 whatever the images show. The Control token, other sources and your

@@ -5,8 +5,10 @@ ports only, every hop resolved and held to public addresses, at most five
 redirects, no cookies or credentials, 20 s per request and 5 MiB of HTML.
 When the origin fetch fails, is not HTML, or trafilatura extracts under 200
 characters, Jina Reader (`https://r.jina.ai/<url>`, key optional) is tried and
-recorded as `content_source="jina"`. A URL the policy refuses is never handed
-to Jina instead. Raw HTML is returned only when the origin fetch succeeded.
+recorded as `content_source="jina"`. An extraction under 2,000 characters is
+compared with Jina's, and Jina's is kept only when it is longer. A URL the
+policy refuses is never handed to Jina instead. Raw HTML is returned only when
+the origin fetch succeeded.
 
 The article's own images are then copied under the same policy, so the stored
 version shows them without loading anything remote.
@@ -43,6 +45,8 @@ MAX_JINA_BYTES = 5 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 20.0
 DEADLINE_SECONDS = 120.0
 MIN_ARTICLE_CHARACTERS = 200
+# An origin extraction shorter than this is compared with Jina's.
+SHORT_ARTICLE_CHARACTERS = 2_000
 JINA_BASE = "https://r.jina.ai"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_ARTICLE_IMAGES = 60
@@ -312,6 +316,7 @@ def fetch_blog(
     deadline = Deadline(deadline_seconds)
     origin_failure: dict[str, Any] | None = None
     page_html: bytes | None = None
+    short: tuple[str, Mapping[str, str | None]] | None = None
     final_url = url
     try:
         page = fetch_page(url, deadline=deadline, transport=transport, resolver=resolver)
@@ -334,33 +339,39 @@ def fetch_blog(
                     "category": "invalid_response",
                     "message": f"blog: extraction failed ({type(error).__name__})",
                 }
+            if len(markdown) >= SHORT_ARTICLE_CHARACTERS:
+                return _origin_article(
+                    url, page.url, markdown, found, page_html,
+                    transport=transport, resolver=resolver,
+                )
             if len(markdown) >= MIN_ARTICLE_CHARACTERS:
-                markdown, images, not_copied = copy_images(
-                    markdown, page.url, transport=transport, resolver=resolver
-                )
-                return BlogArticle(
-                    requested_url=url,
-                    final_url=page.url,
-                    content_source="origin",
-                    title=found.get("title"),
-                    author=found.get("author"),
-                    date=found.get("date"),
-                    markdown=markdown,
-                    page_html=page_html,
-                    jina_text=None,
-                    origin_failure=None,
-                    images=images,
-                    images_not_copied=not_copied,
-                )
-            if origin_failure is None:
+                # A script-rendered page often extracts as a few lines of
+                # chrome; Jina's copy of it is kept when it is longer.
+                short = (markdown, found)
+            elif origin_failure is None:
                 origin_failure = {
                     "category": "invalid_response",
                     "message": f"blog: extraction produced {len(markdown)} characters",
                 }
-    text = jina_read(
-        final_url, api_key=jina_key, base=jina_base, deadline=deadline, transport=jina_transport
-    )
+    try:
+        text = jina_read(
+            final_url, api_key=jina_key, base=jina_base, deadline=deadline,
+            transport=jina_transport,
+        )
+    except ProviderError:
+        if short is None:
+            raise
+        text = ""
     title, date, markdown = _parse_jina(text)
+    if short is not None and len(markdown) <= len(short[0]):
+        return _origin_article(
+            url, final_url, *short, page_html, transport=transport, resolver=resolver
+        )
+    if short is not None:
+        origin_failure = {
+            "category": "invalid_response",
+            "message": f"blog: extraction produced {len(short[0])} characters",
+        }
     if len(markdown) < MIN_ARTICLE_CHARACTERS:
         raise ProviderError(
             "invalid_response", f"jina: reader produced {len(markdown)} characters"
@@ -379,6 +390,35 @@ def fetch_blog(
         page_html=page_html,
         jina_text=text,
         origin_failure=origin_failure,
+        images=images,
+        images_not_copied=not_copied,
+    )
+
+
+def _origin_article(
+    url: str,
+    final_url: str,
+    markdown: str,
+    found: Mapping[str, str | None],
+    page_html: bytes | None,
+    *,
+    transport: httpx.BaseTransport | None,
+    resolver: Resolver,
+) -> BlogArticle:
+    markdown, images, not_copied = copy_images(
+        markdown, final_url, transport=transport, resolver=resolver
+    )
+    return BlogArticle(
+        requested_url=url,
+        final_url=final_url,
+        content_source="origin",
+        title=found.get("title"),
+        author=found.get("author"),
+        date=found.get("date"),
+        markdown=markdown,
+        page_html=page_html,
+        jina_text=None,
+        origin_failure=None,
         images=images,
         images_not_copied=not_copied,
     )

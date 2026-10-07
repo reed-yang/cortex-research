@@ -462,11 +462,14 @@ def test_blog_fetch_writes_article_and_raw_under_its_root(monkeypatch, credentia
     page = f"<html><head><title>Synthetic Post</title></head><body><article>{paragraphs}</article></body></html>"
     site = Recorder(lambda request: httpx.Response(200, text=page, headers={"content-type": "text/html"}))
     real = blog_fetch.fetch_blog
+    # The short article is compared with Jina's; Jina is down here, so the origin's stays.
+    jina_down = httpx.MockTransport(lambda request: httpx.Response(503))
     monkeypatch.setattr(
         blog_fetch,
         "fetch_blog",
         lambda url, **options: real(
-            url, transport=httpx.MockTransport(site), resolver=public_resolver, **options
+            url, transport=httpx.MockTransport(site), jina_transport=jina_down,
+            resolver=public_resolver, **options
         ),
     )
     root = tmp_path / "blogs"

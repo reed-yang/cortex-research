@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from cortex_platform.product.control import ControlStore
-from cortex_platform.product.control.errors import RevisionConflict
+from cortex_platform.product.control.errors import InvalidTransition, RevisionConflict
 from cortex_platform.product.sources.identity import blog_url_identity
 from cortex_platform.product.xhs import identify
 from cortex_platform.product.xhs.drain import PIPELINE_HANDLERS, XhsDrain
@@ -695,6 +695,72 @@ def test_a_blog_fetch_with_an_unclaimed_or_misnamed_image_is_refused(
     pipeline(store, supervisor).drain()
     assert store.get_xhs_recommendation(recommendation["id"])["import_state"] == "failed"
     assert tasks(store, "blog_import")[0]["last_error"] == "invalid_response"
+
+
+def _imported_blog(store: ControlStore, supervisor: PipelineSupervisor, answer) -> tuple[dict, str]:
+    recommendation = _two_notes_recommending_one_blog(store, supervisor)[0]
+    supervisor.blogs["https://blog.example/attention-sinks"] = answer
+    with store._transaction() as conn:
+        store._xhs_queue_blog_import(conn, recommendation)
+    pipeline(store, supervisor).drain()
+    blog_id = store.get_xhs_recommendation(recommendation["id"])["imported_source_id"]
+    assert blog_id is not None
+    return recommendation, blog_id
+
+
+def test_a_refetch_writes_the_blogs_next_version_and_keeps_it_imported(
+    store: ControlStore, supervisor: PipelineSupervisor
+) -> None:
+    recommendation, blog_id = _imported_blog(store, supervisor, ("238", "Login to vote."))
+    assert store.get_source(blog_id)["official_title"] == "238"
+    supervisor.blogs["https://blog.example/attention-sinks"] = ("Attention Sinks", "The whole post.")
+    value = store.refetch_xhs_blog(
+        source_id=blog_id, actor_id=ACTOR, idempotency_key="refetch-blog-000001"
+    ).value
+    assert (value["source_id"], value["task_state"]) == (blog_id, "pending")
+    task = tasks(store, "blog_import")[-1]
+    assert task["subject_key"] == f"blog:{recommendation['id']}:2"
+    assert task["payload"] == {"recommendation_id": recommendation["id"], "refetch": True}
+    # Imported throughout: the Library never shows the blog as importing.
+    assert store.get_xhs_recommendation(recommendation["id"])["import_state"] == "imported"
+    # A repeat while it waits returns the same task.
+    again = store.refetch_xhs_blog(
+        source_id=blog_id, actor_id=ACTOR, idempotency_key="refetch-blog-000002"
+    ).value
+    assert again["task_id"] == value["task_id"]
+    pipeline(store, supervisor).drain()
+    assert store.latest_content_binding(blog_id)["version"] == 2
+    assert store.get_source(blog_id)["official_title"] == "Attention Sinks"
+    after = store.get_xhs_recommendation(recommendation["id"])
+    assert (after["import_state"], after["imported_source_id"]) == ("imported", blog_id)
+    assert len(store.list_source_links(blog_id)["recommended_in"]) == 1
+    from cortex_platform.product.sources.reader import SourceKnowledgeReader
+
+    text = SourceKnowledgeReader(store).document(blog_id, kind="full_text")["text"]
+    assert text.startswith("# Attention Sinks") and "The whole post." in text
+
+
+def test_a_failed_refetch_leaves_the_blog_imported_at_its_version(
+    store: ControlStore, supervisor: PipelineSupervisor
+) -> None:
+    recommendation, blog_id = _imported_blog(store, supervisor, ("Attention Sinks", "Body."))
+    supervisor.blogs["https://blog.example/attention-sinks"] = "not_found"
+    store.refetch_xhs_blog(source_id=blog_id, actor_id=ACTOR, idempotency_key="refetch-blog-000003")
+    pipeline(store, supervisor).drain()
+    assert tasks(store, "blog_import")[-1]["state"] == "failed"
+    assert store.get_xhs_recommendation(recommendation["id"])["import_state"] == "imported"
+    assert store.latest_content_binding(blog_id)["version"] == 1
+
+
+def test_a_refetch_is_refused_for_a_source_that_is_not_a_blog(
+    store: ControlStore, supervisor: PipelineSupervisor
+) -> None:
+    _, blog_id = _imported_blog(store, supervisor, ("Attention Sinks", "Body."))
+    note_source = store.get_xhs_note(note_id(1))["source_id"]
+    with pytest.raises(InvalidTransition):
+        store.refetch_xhs_blog(
+            source_id=note_source, actor_id=ACTOR, idempotency_key="refetch-blog-000004"
+        )
 
 
 def test_a_failed_blog_fetch_marks_the_import_failed_and_retry_imports_it(

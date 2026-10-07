@@ -1,9 +1,9 @@
 """`cortex xhs …`: follow bloggers, arm the plugin, start scans and see status.
 
 Every command prints one JSON object on stdout; a refusal is a non-zero exit
-with a category on stderr. The commands write Control state only. Scans and
-retries are queued for cortexd's drain; no command here calls a provider or
-reads a credential.
+with a category on stderr. The commands write Control state only. Scans,
+retries and blog refetches are queued for cortexd's drain; no command here
+calls a provider or reads a credential.
 
 `enable` and `disable` arm both schedule rows, each at the revision just
 read. `[xhs] enabled` in the configuration is a separate switch, and the
@@ -74,6 +74,7 @@ def add_xhs_parser(subparsers: Any, *, common: argparse.ArgumentParser) -> None:
     retry = writer("retry")
     retry.add_argument("--failed", action="store_true")
     retry.add_argument("--kind", choices=sorted(XHS_TASK_KINDS))
+    writer("refetch-blog").add_argument("source_id")
 
 
 def _key(arguments: argparse.Namespace, prefix: str) -> str:
@@ -197,6 +198,12 @@ def _run(
             kinds=[arguments.kind] if arguments.kind else None,
             actor_id=actor,
             idempotency_key=_key(arguments, "retry"),
+        ).value
+    if command == "refetch-blog":
+        return store.refetch_xhs_blog(
+            source_id=arguments.source_id,
+            actor_id=actor,
+            idempotency_key=_key(arguments, "refetch"),
         ).value
     raise ValueError(f"unknown xhs command: {command}")
 
