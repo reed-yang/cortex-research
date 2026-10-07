@@ -70,8 +70,13 @@ export function Shell({ client: supplied }: { client?: CortexControlClient }) {
   const client = useMemo(() => supplied ?? new CortexControlClient(), [supplied]);
   const [state, actions] = useControlState(client);
   const props = { state, actions, client };
+  // The shell is the containing block of everything inside it and clips it:
+  // an absolutely positioned element whose own scroll pane is not positioned
+  // (the screen-reader label of a code block's copy button) would otherwise
+  // extend the document, and a wheel over the sidebar would scroll the whole
+  // page into blank space.
   return (
-    <div className="flex h-dvh w-full bg-background text-foreground">
+    <div className="relative flex h-dvh w-full overflow-clip bg-background text-foreground">
       <Sidebar {...props} />
       {/* Not a live region itself: the status strip and the notice bar mark
           the two lines that actually change, and a live wrapper around the

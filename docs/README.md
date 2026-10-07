@@ -16,6 +16,7 @@ instructions. The following files are intentionally tracked and public.
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
 | [Operator skills](runbooks/operator-skills.md) | OCR for PDF-only papers through an accepted, digest-pinned skill |
 | [XHS notes and blogs](runbooks/xhs.md) | Opt-in XHS plugin: setup, follow, cadence, caps, backfill, retries, disable and provider data disclosure |
+| [0.1.34](releases/0.1.34.md) | The Web page no longer scrolls into blank space; resizable sidebar and list columns |
 | [0.1.33](releases/0.1.33.md) | Short blog extractions are compared with Jina; `cortex xhs refetch-blog` |
 | [0.1.32](releases/0.1.32.md) | Imported blogs keep copies of their article images |
 | [0.1.31](releases/0.1.31.md) | XHS image OCR runs the Responses model first, then Novita and GLM |

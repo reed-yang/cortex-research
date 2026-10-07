@@ -1,11 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Decision, Thread, Workspace } from "../../app/control/contracts";
 import { Sidebar } from "../../app/shell/sidebar";
 import { buildThreadListAdapter } from "../../app/shell/thread-list-adapter";
 import type { ControlActions, ControlState } from "../../app/shell/types";
-import { FakeControl, now } from "./fake-control";
+import { FakeControl, memoryStorage, now } from "./fake-control";
 
 
 function workspace(id: string, title: string): Workspace {
@@ -318,6 +318,25 @@ describe("sidebar", () => {
     // reserves 56px beside it rather than the 36px a 28px control needed.
     expect(switcher.parentElement?.className).toContain("pe-14");
     expect(drawer.className).toContain("[&_[data-slot=sheet-close]]:min-w-11");
+  });
+
+  it("resizes the desktop rail from its border and remembers the width", () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    const rail = renderSidebar(baseState({ workspace: ws, workspaces: [ws], threads: [alpha] }), fakeActions());
+    const border = screen.getByRole("separator", { name: "Resize the sidebar" });
+    expect(border.previousElementSibling).toBe(rail);
+    // The handle is the rail's border, and only on a desktop-width screen.
+    expect(rail.className).not.toContain("border-r");
+    expect(border.className).toContain("hidden");
+    expect(border.className).toContain("lg:flex");
+    vi.spyOn(rail, "getBoundingClientRect").mockReturnValue({ width: 260 } as DOMRect);
+    fireEvent.keyDown(border, { key: "ArrowRight" });
+    expect(localStorage.getItem("cortex.layout.sidebar")).toBe("270");
+    expect(rail.style.getPropertyValue("--sidebar-width")).toBe("max(200px, min(270px, 480px, 100vw - 672px))");
+    fireEvent.doubleClick(border);
+    expect(localStorage.getItem("cortex.layout.sidebar")).toBeNull();
+    expect(rail.style.getPropertyValue("--sidebar-width")).toBe("");
+    vi.unstubAllGlobals();
   });
 
   it("keeps archived threads in a section that reopens them", async () => {

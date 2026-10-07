@@ -5,6 +5,8 @@
 // only inside a `[data-details]` disclosure.
 export const copy = Object.freeze({
   app: { title: "Cortex" },
+  // The draggable boundaries between the rail, a list and its reader.
+  layout: { resizeHint: "Drag to resize. Double-click to reset." },
   sidebar: {
     newThread: "New thread",
     search: "Search threads…",
@@ -21,6 +23,7 @@ export const copy = Object.freeze({
     openNavigation: "Open navigation",
     global: "Global",
     archived: "Archived",
+    resize: "Resize the sidebar",
     // Stands in for the title of a thread that has none, inside a button's
     // accessible name.
     untitledThread: "thread",
@@ -175,6 +178,7 @@ export const copy = Object.freeze({
   research: {
     title: "Research",
     subtitle: "Your ideas, explorations and projects, as they were left.",
+    resize: "Resize the research list",
     kinds: "Research kinds",
     ideas: "Ideas",
     explorations: "Explorations",
@@ -229,6 +233,7 @@ export const copy = Object.freeze({
   },
   library: {
     title: "Library",
+    resize: "Resize the source list",
     pick: "Pick a source to read it",
     retry: "Retry",
     sources: "Adopted sources",

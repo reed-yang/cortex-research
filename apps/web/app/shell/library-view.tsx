@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import type { SourceKind } from "../control/research-contracts";
@@ -10,6 +11,7 @@ import { copy, label } from "./copy";
 import { ReadingsPublication } from "./readings-publication";
 import { readableDate, readerTabs, SourceRecord } from "./source-record";
 import type { ViewProps } from "./types";
+import { useListColumn } from "./use-list-column";
 
 const SKELETON_ROWS = [0, 1, 2];
 
@@ -29,8 +31,9 @@ export function LibraryView({ state, actions, client }: ViewProps) {
   const reader = sourceDetail && sourceDetail.id === selectedSourceId ? sourceDetail : null;
   // Search reads the paper index only, so it is offered where papers are listed.
   const searchable = sourceKind === null || sourceKind === "paper";
+  const column = useListColumn("cortex.layout.library-list");
   return (
-    <section aria-label={copy.library.title} className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto bg-background p-6 text-foreground lg:grid-cols-[minmax(280px,1fr)_2fr] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden">
+    <section aria-label={copy.library.title} className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto bg-background p-6 text-foreground lg:grid-cols-[var(--list-width,minmax(280px,1fr))_1.5rem_minmax(0,2fr)] lg:grid-rows-[minmax(0,1fr)] lg:gap-x-0 lg:overflow-hidden" ref={column.section} style={column.style}>
       <div className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto">
         <h2 className="text-lg font-semibold">{copy.library.title}</h2>
         <ReadingsPublication client={client} sourceId={selectedSourceId} />
@@ -91,6 +94,7 @@ export function LibraryView({ state, actions, client }: ViewProps) {
           </nav>
         ) : null}
       </div>
+      <ResizeHandle className="hidden lg:flex" label={copy.library.resize} title={copy.layout.resizeHint} {...column.handle} />
       <div className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto">
         {!selectedSourceId && !sourceDetail && !sourceDetailError ? (
           <p className="text-sm text-muted-foreground">{copy.library.pick}</p>
