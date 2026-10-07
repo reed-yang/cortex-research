@@ -57,11 +57,16 @@ def html(body: str = ARTICLE_HTML, status: int = 200) -> httpx.Response:
     return httpx.Response(status, text=body, headers={"content-type": "text/html; charset=utf-8"})
 
 
+def jina_down() -> Site:
+    return Site(httpx.Response(503, text="unavailable"))
+
+
 def fetch(site: Site, jina: Site | None = None, **kwargs) -> blog_fetch.BlogArticle:
+    # A short origin article is compared with Jina's, so Jina is always mocked.
     return blog_fetch.fetch_blog(
         kwargs.pop("url", "https://blog.example/post"),
         transport=httpx.MockTransport(site),
-        jina_transport=httpx.MockTransport(jina) if jina else None,
+        jina_transport=httpx.MockTransport(jina if jina is not None else jina_down()),
         resolver=resolver,
         **kwargs,
     )
@@ -81,6 +86,38 @@ def test_an_article_is_extracted_from_the_origin_page() -> None:
     rendered = blog_fetch.article_markdown(article)
     assert rendered.startswith("# Understanding Diffusion\n")
     assert "Source: <https://blog.example/post>" in rendered
+
+
+def test_a_short_origin_article_gives_way_to_a_longer_jina_copy() -> None:
+    chrome = "<html><head><title>238</title></head><body><article><h1>238</h1>" + "".join(
+        f"<p>Login to vote. This website requires javascript ({n}).</p>" for n in range(6)
+    ) + "</article></body></html>"
+    site = Site(html(chrome))
+    jina = Site(httpx.Response(200, text=JINA_TEXT + "\n\n" + "\n\n".join(LONG)))
+    article = fetch(site, jina)
+    assert article.content_source == "jina"
+    assert article.title == "Understanding Diffusion"
+    assert article.page_html == chrome.encode()
+    assert article.origin_failure["category"] == "invalid_response"
+    assert "characters" in article.origin_failure["message"]
+
+
+def test_a_short_origin_article_is_kept_when_jina_is_shorter_or_down() -> None:
+    article = fetch(Site(html()), Site(httpx.Response(200, text=JINA_TEXT[:400])))
+    assert article.content_source == "origin" and article.jina_text is None
+    assert article.origin_failure is None
+    article = fetch(Site(html()))
+    assert article.content_source == "origin" and "score matching" in article.markdown
+
+
+def test_a_long_origin_article_never_asks_jina() -> None:
+    body = "".join(f"<p>{text}</p>" for text in LONG * 3)
+    page = ARTICLE_HTML.replace("</article>", body + "</article>")
+    jina = Site()
+    article = fetch(Site(html(page)), jina)
+    assert article.content_source == "origin"
+    assert len(article.markdown) >= blog_fetch.SHORT_ARTICLE_CHARACTERS
+    assert jina.requests == []
 
 
 def test_a_short_extraction_falls_back_to_jina_and_says_so() -> None:
@@ -247,7 +284,8 @@ def test_article_images_are_copied_once_and_referenced_locally() -> None:
         "blog.example/fig/page.png": html("<html>not an image</html>"),
     })
     article = blog_fetch.fetch_blog(
-        "https://blog.example/post", transport=httpx.MockTransport(web), resolver=image_resolver
+        "https://blog.example/post", transport=httpx.MockTransport(web),
+        jina_transport=httpx.MockTransport(jina_down()), resolver=image_resolver,
     )
     first, second = name(1, PNG, "png"), name(2, WEBP, "webp")
     assert [(i.name, i.url, i.data) for i in article.images] == [

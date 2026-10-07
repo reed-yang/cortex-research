@@ -177,6 +177,13 @@ def test_retry_failed_makes_failed_tasks_due_again(tmp_path, capsys) -> None:
     assert store.xhs_task_counts()["pending"] == 2
 
 
+def test_refetch_blog_refuses_a_source_that_is_not_an_imported_blog(tmp_path, capsys) -> None:
+    # The queued refetch itself is covered with the pipeline; here only the command's refusals.
+    _ready(tmp_path, capsys)
+    code, error = _run(tmp_path, "xhs", "refetch-blog", "src_missing", capsys=capsys)
+    assert code == 1 and error["error"] == "not_found"
+
+
 def _initialized(root: Path, capsys) -> None:
     assert main(["init", *_paths(root)], environ={"HOME": str(root)}) == 0
     capsys.readouterr()

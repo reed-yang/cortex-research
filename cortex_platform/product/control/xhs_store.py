@@ -1947,12 +1947,17 @@ class XhsStore:
         self, conn: sqlite3.Connection, task: Mapping[str, Any], result: Mapping[str, Any]
     ) -> dict[str, Any]:
         """Register or reuse the blog by its URL identity, bind the version
-        written, and link it to the recommending note, all together."""
+        written, and link it to the recommending note, all together.
+
+        A refetch binds the imported blog's next version and may retitle it;
+        its recommendation stays imported and its link is unchanged.
+        """
 
         recommendation = self._xhs_recommendation(
             conn, str(task["payload"]["recommendation_id"])
         )
-        if recommendation["import_state"] != "importing":
+        refetch = task["payload"].get("refetch") is True
+        if recommendation["import_state"] != ("imported" if refetch else "importing"):
             return {"stale": True}
         source_id = self._register_content_source(
             conn,
@@ -1960,6 +1965,8 @@ class XhsStore:
             authority_id=result["authority_id"],
             official_title=result["title"],
         )
+        if refetch and source_id != recommendation["imported_source_id"]:
+            raise ValueError("a blog refetch answers another blog")
         self._append_content_binding(
             conn,
             source_id=source_id,
@@ -1967,7 +1974,8 @@ class XhsStore:
             tree_sha256=result["tree_sha256"],
             metadata=result["metadata"],
         )
-        self._xhs_link_recommendation(conn, recommendation, source_id)
+        if not refetch:
+            self._xhs_link_recommendation(conn, recommendation, source_id)
         return {"source_id": source_id, "version": result["version"]}
 
     def _xhs_apply_capture_link(
@@ -2069,19 +2077,25 @@ class XhsStore:
         return task
 
     def _xhs_queue_blog_import(
-        self, conn: sqlite3.Connection, recommendation: Mapping[str, Any]
+        self,
+        conn: sqlite3.Connection,
+        recommendation: Mapping[str, Any],
+        *,
+        refetch: bool = False,
     ) -> dict[str, Any]:
         """Queue the import of one blog recommendation that has a link.
 
         For the import command, inside its transaction. An import already
         queued or running is returned; after a failed one, a new task follows.
+        A refetch is the same task for an imported recommendation, marked so
+        that the recommendation stays imported.
         """
 
         recommendation_id = str(recommendation["id"])
         if recommendation["kind"] != "blog" or recommendation["url"] is None:
             raise InvalidTransition("xhs_recommendation_not_importable", "importing")
-        if recommendation["import_state"] == "imported":
-            raise InvalidTransition("imported", "importing")
+        if (recommendation["import_state"] == "imported") != refetch:
+            raise InvalidTransition(str(recommendation["import_state"]), "importing")
         rows = conn.execute(
             """SELECT id, state FROM xhs_tasks
                WHERE kind = 'blog_import' AND subject_key GLOB ?""",
@@ -2095,9 +2109,10 @@ class XhsStore:
                 conn,
                 kind="blog_import",
                 subject_key=f"blog:{recommendation_id}:{len(rows) + 1}",
-                payload={"recommendation_id": recommendation_id},
+                payload={"recommendation_id": recommendation_id}
+                | ({"refetch": True} if refetch else {}),
             )
-        if recommendation["import_state"] != "importing":
+        if not refetch and recommendation["import_state"] != "importing":
             self._xhs_update_recommendation(
                 conn, recommendation_id, expected_revision=recommendation["revision"],
                 import_state="importing",
@@ -2244,6 +2259,40 @@ class XhsStore:
             )
         item["recommendation"] = self._xhs_recommendation_view(conn, recommendation_id)
         return item
+
+    def refetch_xhs_blog(self, *, source_id: str, actor_id: str, idempotency_key: str):
+        """Fetch an imported blog again; its next version is written when the fetch ends.
+
+        The fetch runs as an import of the blog's most recently updated
+        recommending recommendation, marked as a refetch: that recommendation
+        stays imported, and a failed fetch leaves the blog as it was.
+        """
+
+        operation = f"POST:/api/v1/sources/{source_id}/refetch"
+        request = {"source_id": source_id}
+        with self._transaction() as conn:
+            replay = self._receipt(conn, actor_id, operation, idempotency_key, request)
+            if replay:
+                return replay
+            source = self._source(conn, source_id)
+            if source["source_kind"] != "blog":
+                raise InvalidTransition(str(source["source_kind"]), "refetching")
+            row = conn.execute(
+                """SELECT id FROM xhs_recommendations
+                   WHERE kind = 'blog' AND import_state = 'imported' AND imported_source_id = ?
+                   ORDER BY updated_at DESC, id LIMIT 1""",
+                (source_id,),
+            ).fetchone()
+            if row is None:
+                raise InvalidTransition("not_recommended", "refetching")
+            task = self._xhs_queue_blog_import(
+                conn, self._xhs_recommendation(conn, str(row["id"])), refetch=True
+            )
+            self._audit(conn, "source", source_id, "xhs.blog.refetch_queued", {})
+            value = {"source_id": source_id, "task_id": task["id"], "task_state": task["state"]}
+            return self._save_receipt(
+                conn, actor_id, operation, idempotency_key, request, value, 200
+            )
 
     @staticmethod
     def _xhs_import_refusal(recommendation: Mapping[str, Any]) -> str | None:

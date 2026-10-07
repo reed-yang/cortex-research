@@ -553,7 +553,9 @@ class BlogImportHandler(TaskHandler):
 
     def prepare(self, drain, task):
         recommendation = drain.store.get_xhs_recommendation(task["payload"]["recommendation_id"])
-        if recommendation["import_state"] != "importing":
+        # A refetch fetches an imported blog again; an import, one being imported.
+        expected = "imported" if task["payload"].get("refetch") is True else "importing"
+        if recommendation["import_state"] != expected:
             return None
         if recommendation["kind"] != "blog" or recommendation["url"] is None:
             raise ValueError("recommendation has no link to import")
