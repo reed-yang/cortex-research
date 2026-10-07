@@ -90,12 +90,17 @@ class PipelineSupervisor(ScriptedSupervisor):
             assert list(staging_dir.iterdir()) == []
             answer = self.blogs[payload["url"]]
             if isinstance(answer, tuple):
-                title, body = answer
+                # (title, body) or (title, body, {asset name: bytes}[, images claimed])
+                title, body = answer[:2]
+                images = answer[2] if len(answer) > 2 else {}
+                claimed = answer[3] if len(answer) > 3 else len(images)
                 normalized, authority_id = blog_url_identity(payload["url"])
                 article = f"# {title}\n\n{body}\n".encode()
                 html = f"<html><title>{title}</title><p>{body}</p></html>".encode()
                 files = {}
-                for name, data in (("article.md", article), ("raw/page.html", html)):
+                written = [("article.md", article), ("raw/page.html", html)]
+                written += [(f"assets/{name}", data) for name, data in images.items()]
+                for name, data in written:
                     (staging_dir / name).parent.mkdir(parents=True, exist_ok=True)
                     (staging_dir / name).write_bytes(data)
                     files[name] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
@@ -106,6 +111,8 @@ class PipelineSupervisor(ScriptedSupervisor):
                         "content_source": "origin", "title": title, "author": None,
                         "date": None, "characters": len(article), "raw_html": True,
                         "raw_jina": False, "origin_failure": None,
+                        "images": claimed,
+                        "images_not_copied": 0,
                     },
                     "files": files,
                 }
@@ -646,6 +653,48 @@ def test_two_notes_importing_one_blog_share_one_source_and_get_two_links(
     reader = SourceKnowledgeReader(store)
     assert reader.document(blog_id, kind="full_text")["text"].startswith("# Attention Sinks")
     assert reader.asset(blog_id, shots[1]) == ("image/png", png(12))
+
+
+def test_a_blog_keeps_its_copied_images_and_the_reader_serves_them(
+    store: ControlStore, supervisor: PipelineSupervisor, tmp_path: Path
+) -> None:
+    recommendation = _two_notes_recommending_one_blog(store, supervisor)[0]
+    figure = png(40)
+    name = f"page-01-{hashlib.sha256(figure).hexdigest()[:12]}.png"
+    supervisor.blogs["https://blog.example/attention-sinks"] = (
+        "Attention Sinks", f"Body.\n\n![Figure 1](assets/{name})", {name: figure},
+    )
+    with store._transaction() as conn:
+        store._xhs_queue_blog_import(conn, recommendation)
+    pipeline(store, supervisor).drain()
+    task = tasks(store, "blog_import")[0]
+    assert (task["state"], task["last_error"]) == ("done", None)
+    blog_id = store.get_xhs_recommendation(recommendation["id"])["imported_source_id"]
+    binding = store.latest_content_binding(blog_id)
+    assert (binding["metadata"]["images"], binding["metadata"]["images_not_copied"]) == (1, 0)
+    _, authority_id = blog_url_identity("https://blog.example/attention-sinks")
+    tree = read_tree(tmp_path / "blogs" / authority_id[:16] / "v1")
+    assert tree[f"assets/{name}"] == figure
+    from cortex_platform.product.sources.reader import SourceKnowledgeReader
+
+    reader = SourceKnowledgeReader(store)
+    assert f"![Figure 1](assets/{name})" in reader.document(blog_id, kind="full_text")["text"]
+    assert reader.asset(blog_id, f"assets/{name}") == ("image/png", figure)
+
+
+@pytest.mark.parametrize("asset, claimed", [("page-01-0123456789ab.png", 0), ("figure.png", 1)])
+def test_a_blog_fetch_with_an_unclaimed_or_misnamed_image_is_refused(
+    store: ControlStore, supervisor: PipelineSupervisor, asset: str, claimed: int
+) -> None:
+    recommendation = _two_notes_recommending_one_blog(store, supervisor)[0]
+    supervisor.blogs["https://blog.example/attention-sinks"] = (
+        "Attention Sinks", "Body.", {asset: png(41)}, claimed,
+    )
+    with store._transaction() as conn:
+        store._xhs_queue_blog_import(conn, recommendation)
+    pipeline(store, supervisor).drain()
+    assert store.get_xhs_recommendation(recommendation["id"])["import_state"] == "failed"
+    assert tasks(store, "blog_import")[0]["last_error"] == "invalid_response"
 
 
 def test_a_failed_blog_fetch_marks_the_import_failed_and_retry_imports_it(

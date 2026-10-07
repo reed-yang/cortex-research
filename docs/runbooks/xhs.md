@@ -188,7 +188,11 @@ A saved note is `<xhs-notes>/<note_id>/v<N>/` with `note.md` (caption,
 blogger, date, permalink and recommendations), `transcription.md` (one section
 per image, verbatim OCR or its failure) and `assets/<ordinal>-<sha12>.<ext>`.
 A blog is `<blogs>/<first 16 hex of the URL hash>/v<N>/` with `article.md`,
-`notes.md` (the recommending notes) and the screenshots copied from them. A
+`notes.md` (the recommending notes), the screenshots copied from them, and the
+article's own images as `assets/page-<NN>-<sha12>.<ext>`. An article image is
+copied when it is a PNG, JPEG, GIF or WebP of at most 10 MiB, up to 60 images
+and 60 MiB per article; any other image (an SVG, for example) keeps its URL,
+and the Library reader names its host instead of loading it. A
 version is written once; a retry, a link edit or new recommendations write the
 next one.
 
@@ -216,7 +220,7 @@ With the plugin enabled, these leave the machine:
 | Novita (DeepSeek-OCR-2) | An image the Responses model did not read (every image when `gpt_base` or `sub2api-gpt` is missing), with the `novita` key |
 | GLM (`layout_parsing`) | An image that no earlier OCR engine read, with the GLM credentials |
 | The Responses endpoint (`gpt_base`) | Every downloaded image, each note's caption and every image transcription, and the title of each blog recommendation without a link, which the model searches the web for |
-| Blog sites | A request from this machine to check a found link (at most 2 MiB) and to import a blog (at most 5 MiB of HTML), without cookies, to public addresses only |
+| Blog sites and their image hosts | A request from this machine to check a found link (at most 2 MiB), to import a blog (at most 5 MiB of HTML) and to copy each of its images, without cookies, to public addresses only |
 | Jina Reader (`r.jina.ai`) | A blog URL whose page could not be fetched or yielded under 200 characters, with the `jina` key when one is configured |
 
 Images and captions are other people's posts; transcriptions may contain

@@ -491,6 +491,33 @@ def test_blog_fetch_writes_article_and_raw_under_its_root(monkeypatch, credentia
     assert unsafe.category == "not_found"
 
 
+def test_blog_fetch_writes_copied_images_under_assets(monkeypatch, credentials, tmp_path) -> None:
+    from cortex_research import blog_fetch
+
+    figure = b"\x89PNG\r\n\x1a\n" + b"\x01" * 24
+    copied = blog_fetch.BlogImage("page-01-0123456789ab.png", "https://blog.example/f.png", figure)
+    article = blog_fetch.BlogArticle(
+        requested_url="https://blog.example/Post", final_url="https://blog.example/Post",
+        content_source="origin", title="Synthetic Post", author=None, date=None,
+        markdown=f"Body.\n\n![Figure](assets/{copied.name})", page_html=b"<html></html>",
+        jina_text=None, origin_failure=None, images=(copied,), images_not_copied=1,
+    )
+    monkeypatch.setattr(blog_fetch, "fetch_blog", lambda url, **options: article)
+    root = tmp_path / "blogs"
+    staging = root / "abc" / ".staging"
+    engine = dispatch(
+        "blog_fetch",
+        {"url": "https://blog.example/Post", "staging_dir": str(staging)},
+        write_roots=(root,),
+    )["engine"]
+    assert set(engine["files"]) == {"article.md", "raw/page.html", f"assets/{copied.name}"}
+    assert engine["files"][f"assets/{copied.name}"] == {
+        "sha256": hashlib.sha256(figure).hexdigest(), "bytes": len(figure),
+    }
+    assert (staging / "assets" / copied.name).read_bytes() == figure
+    assert (engine["metadata"]["images"], engine["metadata"]["images_not_copied"]) == (1, 1)
+
+
 # -- the real child -----------------------------------------------------------
 
 
