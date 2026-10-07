@@ -14,7 +14,7 @@ entry point unless you configure the optional private-access path.
 [`docs/runbooks/cortex-web-user-guide.md`](docs/runbooks/cortex-web-user-guide.md)
 walks through the surfaces once it is running.
 
-Product 0.1.32 uses installation sequence 32 and Control schema 21. The qualified
+Product 0.1.33 uses installation sequence 33 and Control schema 21. The qualified
 Hermes gen10 runtime is supplied separately. See
 [`CHANGELOG.md`](CHANGELOG.md) for changes through 0.1.23 and
 [`docs/releases/`](docs/releases/) for later releases and their validation boundaries.
