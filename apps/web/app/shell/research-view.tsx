@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ import {
 } from "../control/research-items-contracts";
 import { copy, label, researchKindLabel, researchStatusLabel } from "./copy";
 import type { ControlActions, ControlState, ViewProps } from "./types";
+import { useListColumn } from "./use-list-column";
 
 const SKELETON_ROWS = [0, 1, 2];
 
@@ -465,12 +467,16 @@ export function ResearchView({ state, actions, client }: ViewProps) {
   // arrived for an item the operator has already left is not rendered under the
   // one they are looking at now.
   const open = researchItem && researchItem.id === selectedResearchItemId ? researchItem : null;
+  const column = useListColumn("cortex.layout.research-list");
   return (
     <section
       aria-label={copy.research.title}
-      className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto bg-background p-6 text-foreground lg:grid-cols-[minmax(300px,1fr)_2fr] lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden"
+      className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto bg-background p-6 text-foreground lg:grid-cols-[var(--list-width,minmax(300px,1fr))_1.5rem_minmax(0,2fr)] lg:grid-rows-[minmax(0,1fr)] lg:gap-x-0 lg:overflow-hidden"
+      ref={column.section}
+      style={column.style}
     >
       <ResearchCatalog actions={actions} state={state} />
+      <ResizeHandle className="hidden lg:flex" label={copy.research.resize} title={copy.layout.resizeHint} {...column.handle} />
       <div className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto">
         {!selectedResearchItemId ? <p className="text-sm text-muted-foreground">{copy.research.pick}</p> : null}
         {selectedResearchItemId && researchItemLoading && !open ? (

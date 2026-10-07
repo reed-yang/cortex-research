@@ -28,140 +28,140 @@
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_empty",
-      "sha256": "67db465ddd6713200b2a0c504152480032859606ce07de77a29ce55ba68d1c9a"
+      "sha256": "bcf11252c385414a5a4862b499a70ec12b2a3cec542ca98b84e9e0d7b39a597e"
     },
     "empty-project-dark-desktop.png": {
       "scene": "empty-project",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_empty",
-      "sha256": "6d163e4494311c63777cf53db4880ea5deae9265e99eaa2a1aa89490b7a97edf"
+      "sha256": "90662051b0ec660afe71a0b8897914803070316feeb69d55da47d2a1d57f6684"
     },
     "thread-decision-light-desktop.png": {
       "scene": "thread-decision",
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "ca7d045071bc479cf6490b69987f776079377c1f44b3ae63d15fd8eeed63dabe"
+      "sha256": "b52982cd135283660e9de4f457971bbc77365f4e156a50e976ac5ccdaa518104"
     },
     "thread-decision-dark-desktop.png": {
       "scene": "thread-decision",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "a12e1825d896e2ef3d6a2344763f02db8564216611e47c1476ea6971aaac8d91"
+      "sha256": "6aa1e305a4e2c365bfd45e8ba3c454a01a5ff0e7a2c0696016c94d5172ef3e00"
     },
     "thread-decision-light-mobile.png": {
       "scene": "thread-decision",
       "scheme": "light",
       "viewport": "mobile",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "ec2d9691ff09227751accb54ef3a5cc801a1e753d34d71dc76bc889d48601516"
+      "sha256": "37810710da290990d63c6fe1be296e38e6b7d537f6266be67e38d5637d05f828"
     },
     "thread-decision-dark-mobile.png": {
       "scene": "thread-decision",
       "scheme": "dark",
       "viewport": "mobile",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "e544c7b818aff63bcbf9fb0bb30ed83c68ea34e628e0f85a85ad183da613b263"
+      "sha256": "5a8190a9742650116f3275f9a769ad34915a47cda2e8aa6b22e96934d414e2f8"
     },
     "thread-failed-light-desktop.png": {
       "scene": "thread-failed",
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_failed",
-      "sha256": "5081aa1375780d73057221c00099d576568174a537c6c82e778750fd8de64b2a"
+      "sha256": "90ad296954087a4628ee22c78adf5a76b4f0263bfccfb4c4c10c816ef2c09023"
     },
     "thread-failed-dark-desktop.png": {
       "scene": "thread-failed",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_failed",
-      "sha256": "036639bba6e9abf0b3a6b764a6050975bd21060b9b5be08ef1d828e86db37261"
+      "sha256": "6db661c8856392e28780ce9a0ef7b16a03b72bcd78c87abd0d977ce13d7bef0d"
     },
     "sidebar-archived-light-desktop.png": {
       "scene": "sidebar-archived",
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "3913bee876a5947b54446080171949281bc8960c01b76448f0d605180472e054"
+      "sha256": "e6c1cd0231547050db649b06104bbc3702f1f8b4f2632ee3822cd9f1f0fd55ed"
     },
     "sidebar-archived-dark-desktop.png": {
       "scene": "sidebar-archived",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "ad7ebb8a7e69f5bf31d2acde2a3aab04888059411585bb7cab9faf64bfabc557"
+      "sha256": "d634fa78f9ba48dc22d689a977a9269d582b222965cf02c7dc4fd45bc693e4a5"
     },
     "library-light-desktop.png": {
       "scene": "library",
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library",
-      "sha256": "9dd78d6c5670075e747460a3e678f8d3c17682c18f1022dba8f4a7801814fee9"
+      "sha256": "a6ff0165b99a3b829471393d34b7825104955b7ed397faf3fb75679c01909a87"
     },
     "library-dark-desktop.png": {
       "scene": "library",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library",
-      "sha256": "af1920e97c606a2c3132f739615927ff69776ab0f7290866997a871dcaab2382"
+      "sha256": "15b9966e33eea1040f1bf0a5f993567ddef9c88a3658d5e7761132f20ad5e184"
     },
     "xhs-note-light-desktop.png": {
       "scene": "xhs-note",
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library&kind=xhs_note",
-      "sha256": "8ff0659e492bead45265234448f4da75c6d0af69a37682c4fc5fe08c2327a5c0"
+      "sha256": "582761015b047a80ac0c0576cf3d0232ee8ea7b51d499d980a3a8b66bee000c1"
     },
     "xhs-note-dark-desktop.png": {
       "scene": "xhs-note",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library&kind=xhs_note",
-      "sha256": "96e70d508df231a0f870ec202fee7c1ef8215d50ba2e4cbd1e3513e2375f6463"
+      "sha256": "7634e3fe108bfdd5aa54e2850e290e23156ec8db47af955321ecf0191ec8c22d"
     },
     "inbox-light-desktop.png": {
       "scene": "inbox",
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=inbox",
-      "sha256": "f750cd1fd669521fa2047da4880230d905f5142e9bed33c80dd3995e986029f6"
+      "sha256": "86321d22999ada8fa0b6c8f479afd78b12469a823460f594b109838b145c6439"
     },
     "inbox-dark-desktop.png": {
       "scene": "inbox",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=inbox",
-      "sha256": "d13f91b543a4524c95f20aa7617d0f10b0be884f17c899cb77d7b69898ad61a5"
+      "sha256": "5c45954a1227cdb20db79de2d1278d0eaf3296533fccbe0b1513b9757b071a5a"
     },
     "status-light-desktop.png": {
       "scene": "status",
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=status",
-      "sha256": "5234ec4860bb150a68a15f8c41c41a8b6277ea098b2cb062ab24cbff8d1f4302"
+      "sha256": "092f630446389efa8a7f0f77b12dd33735a6215bbb24a6b541041b27927c5a15"
     },
     "status-dark-desktop.png": {
       "scene": "status",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=status",
-      "sha256": "5d4281718873b9218013a5a92b4b78cc0a7c4521d990483be3500701deb8f26c"
+      "sha256": "c4ed85a7bec78800a95b21faefa6820c30435fbf87edafcb135b12f8ed2f50bf"
     },
     "drawer-light-mobile.png": {
       "scene": "drawer",
       "scheme": "light",
       "viewport": "mobile",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "0871f00636b063c9d3e91d236bc791226b41c221fef086b7dd216d3affea85b5"
+      "sha256": "b9a9640f5415d579c61990664e5aa7ed0919c6e04ed74b301c3929b454bc4012"
     },
     "drawer-dark-mobile.png": {
       "scene": "drawer",
       "scheme": "dark",
       "viewport": "mobile",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&thread=thread_mobile",
-      "sha256": "bf9f830ac3c44b2ada2f46ddc958ee134dc38f3d67656141c15222ff6c8f3054"
+      "sha256": "6d0a672312f4e4233bec90ab87be31589f53efcbeebafb864c1b3626ef9255b9"
     }
   }
 }

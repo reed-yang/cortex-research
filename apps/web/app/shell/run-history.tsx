@@ -47,7 +47,7 @@ export function RunHistory({ state, actions }: ViewProps) {
       <CollapsibleTrigger className="flex w-full items-center gap-1 text-sm font-medium">
         <ChevronDownIcon className="size-4" />{copy.thread.runs}
       </CollapsibleTrigger>
-      <CollapsibleContent className="flex flex-col gap-0.5 pt-2">
+      <CollapsibleContent className="flex max-h-[30dvh] flex-col gap-0.5 overflow-y-auto overscroll-contain pt-2">
         {newestFirst(state.runs).map((run) => (
           <Button
             aria-pressed={run.id === state.selectedRunId}

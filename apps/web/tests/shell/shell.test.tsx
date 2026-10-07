@@ -34,6 +34,18 @@ async function capture(control: FakeControl, arm?: () => void): Promise<void> {
 }
 
 describe("Shell", () => {
+  it("contains and clips everything inside it, so the page itself never scrolls", async () => {
+    const { container } = render(<Shell client={seeded().client()} />);
+    await screen.findByRole("complementary", { name: copy.sidebar.navigation });
+    // An absolutely positioned label inside a scroll pane that is not itself
+    // positioned is laid out against the nearest positioned ancestor; without
+    // one it lengthened the document under the sidebar.
+    const shell = container.firstElementChild!;
+    expect(shell.className).toContain("relative");
+    expect(shell.className).toContain("h-dvh");
+    expect(shell.className).toContain("overflow-clip");
+  });
+
   it("says what a command did and lets the operator dismiss it", async () => {
     const user = userEvent.setup();
     const control = seeded();

@@ -156,9 +156,29 @@ describe("LibraryView", () => {
     const section = screen.getByRole("region", { name: "Library" });
     expect(section.className).toContain("lg:grid-rows-[minmax(0,1fr)]");
     expect(section.className).toContain("lg:overflow-hidden");
-    const panes = section.querySelectorAll(":scope > div");
+    const panes = section.querySelectorAll(":scope > div:not([role=separator])");
     expect(panes.length).toBe(2);
     for (const pane of panes) expect(pane.className).toContain("lg:min-h-0 lg:overflow-y-auto");
+  });
+
+  it("keeps the list width the operator sets between the list and the reader", () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    localStorage.setItem("cortex.layout.library-list", "320");
+    const control = seeded();
+    render(<LibraryView actions={stubActions()} client={control.client()} state={{ ...BASE_STATE, sources: [PROJECTION] }} />);
+    const section = screen.getByRole("region", { name: "Library" });
+    // A stored width applies on load, clamped by the stylesheet to the room there is.
+    expect(section.style.getPropertyValue("--list-width")).toBe("max(240px, min(320px, 100% - 384px))");
+    const handle = screen.getByRole("separator", { name: "Resize the source list" });
+    expect(handle.previousElementSibling?.querySelector("h2")?.textContent).toBe("Library");
+    Object.defineProperty(section, "clientWidth", { configurable: true, value: 1200 });
+    vi.spyOn(handle.previousElementSibling!, "getBoundingClientRect").mockReturnValue({ width: 320 } as DOMRect);
+    fireEvent.keyDown(handle, { key: "ArrowRight", shiftKey: true });
+    expect(localStorage.getItem("cortex.layout.library-list")).toBe("370");
+    expect(section.style.getPropertyValue("--list-width")).toBe("max(240px, min(370px, 100% - 384px))");
+    fireEvent.keyDown(handle, { key: "Enter" });
+    expect(localStorage.getItem("cortex.layout.library-list")).toBeNull();
+    expect(section.style.getPropertyValue("--list-width")).toBe("");
   });
 
   it("shows three placeholder rows while the corpus loads", () => {

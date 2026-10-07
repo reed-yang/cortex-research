@@ -15,12 +15,14 @@ import {
   InboxIcon,
   MenuIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import { ThreadList } from "@/components/assistant-ui/elements/thread-list.aui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ResizeHandle } from "@/components/ui/resize-handle";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { useStoredWidth } from "@/hooks/use-stored-width";
 import { cn } from "@/lib/utils";
 import { copy, label } from "./copy";
 import { ProjectSwitcher } from "./project-switcher";
@@ -38,6 +40,15 @@ const ENTRIES: Array<[ShellView, string, typeof BookOpenIcon]> = [
 // empty array: a fresh one every render would restate the thread on each pass.
 const NO_MESSAGES: ThreadMessage[] = [];
 const NO_TURN = async () => {};
+
+// The rail's width as the operator dragged it, between 200px and 480px and
+// never so wide that the view beside it drops under 672px (a list, its handle
+// and a 360px reader). Without a stored width the rail is 260px.
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 480;
+const MAIN_MIN = 672;
+const sidebarTrack = (width: number) => `max(${SIDEBAR_MIN}px, min(${Math.round(width)}px, ${SIDEBAR_MAX}px, 100vw - ${MAIN_MIN}px))`;
+const sidebarBounds = () => ({ min: SIDEBAR_MIN, max: Math.min(SIDEBAR_MAX, window.innerWidth - MAIN_MIN) });
 
 // The archived group renders from the adapter's own items, so it stays in the
 // same order as the live list and reuses the same commands.
@@ -145,16 +156,31 @@ function SidebarBody({ state, actions, client, onClose }: ViewProps & { onClose?
 export function Sidebar(props: ViewProps) {
   const [open, setOpen] = useState(false);
   const close = useMemo(() => () => setOpen(false), []);
+  const [width, setWidth] = useStoredWidth("cortex.layout.sidebar");
+  const rail = useRef<HTMLElement>(null);
   return (
     <>
       {/* Legacy page styling still paints the body, so the panel states its own
-          surface rather than inheriting one. */}
+          surface rather than inheriting one. Its right border is the resize
+          handle that follows it. */}
       <aside
         aria-label={copy.sidebar.navigation}
-        className="hidden w-[260px] shrink-0 border-r bg-sidebar text-sidebar-foreground lg:block"
+        className="hidden w-[var(--sidebar-width,260px)] shrink-0 bg-sidebar text-sidebar-foreground lg:block"
+        ref={rail}
+        style={width === null ? undefined : ({ "--sidebar-width": sidebarTrack(width) } as CSSProperties)}
       >
         <SidebarBody {...props} />
       </aside>
+      {/* A 1px line with a wider grip either side of it. */}
+      <ResizeHandle
+        bounds={sidebarBounds}
+        className="z-10 hidden w-px after:absolute after:inset-y-0 after:-inset-x-1 lg:flex"
+        label={copy.sidebar.resize}
+        onCommit={setWidth}
+        onPreview={(next) => rail.current?.style.setProperty("--sidebar-width", sidebarTrack(next))}
+        onReset={() => setWidth(null)}
+        title={copy.layout.resizeHint}
+      />
       <Sheet onOpenChange={setOpen} open={open}>
         <SheetTrigger asChild>
           <Button
