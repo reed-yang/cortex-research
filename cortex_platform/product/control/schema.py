@@ -36,7 +36,171 @@ IDEA_FRAGMENTS_MIGRATION = 20
 #: images and recommendations, the plugin's task queue and daily usage, content
 #: bindings for non-paper sources, and source-to-source links.
 XHS_SOURCES_MIGRATION = 21
-SCHEMA_VERSION = XHS_SOURCES_MIGRATION
+#: The weekly recommendation fallback: each recommendation's review state, the
+#: weekly runs and the recommendations each run took. No existing table changes.
+XHS_FALLBACK_MIGRATION = 22
+SCHEMA_VERSION = XHS_FALLBACK_MIGRATION
+
+#: Reviews, runs and run items of the weekly XHS recommendation fallback
+#: (`docs/plans/xhs-recommendation-fallback.md`). A recommendation without a
+#: review row was never reviewed. A model answer is stored only after the parent
+#: validated it, and a correction keeps the recommendation's identity.
+_MIGRATION_XHS_FALLBACK = """
+CREATE TABLE xhs_fallback_runs (
+    id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK(state IN ('running', 'completed')),
+    trigger TEXT NOT NULL CHECK(trigger IN ('schedule', 'operator')),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    item_cap INTEGER NOT NULL CHECK(item_cap BETWEEN 1 AND 100),
+    model TEXT NOT NULL CHECK(length(model) BETWEEN 1 AND 128),
+    effort TEXT NOT NULL CHECK(length(effort) BETWEEN 1 AND 16),
+    prompt_version TEXT NOT NULL CHECK(length(prompt_version) BETWEEN 1 AND 64),
+    -- Counts by applied action; written when the run completes.
+    summary TEXT NOT NULL DEFAULT '{}' CHECK(
+        json_valid(summary) AND json_type(summary) = 'object'
+        AND length(CAST(summary AS BLOB)) <= 4096
+    ),
+    digest_state TEXT NOT NULL DEFAULT 'none' CHECK(digest_state IN (
+        'none', 'pending', 'sent', 'suppressed', 'blocked'
+    )),
+    digest_reason TEXT CHECK(
+        digest_reason IS NULL OR length(digest_reason) BETWEEN 1 AND 200
+    ),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK((state = 'running') = (finished_at IS NULL)),
+    -- The digest exists only once the run has completed.
+    CHECK(state = 'completed' OR digest_state = 'none')
+);
+-- At most one run is running.
+CREATE UNIQUE INDEX xhs_fallback_runs_running_idx
+    ON xhs_fallback_runs(state) WHERE state = 'running';
+CREATE INDEX xhs_fallback_runs_started_idx ON xhs_fallback_runs(started_at, id);
+CREATE INDEX xhs_fallback_runs_digest_idx
+    ON xhs_fallback_runs(digest_state, finished_at, id);
+
+CREATE TABLE xhs_recommendation_reviews (
+    recommendation_id TEXT PRIMARY KEY REFERENCES xhs_recommendations(id),
+    state TEXT NOT NULL CHECK(state IN (
+        'resolved_blog', 'resolved_paper', 'excluded', 'needs_operator',
+        'operator_owned'
+    )),
+    method TEXT NOT NULL CHECK(method IN ('rule', 'model', 'operator')),
+    reason_code TEXT CHECK(reason_code IS NULL OR reason_code IN (
+        'arxiv_link', 'duplicate', 'not_on_arxiv', 'not_a_blog',
+        'not_a_recommendation', 'insufficient_evidence', 'conflicting_evidence',
+        'title_mismatch', 'fetch_failed', 'outcome_unknown', 'operator'
+    )),
+    -- Public text shown beside the row.
+    reason TEXT CHECK(reason IS NULL OR length(reason) BETWEEN 1 AND 500),
+    -- The fields a correction set, in this order; re-identification keeps them.
+    corrected_fields TEXT NOT NULL DEFAULT '[]' CHECK(corrected_fields IN (
+        '[]', '["kind"]', '["arxiv_id"]', '["url"]', '["kind","arxiv_id"]',
+        '["kind","url"]', '["arxiv_id","url"]', '["kind","arxiv_id","url"]'
+    )),
+    duplicate_of TEXT REFERENCES xhs_recommendations(id),
+    run_id TEXT REFERENCES xhs_fallback_runs(id),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK(state NOT IN ('excluded', 'needs_operator') OR reason_code IS NOT NULL),
+    -- A restored row belongs to the operator and shows no reason.
+    CHECK(
+        state <> 'operator_owned'
+        OR (method = 'operator' AND reason_code IS NULL AND reason IS NULL)
+    ),
+    CHECK(duplicate_of IS NULL OR (
+        duplicate_of <> recommendation_id AND reason_code = 'duplicate'
+    ))
+);
+CREATE INDEX xhs_recommendation_reviews_state_idx
+    ON xhs_recommendation_reviews(state, updated_at, recommendation_id);
+-- A duplicate names a recommendation of the same note, never one of another.
+CREATE TRIGGER xhs_recommendation_reviews_duplicate_insert_guard
+BEFORE INSERT ON xhs_recommendation_reviews
+WHEN NEW.duplicate_of IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM xhs_recommendations a
+    JOIN xhs_recommendations b ON b.note_id = a.note_id
+    WHERE a.id = NEW.recommendation_id AND b.id = NEW.duplicate_of
+)
+BEGIN SELECT RAISE(ABORT, 'a duplicate is in the same note'); END;
+CREATE TRIGGER xhs_recommendation_reviews_duplicate_update_guard
+BEFORE UPDATE ON xhs_recommendation_reviews
+WHEN NEW.duplicate_of IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM xhs_recommendations a
+    JOIN xhs_recommendations b ON b.note_id = a.note_id
+    WHERE a.id = NEW.recommendation_id AND b.id = NEW.duplicate_of
+)
+BEGIN SELECT RAISE(ABORT, 'a duplicate is in the same note'); END;
+
+CREATE TABLE xhs_fallback_items (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES xhs_fallback_runs(id),
+    recommendation_id TEXT NOT NULL REFERENCES xhs_recommendations(id),
+    ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 100),
+    -- The recommendation's revision when the run selected it.
+    expected_revision INTEGER NOT NULL CHECK(expected_revision >= 0),
+    input_sha256 TEXT NOT NULL CHECK(
+        length(input_sha256) = 64 AND input_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN (
+        'pending', 'deciding', 'verifying', 'done', 'stale'
+    )),
+    -- Whether the one model call may have reached the provider. An item
+    -- whose call may have started is never called again.
+    call_state TEXT NOT NULL DEFAULT 'not_started' CHECK(call_state IN (
+        'not_started', 'may_have_started', 'finished'
+    )),
+    proposal TEXT CHECK(
+        proposal IS NULL OR (
+            json_valid(proposal) AND length(CAST(proposal AS BLOB)) <= 16384
+        )
+    ),
+    verification TEXT CHECK(
+        verification IS NULL OR (
+            json_valid(verification) AND length(CAST(verification AS BLOB)) <= 16384
+        )
+    ),
+    applied TEXT CHECK(applied IS NULL OR applied IN (
+        'blog_queued', 'paper_corrected', 'paper_kept', 'excluded', 'needs_operator'
+    )),
+    -- Tokens and search calls as the provider returned them; absent is unknown.
+    usage TEXT CHECK(
+        usage IS NULL OR (
+            json_valid(usage) AND length(CAST(usage AS BLOB)) <= 4096
+        )
+    ),
+    -- Verification attempts; the model is called at most once.
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3),
+    next_attempt_at TEXT NOT NULL,
+    lease_until TEXT,
+    last_error TEXT CHECK(
+        last_error IS NULL OR (
+            length(last_error) BETWEEN 1 AND 64
+            AND last_error NOT GLOB '*[^a-z_]*'
+        )
+    ),
+    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(run_id, recommendation_id),
+    UNIQUE(run_id, ordinal),
+    -- Only a stage in progress holds a lease, and deciding always does.
+    CHECK(lease_until IS NULL OR state IN ('deciding', 'verifying')),
+    CHECK(state <> 'deciding' OR lease_until IS NOT NULL),
+    CHECK(state <> 'pending' OR (call_state = 'not_started' AND proposal IS NULL)),
+    CHECK(state <> 'verifying' OR proposal IS NOT NULL),
+    CHECK(proposal IS NULL OR call_state = 'finished'),
+    CHECK((applied IS NOT NULL) = (state = 'done'))
+);
+CREATE INDEX xhs_fallback_items_due_idx
+    ON xhs_fallback_items(state, next_attempt_at, run_id, ordinal);
+-- An input reviewed once is not selected again.
+CREATE INDEX xhs_fallback_items_input_idx
+    ON xhs_fallback_items(recommendation_id, input_sha256);
+"""
 
 #: The XHS plugin's durable state. Network and model I/O happen outside every
 #: transaction; each row here records what a finished child operation proved.
@@ -3145,6 +3309,7 @@ def migration_scripts() -> tuple[tuple[int, str], ...]:
         (RESEARCH_ITEMS_MIGRATION, _MIGRATION_RESEARCH_ITEMS),
         (IDEA_FRAGMENTS_MIGRATION, _MIGRATION_IDEA_FRAGMENTS),
         (XHS_SOURCES_MIGRATION, _MIGRATION_XHS_SOURCES),
+        (XHS_FALLBACK_MIGRATION, _MIGRATION_XHS_FALLBACK),
     )
 
 

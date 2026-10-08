@@ -33,8 +33,8 @@ a live synchronization with their original files.
 | Research → Explorations | Inspect broader research directions and recorded exploration history. Exploration does not mean a runnable experiment. |
 | Research → Projects | Inspect legacy research project records and their dossiers. |
 | Library | Browse papers, blogs and XHS notes by kind, read their content, and import what an XHS note recommends. |
-| Inbox | Save ideas as written, add arXiv sources, and review captures and pending decisions. It is not an automatic resume queue. |
-| Status | Inspect availability and technical service state, including the XHS plugin's last scans. |
+| Inbox | Save ideas as written, add arXiv sources, review captures and pending decisions, and see the XHS recommendations the weekly review left to you. It is not an automatic resume queue. |
+| Status | Inspect availability and technical service state, including the XHS plugin's last scans and weekly review. |
 | Runs | Inspect execution history for a conversation. |
 | Outputs | Read saved research artifacts for the selected run. |
 
@@ -290,7 +290,7 @@ accepts http and https links without credentials; saving it marks the link
 
 A row has a checkbox only when it can be imported: a paper with an arXiv id, or
 a blog with a link, that has not been imported or staged yet or whose import
-failed. Import selected
+failed, and that is not excluded. Import selected
 does two steps. It first stages the selection in one command: each paper
 becomes a pending Capture in the Inbox, an open Capture of the same paper is
 reused, and each blog gets a queued blog import. It then approves each staged
@@ -317,6 +317,48 @@ the schedule disabled), and lists each followed blogger's last scan time with
 and the failure, such as "credentials refused" or "rate limited". A scan that
 found nothing new is not a failure, and a provider failure is never shown as
 nothing new.
+
+## Review XHS recommendations
+
+When the operator enables the weekly review
+([XHS runbook](xhs.md#recommendation-fallback)), Cortex reviews the
+recommendations that could not be imported, and a recommendation row shows the
+outcome under its import state:
+
+| Row shows | Meaning |
+|---|---|
+| Excluded, with the reason and Restore | A rule, the weekly review or you excluded it. It cannot be imported until it is restored. |
+| Corrected automatically: link (or kind, arXiv id) | A rule or the weekly review changed these fields. A corrected blog link was checked by Cortex, and its import is queued. |
+| Paper identified — import when ready | The row is now a paper with an arXiv id. It is never imported automatically: select it and use Import selected. |
+| Not on arXiv — Cortex imports arXiv papers only | The row is a paper with no arXiv version; it cannot be imported. |
+| Needs your decision, with the reason | The weekly review could not decide. Edit the link, import the row or exclude it. |
+
+"Paper identified" and "Needs your decision" show only while the row is not
+imported. A reason written by the review or by you is shown as written; a row
+without one shows a fixed sentence for its reason, such as "The page could not
+be read."
+
+To exclude a row that is not staged, importing or imported, expand it, type a
+short reason (up to 500 characters) under its evidence and select Exclude.
+The row then says Excluded with your reason and loses its checkbox. Restore,
+on an excluded row, makes the row yours again: it can be imported,
+shows no review line, and the weekly review leaves it to you from then on.
+When the row changed in the meantime, the command is refused and the row shows
+its current state.
+
+The Inbox has an "XHS recommendations" section above Ideas listing the
+recommendations that need your decision, most recently reviewed first: title,
+kind, reason and the note it came from. Open goes to that note in the Library and changes
+nothing. The section is read on Inbox entry and again after each command; it
+is hidden when nothing waits and shown when the list cannot be read. It shows
+up to 100 and says "Showing N of M." when more wait. A row leaves the list once
+it is staged for import, imported or excluded. The Telegram summary of a
+weekly run links to this Inbox.
+
+Status adds one weekly review line to the XHS section: off or on, how many
+items of a running run are left, the last run's counts (blogs queued, papers
+corrected, not on arXiv, excluded, need your decision, changed meanwhile) with
+its Telegram summary state, and when the next run may start.
 
 ## Read and manage results
 

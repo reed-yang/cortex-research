@@ -81,6 +81,41 @@ def canonicalize_arxiv_id(value: str) -> CanonicalLocator:
     )
 
 
+def arxiv_id_from_url(value: str) -> str | None:
+    """The arXiv work ID an abs, pdf or html page URL names, or None.
+
+    For a link already stored as a recommendation's URL, not for a Capture
+    payload: http or https on arxiv.org, a query and one trailing slash are
+    ignored, and the version is dropped. Nothing is fetched.
+    """
+
+    if not isinstance(value, str):
+        return None
+    try:
+        split = urlsplit(value.strip())
+        port = split.port
+    except ValueError:
+        return None
+    if (
+        split.scheme.lower() not in {"http", "https"}
+        or split.hostname not in _CAPTURE_HOSTS
+        or split.username is not None
+        or split.password is not None
+        or port not in {None, 80, 443}
+    ):
+        return None
+    path = split.path
+    if path.endswith("/") and len(path) > 1:
+        path = path[:-1]
+    match = _CAPTURE_PATH_RE.fullmatch(path)
+    if match is None or (match.group("view") != "pdf" and match.group("pdf") is not None):
+        return None
+    try:
+        return canonicalize_arxiv_id(match.group("work")).authority_id
+    except ValueError:
+        return None
+
+
 def canonicalize_locator(value: str) -> CanonicalLocator:
     """Normalize only URL path forms whose arXiv equivalence is proven."""
 

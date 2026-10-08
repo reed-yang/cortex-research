@@ -25,7 +25,8 @@ roadmap and release records. Read the applicable runbook before changing a bound
   within the same corpus root and with matching ready source bindings. Bulk
   adoption retains its original idempotency and conflict rules.
   The profile also hosts the XHS plugin's provider clients (`provider_http`,
-  `xhs_client`, `image_ocr`, `responses_client`, `blog_fetch`). Only
+  `xhs_client`, `image_ocr`, `responses_client`, `blog_fetch`,
+  `xhs_fallback`). Only
   engine-child handlers import them, lazily; the nine bridge modules never do,
   and `trafilatura` stays forbidden for those nine. Image OCR for XHS is
   in-product; PDF OCR stays an operator skill. The plugin's jobs, result

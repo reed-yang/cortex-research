@@ -6,7 +6,9 @@ recommends, and lets you import them. It is disabled by default. cortexd runs
 it from its schedule table; no command here calls a provider, and nothing
 reaches research evidence: notes and blogs are Library sources only, and
 Library search stays papers-only. The design and its known limits are in
-[the plan](../plans/xhs-sources.md).
+[the plan](../plans/xhs-sources.md). An optional weekly review corrects or
+excludes recommendations that could not be imported
+([Recommendation fallback](#recommendation-fallback)).
 
 Read [Provider data disclosure](#provider-data-disclosure) before enabling it.
 
@@ -51,6 +53,10 @@ gpt_effort = "xhigh"
 max_list_pages = 3         # 1 to 100
 drain_units_per_tick = 10  # 1 to 100
 daily_calls = { tikhub = 100, ocr = 1000, gpt = 300 }
+fallback_enabled = false        # the weekly recommendation review
+fallback_weekly_cap = 100       # recommendations per run, 1 to 100
+fallback_model = "gpt-6.1-sol"
+fallback_effort = "xhigh"
 
 [secret_refs]
 tikhub = "age://cortex/TIKHUB_API_KEY"
@@ -73,6 +79,8 @@ Each provider operation receives only its own credentials:
 | image OCR | `novita`, `glm`, `glm-app-id`; `sub2api-gpt`, optional |
 | identification, link search | `sub2api-gpt` |
 | blog fetch | `jina`, optional |
+| weekly review decision | `sub2api-gpt` |
+| weekly review page check | none |
 
 Image OCR tries the Responses model (`gpt_model` at `gpt_base`, at low effort)
 first: it reads the vertical arXiv stamp on a paper's first page, and a paper
@@ -124,9 +132,10 @@ estimated calls with the newly queued scans.
 
 ## Caps
 
-`daily_calls` caps provider calls per UTC day. `tikhub` counts list and
-detail calls, `ocr` one per OCR task whichever engines it uses, and `gpt`
-identification and link search calls. Image downloads and blog fetches are not capped. Calls refused
+`daily_calls` caps provider calls per UTC day. `tikhub` counts list and detail
+calls, `ocr` one per OCR task whichever engines it uses, and `gpt`
+identification, link search and weekly review decision calls. Image downloads,
+blog fetches and the weekly review's page checks are not capped. Calls refused
 for `auth` or `payment` are not counted. When a provider reaches its cap, its
 tasks stay pending until the next UTC day; the other providers' tasks keep
 running. `cortex xhs status` shows today's calls against each cap.
@@ -185,6 +194,175 @@ cortex xhs refetch-blog <blog source id>
 Its next version follows at the next drain. The blog stays imported throughout,
 and a failed fetch leaves it at its current version.
 
+## Recommendation fallback
+
+Identification and link search leave some recommendations unimportable: blogs
+without a link or with an unchecked one, blogs whose link is an arXiv page,
+and papers without an arXiv ID. The fallback reviews them: free rules first,
+then once a week a model review. It is off by default, adds no schedule row
+and runs inside the `xhs-drain` tick, so it also needs everything the plugin
+needs. The design is in [the plan](../plans/xhs-recommendation-fallback.md).
+
+### Enable
+
+Set `fallback_enabled = true` in `[xhs]` and restart cortexd, which reads
+`[xhs]` only when it starts. Until the restart the drain neither applies the
+rules nor starts a run. Before enabling, see what a run would do:
+
+```sh
+cortex xhs fallback run --dry-run   # rules and selection now; writes and calls nothing
+cortex xhs fallback status          # switch, running and last run, next start, backlog
+cortex xhs fallback run --yes       # start a run now under the weekly rule
+```
+
+`--dry-run` lists the changes the rules would make, the recommendations a run
+would take (`eligible`, `already_reviewed`, `selected`, `waiting`), the cap,
+model and effort, and why a start would refuse. Like `status`, it neither
+creates nor migrates the Control database. `run --yes` starts a run only when
+none is running and none started in the last 7 days; there is no force. It
+refuses while the plugin would refuse or `fallback_enabled` is false, and
+exits 1 with `running`, `too_soon` or `nothing_selected`. It only creates
+the run: the restarted cortexd makes the calls at its next drain ticks.
+
+`cortex xhs disable` stops the fallback with the drain. Setting
+`fallback_enabled = false` and restarting cortexd stops the fallback alone.
+Neither undoes a review, a correction or a queued import.
+
+### Rules
+
+At the start of each drain tick, a blog that is not imported, staged or
+importing, and whose link is an arXiv abs, pdf or html page, becomes a paper
+with that arXiv ID; its link is kept. When another paper in the same note
+already has that ID, the blog is excluded as a duplicate instead and stays a
+blog. A link you set yourself is left alone. The rules change at most 100 rows
+per pass, one pass per tick and one more when a run starts; they make no
+network call and import nothing.
+
+### The weekly run
+
+A tick starts a run when none is running, the last one started at least 7
+days ago, and at least one recommendation can be selected; an empty backlog
+starts no run. After the rules, the run takes up to `fallback_weekly_cap`
+recommendations (never more than 100) from saved notes: unimported blogs
+(never imported, or failed, with no blog import queued), then papers without
+an arXiv ID that were never imported, oldest first within each. It skips a
+recommendation that has any review already, one whose link you set, and one
+an earlier run already sent to the model with the same input. The first run takes the existing backlog; the rest waits for
+later runs.
+
+Each tick runs at most two of the run's steps before ordinary tasks, counted
+within `drain_units_per_tick`, so a run of 100 recommendations takes at least
+50 to 100 ticks (about 4 to 8 hours at the 300 s interval).
+
+1. **Decision.** One call to `fallback_model` at `fallback_effort` through
+   `gpt_base`, with the provider's web search and a 240 s timeout. It uses one
+   call of the `gpt` daily cap; when the cap is spent, the item waits for the
+   next UTC day. The model may propose a blog's link, reclassify the item as a
+   paper (with an arXiv ID, or as not on arXiv), exclude it as not a blog, not
+   a recommendation or a duplicate, or leave it undecided. Any other answer
+   leaves it to you as `insufficient_evidence`.
+2. **Check.** A proposed blog link or arXiv ID is applied only after Cortex
+   fetches the page itself (public addresses only, at most 2 MiB, 60 s) and
+   its title matches the recommendation's. A link to arXiv, OpenReview, DOI,
+   ACL Anthology or a PDF, or one that redirects there, is never taken as a
+   blog. A failed fetch is tried again after 10 minutes and after 1 hour,
+   without another model call; the third failure leaves the item to you as
+   `fetch_failed`.
+
+| Outcome | Applied |
+| --- | --- |
+| Blog link checked | The link is replaced and marked found and checked; the blog import is queued |
+| arXiv ID checked | The item becomes a paper with that ID; it is not imported |
+| Paper not on arXiv | The item becomes a paper without an ID; it stays unimportable |
+| Exclude | The item is excluded with the model's reason |
+| Undecided, title mismatch, paper page proposed as a blog, failed check, unknown outcome | The item is left to you with that reason |
+
+A corrected paper is never imported and no Capture is staged: import it from
+the note when you choose. A correction keeps the recommendation's identity and
+writes the note's next saved version, and a later identification of the note
+does not undo it. Before applying, Cortex checks that the recommendation, its
+note's title and caption, and the cited transcription have not changed since
+the run took it; otherwise the item is marked stale and nothing changes.
+
+A decision call is made at most once. A failure after it was sent (a timeout,
+a provider error, an answer that cannot be read) leaves the item to you as
+`outcome_unknown`; the call may have been charged. A failure proven before the
+model ran (no resolvable `sub2api-gpt`, `auth`, `payment`, or runtime dispatch
+off) returns the call to the cap and stops the tick, and the item is tried
+again later, after 1 hour unless dispatch was off. An item whose cited
+transcription cannot be read waits 1 hour, and the run stays open until it
+can.
+
+The run completes when every item is concluded or stale. Its summary counts
+blogs queued, papers corrected, papers kept (not on arXiv), exclusions, items
+left to you and stale items. Corrections, imports and exclusions notify no one.
+
+### Exclusion and restore
+
+An excluded recommendation keeps its row and shows its reason; import and
+`cortex xhs retry --failed` refuse it, and no link search runs for it. In the Web note record you can exclude any recommendation that is
+not staged, importing or imported, with a reason of up to 500 characters, and
+restore an excluded one. A restored recommendation is yours: it can be
+imported, and automatic review never takes it again. Editing a link or
+importing a recommendation leaves its review as it is; the Inbox lists only
+recommendations that are still unimported. See the
+[Web user guide](cortex-web-user-guide.md) for what each review shows.
+
+### Telegram digest
+
+When a completed run left at least one recommendation to you, cortexd sends
+one Telegram message:
+
+```text
+XHS recommendations: 7 need your decision.
+• short title one
+• short title two
+• short title three
+Open: https://<web.public_origin>/?view=inbox
+```
+
+The count and up to three titles (at most 60 characters each) are counted
+again just before sending, from the items still waiting and unimported; when
+none remain, nothing is sent and the digest is `suppressed`. The message has
+no buttons, and its link is built only from `[web] public_origin`.
+
+It goes only to the one user in `telegram_allowed_user_ids` whose private chat
+is bound at its root, never to a group or topic, and only while the transport
+is open in `active` mode. Until then the run's digest stays `pending` with a
+`digest_reason`:
+
+| `digest_reason` | Meaning |
+| --- | --- |
+| `transport_disabled` | No transport window is open |
+| `shadow` | `[transports] telegram_mode` is `shadow` |
+| `recipient_unavailable` | No allowlisted user has a bound private chat, or the user the message was prepared for no longer has one |
+| `recipient_ambiguous` | More than one allowlisted user has one |
+| `web_origin_missing` | `[web] public_origin` is not set |
+
+The digest never opens the transport. With no Telegram transport configured
+at all, it stays `pending` with no reason. It is sent through the existing
+delivery ledger as event `xhs-fallback:<run_id>`: after a restart the same
+prepared message is sent to the same chat. A send whose outcome is unknown is
+never repeated; the digest becomes `blocked` with `outcome_unknown`, and you
+check the chat by hand. A send Telegram refused is `blocked` with
+`delivery_rejected`. Several owed digests are sent separately, oldest first.
+
+### Cost and limits
+
+A run makes at most `fallback_weekly_cap` decision calls, one per item and
+never repeated, but each may run several web searches: the cap bounds the
+number of calls, not their price. The tokens and search calls the provider
+reports are stored per item. A title match is a heuristic, so a doubtful page
+is left to you rather than imported. Papers not on arXiv stay unimportable.
+The scheduler is serial: a 240 s decision call delays the next tick.
+
+### Rollback
+
+Products before 0.1.36 refuse the four `fallback_*` keys, and Control schema
+22 rolls back only by restoring the schema 21 baseline. A rollback must
+restore `config.toml` together with the state, or remove the `fallback_*` keys
+before the older product starts.
+
 ## Status
 
 `cortex xhs status` and the Web Status page read the same state: whether the
@@ -193,6 +371,13 @@ both schedule rows, each followed blogger's last scan time and outcome, task
 counts, today's usage against the caps, and the last failure category for
 `tikhub`, `cdn`, `ocr`, `gpt` and `blog`. Neither shows a task payload, a path
 or a credential.
+
+Both also show the weekly review (`fallback` in `cortex xhs status`, the same
+block as `cortex xhs fallback status`): whether `fallback_enabled` is on, the
+running run with its item count and how many remain, the last run with its
+model, effort, summary and digest state and reason, `next_start_at`,
+`backlog` (what a run could still take after the rules) and `needs_operator`
+(unimported recommendations left to you).
 
 ## Stored files
 
@@ -217,9 +402,9 @@ image URLs exist only in private task rows.
 
 `cortex xhs disable` stops both jobs; queued tasks stay queued and resume after
 `cortex xhs enable`. Setting `[xhs] enabled = false` and restarting cortexd
-does the same regardless of the schedule rows. Neither deletes anything: saved
-notes, blogs, links and imported papers stay, and there is no deletion
-command.
+does the same regardless of the schedule rows. Either also stops the weekly
+review. Neither deletes anything: saved notes, blogs, links, reviews and
+imported papers stay, and there is no deletion command.
 
 ## Provider data disclosure
 
@@ -234,10 +419,15 @@ With the plugin enabled, these leave the machine:
 | The Responses endpoint (`gpt_base`) | Every downloaded image, each note's caption and every image transcription, and the title of each blog recommendation without a link, which the model searches the web for |
 | Blog sites and their image hosts | A request from this machine to check a found link (at most 2 MiB), to import a blog (at most 5 MiB of HTML) and to copy each of its images, without cookies, to public addresses only |
 | Jina Reader (`r.jina.ai`) | A blog URL whose page could not be fetched or yielded under 2,000 characters, with the `jina` key when one is configured |
+| The Responses endpoint, as `fallback_model` | For each recommendation a weekly run reviews: its kind, title, verbatim quote, link and link state, the checked page title, the note's title, and at most 12,000 characters of the cited caption or image transcription around the quote; at most 32 KiB per call |
+| The Responses provider's web search | The search queries the model writes while reviewing those recommendations |
+| Proposed pages and `arxiv.org` | A request from this machine to check each proposed blog link or `https://arxiv.org/abs/<id>` page, at most 2 MiB, without cookies, to public addresses only |
+| Telegram | For a run that left recommendations to you: their count, up to three titles and the Web Inbox link, to the one bound operator chat |
 
-Images and captions are other people's posts; transcriptions may contain
-whatever the images show. The Control token, other sources and your
-conversations are not sent.
+The last four rows apply only with `fallback_enabled`; a weekly review sends no
+image, signed URL, private path, other note or task row. Images and captions
+are other people's posts; transcriptions may contain whatever the images show.
+The Control token, other sources and your conversations are not sent.
 
 ## Live acceptance
 

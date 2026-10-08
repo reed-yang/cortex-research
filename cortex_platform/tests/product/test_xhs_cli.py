@@ -7,7 +7,10 @@ blogger IDs are synthetic.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from cortex_platform.product.cli import main
 from cortex_platform.product.control import ControlStore
@@ -237,3 +240,91 @@ def test_init_roots_refuses_a_location_inside_the_corpus(tmp_path, capsys) -> No
     assert code == 1
     assert "overlap the research corpus" in error["message"]
     assert not (tmp_path / "data" / "sources").exists()
+
+
+# -- the weekly fallback --------------------------------------------------------------
+
+
+def _fallback_candidates(store: ControlStore) -> None:
+    """A saved note with a blog linking an arXiv page and a blog without a link."""
+
+    from cortex_platform.tests.product.control.test_xhs_fallback_store import _rec, _saved
+
+    _saved(store)
+    _rec(store, "blog:arxiv", "blog", "A paper as a blog", url="https://arxiv.org/abs/2509.00001")
+    _rec(store, "blog:plain", "blog", "A blog without a link")
+
+
+def _rows(root: Path, table: str) -> int:
+    with sqlite3.connect(root / "data" / "control.db") as conn:
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def test_fallback_status_and_dry_run_only_read(tmp_path, capsys) -> None:
+    for command in (("status",), ("run", "--dry-run")):
+        code, error = _run(tmp_path, "xhs", "fallback", *command, capsys=capsys)
+        assert code == 1 and "cortex init" in error["message"]
+    assert not (tmp_path / "data" / "control.db").exists()
+    store = _ready(tmp_path, capsys, enabled=False)
+    _fallback_candidates(store)
+    code, preview = _run(tmp_path, "xhs", "fallback", "run", "--dry-run", capsys=capsys)
+    assert code == 0
+    assert (preview["dry_run"], preview["enabled"], preview["plugin_refusal"]) == (
+        True, False, "disabled_in_config",
+    )
+    assert (preview["item_cap"], preview["model"], preview["effort"]) == (
+        100, "gpt-6.1-sol", "xhigh",
+    )
+    assert [rule["arxiv_id"] for rule in preview["rules"]] == ["2509.00001"]
+    assert [row["title"] for row in preview["selected"]] == ["A blog without a link"]
+    assert preview["refusal"] is None
+    # Nothing was applied, started or reviewed.
+    for table in ("xhs_recommendation_reviews", "xhs_fallback_runs", "xhs_fallback_items"):
+        assert _rows(tmp_path, table) == 0
+    code, status = _run(tmp_path, "xhs", "fallback", "status", capsys=capsys)
+    assert code == 0
+    assert status == {
+        "enabled": False, "running": None, "last": None, "next_start_at": None,
+        "backlog": 1, "needs_operator": 0,
+    }
+    code, full = _run(tmp_path, "xhs", "status", capsys=capsys)
+    assert full["fallback"] == status
+
+
+def test_fallback_run_yes_starts_one_run_under_the_weekly_rule(tmp_path, capsys) -> None:
+    store = _ready(tmp_path, capsys)
+    _fallback_candidates(store)
+    code, error = _run(tmp_path, "xhs", "fallback", "run", "--yes", capsys=capsys)
+    assert code == 1 and "fallback_enabled" in error["message"]
+    assert _rows(tmp_path, "xhs_fallback_runs") == 0
+    with (tmp_path / "config" / "config.toml").open("a", encoding="utf-8") as stream:
+        stream.write("fallback_enabled = true\nfallback_weekly_cap = 1\n")
+    code, started = _run(tmp_path, "xhs", "fallback", "run", "--yes", capsys=capsys)
+    assert code == 0
+    run = started["run"]
+    assert (run["state"], run["trigger"], run["item_cap"], run["model"]) == (
+        "running", "operator", 1, "gpt-6.1-sol",
+    )
+    assert started["rules"] == {"converted": 1, "duplicates": 0}
+    assert started["selection"]["selected"] == 1
+    # No force: a second start is refused while the first runs.
+    code, error = _run(tmp_path, "xhs", "fallback", "run", "--yes", capsys=capsys)
+    assert (code, error["error"]) == (1, "running")
+    assert _rows(tmp_path, "xhs_fallback_runs") == 1
+    code, status = _run(tmp_path, "xhs", "fallback", "status", capsys=capsys)
+    assert status["running"]["id"] == run["id"]
+    assert (status["running"]["items"], status["running"]["remaining"]) == (1, 1)
+    assert status["enabled"] is True
+
+
+def test_fallback_run_needs_a_mode_and_a_running_plugin(tmp_path, capsys) -> None:
+    with pytest.raises(SystemExit):
+        main(["xhs", "fallback", "run", *_paths(tmp_path)], environ={"HOME": str(tmp_path)})
+    capsys.readouterr()
+    store = _ready(tmp_path, capsys, enabled=False)
+    _fallback_candidates(store)
+    with (tmp_path / "config" / "config.toml").open("a", encoding="utf-8") as stream:
+        stream.write("\n[xhs]\nfallback_enabled = true\n")
+    code, error = _run(tmp_path, "xhs", "fallback", "run", "--yes", capsys=capsys)
+    assert code == 1 and "disabled_in_config" in error["message"]
+    assert _rows(tmp_path, "xhs_fallback_runs") == 0

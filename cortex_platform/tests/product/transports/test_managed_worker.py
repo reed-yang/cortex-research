@@ -2029,6 +2029,51 @@ def test_outside_a_window_the_line_is_told_nothing_is_outstanding(
     supervisor.stop()
 
 
+def test_outside_a_window_owed_digests_are_told_the_gate_is_closed(
+    tmp_path: Path, store: ControlStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The XHS digest waits with a reason the Status view shows; the tick
+    neither drains nor opens anything, and a failing note is not fatal."""
+
+    _approve(store)
+    worker = _worker(tmp_path, store, monkeypatch)
+    worker.bind()
+    calls = {"drain": 0, "gate_closed": 0}
+
+    class _Drain:
+        def drain(self):
+            calls["drain"] += 1
+            return []
+
+        def gate_closed(self):
+            calls["gate_closed"] += 1
+            if calls["gate_closed"] == 2:
+                raise RuntimeError("control.db is locked")
+
+        def status(self):
+            return {}
+
+    supervisor = TransportWindowSupervisor(
+        store=store,
+        worker=worker,
+        rpc=object(),
+        handle_update=lambda update: None,
+        poller_factory=lambda **kwargs: SimpleNamespace(
+            run=lambda: "stopped", stop=lambda: None, last_error=None, polls=0,
+            handled=0, failures=0,
+        ),
+        drain=_Drain(),
+    )
+    supervisor.reconcile()
+    supervisor.reconcile()
+    assert calls == {"drain": 0, "gate_closed": 2}
+    assert store.transport_activation("telegram") is None
+    _open_window(store)
+    supervisor.reconcile()
+    assert calls == {"drain": 1, "gate_closed": 2}
+    supervisor.stop()
+
+
 def test_a_new_window_starts_the_transport_line_counters_at_zero(
     tmp_path: Path, store: ControlStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

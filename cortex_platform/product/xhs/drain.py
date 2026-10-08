@@ -18,6 +18,15 @@ images under their hash, `raw/list.json` and `raw/detail.json` with signed
 URLs removed, and `ocr/<ordinal>.json` (the provider's raw answers) beside
 `ocr/<ordinal>.md` (the verbatim transcription). No route serves it; a saved
 version is written from it.
+
+With `[xhs] fallback_enabled`, each drain tick first applies the free rules,
+starts the weekly run when it is due, and runs at most two of its stages
+within `drain_units_per_tick` (`docs/plans/xhs-recommendation-fallback.md`).
+A `decide` stage reserves one `gpt` call and makes it once: a failure after
+dispatch is never retried and leaves the item to the operator. A `verify`
+stage fetches the proposed page without the model; a transient failure waits
+and tries again. The store applies each result; a paper is corrected and
+never imported, and a blog's import is only queued.
 """
 
 from __future__ import annotations
@@ -45,7 +54,7 @@ from cortex_platform.product.engine.protocol import PROVIDER_WRITE_ROOTS
 from cortex_platform.product.sources.identity import blog_url_identity
 from cortex_platform.product.workflows.coordinator import EffectPermanentlyRejected
 
-from . import identify
+from . import fallback, identify
 from .layout import (
     note_title,
     render_blog_notes,
@@ -89,6 +98,11 @@ _EXTENSIONS = {
 # Keys whose values are user text, kept verbatim even when they look like a URL.
 _TEXT_KEYS = frozenset({"desc", "title", "display_title", "nickname", "name"})
 _LEASE_MARGIN_SECONDS = 300
+#: The most weekly-fallback stages one tick runs, within `drain_units_per_tick`.
+FALLBACK_STAGES_PER_TICK = 2
+# A fallback stage the provider refused before running it, or whose input
+# could not be read, waits this long before it is claimed again.
+_FALLBACK_WAIT_SECONDS = 3_600
 
 
 def strip_signed_urls(value: Any, key: str | None = None) -> Any:
@@ -167,7 +181,10 @@ class UnitOutcome:
 
     `outcome` is `done`, `skipped` (nothing left to do), `retry` (backed off),
     `failed`, `capped`, `released` or `deferred` (returned unrun), or `lost`
-    (the lease passed to another holder before the record).
+    (the lease passed to another holder before the record). A weekly-fallback
+    stage (`fallback_decide`, `fallback_verify`, its item ID as `task_id`) is
+    `done` when its item concluded, `verifying` when a proposal waits for its
+    check, and otherwise `retry`, `capped`, `released` or `lost`.
     """
 
     task_id: str
@@ -504,9 +521,13 @@ class ResolveHandler(TaskHandler):
 
     def prepare(self, drain, task):
         recommendation = drain.store.get_xhs_recommendation(task["payload"]["recommendation_id"])
+        # An excluded row is not searched: the call would be spent on a row
+        # the operator set aside.
+        review = drain.store.get_xhs_recommendation_review(str(recommendation["id"]))
         if (
             recommendation["kind"] != "blog"
             or recommendation["url_state"] not in RESOLVABLE_URL_STATES
+            or (review is not None and review["state"] == "excluded")
         ):
             return None
         return {"title": recommendation["title"], **drain.gpt_settings()}
@@ -675,12 +696,17 @@ class XhsDrain:
 
         A deferred task (a Capture still open) is not a unit: it only reads
         Control state and comes back later, so staged Captures waiting for
-        approval never use up a tick's budget ahead of newer work.
+        approval never use up a tick's budget ahead of newer work. Weekly
+        fallback stages come first and count within the same budget.
         """
 
         units: list[UnitOutcome] = []
+        if self.settings.fallback_enabled:
+            stopped = self._fallback(units)
+            if stopped is not None:
+                return DrainReport(tuple(units), stopped)
         capped: set[str] = set()
-        counted = 0
+        counted = len(units)
         while counted < self.settings.drain_units_per_tick:
             # A shutdown ended the last child; the next would outlive cortexd.
             if getattr(self._supervisor, "stopping", False):
@@ -841,6 +867,258 @@ class XhsDrain:
             return UnitOutcome(str(task["id"]), str(task["kind"]), "lost", category)
         outcome = "retry" if after["state"] == "pending" else "failed"
         return UnitOutcome(str(task["id"]), str(task["kind"]), outcome, category, stop)
+
+    # -- the weekly fallback --------------------------------------------------------
+
+    def _fallback(self, units: list[UnitOutcome]) -> str | None:
+        """Apply the rules, start the weekly run when it is due, and run at
+        most `FALLBACK_STAGES_PER_TICK` of its stages into `units`.
+
+        Answers why the tick stops, or None. The rules and the start make no
+        call; the start refuses by itself while a run is running, within 7
+        days of the last start, or with nothing to select.
+        """
+
+        self.store.apply_xhs_fallback_rules()
+        self.store.start_xhs_fallback_run(
+            trigger="schedule",
+            item_cap=self.settings.fallback_weekly_cap,
+            model=self.settings.fallback_model,
+            effort=self.settings.fallback_effort,
+        )
+        budget = min(FALLBACK_STAGES_PER_TICK, self.settings.drain_units_per_tick)
+        while len(units) < budget:
+            if getattr(self._supervisor, "stopping", False):
+                return "stopping"
+            if not self.store.runtime_dispatch_enabled():
+                return "runtime_activation_disabled"
+            item = self.store.claim_xhs_fallback_item(lease_seconds=self._lease_seconds)
+            if item is None:
+                return None
+            if item["stage"] == "verify":
+                unit = self._fallback_verify(item)
+            else:
+                unit = self._fallback_decide(item)
+            units.append(unit)
+            if unit.stop:
+                return unit.category
+            if unit.outcome == "capped":
+                # The `gpt` cap is spent: the rest of the run waits for tomorrow.
+                return None
+        return None
+
+    def _fallback_input(self, context: Mapping[str, Any]) -> str:
+        """One item's model input, from Control state and the cited text.
+
+        A cited image's transcription is read from the note's staging copy
+        and checked against its recorded hash.
+        """
+
+        recommendation, note, image = context["recommendation"], context["note"], context["image"]
+        if recommendation["image_ordinal"] is None:
+            cited = str(note["caption"])
+        elif image is not None and image["ocr_state"] == "ok":
+            cited = self.transcription(str(note["note_id"]), image)
+        else:
+            cited = ""
+        return fallback.build_decide_input(
+            recommendation, note_title=str(note["title"]), cited_text=cited
+        )
+
+    def _fallback_decide(self, item: Mapping[str, Any]) -> UnitOutcome:
+        """Reserve the item's one `gpt` call, make it, and keep its answer.
+
+        A failure proven before the model ran (no credential, the runtime
+        gate, `auth` or `payment`) returns the item and its reserved call.
+        Any other failure after dispatch is never retried: the item is left
+        to the operator as `outcome_unknown`.
+        """
+
+        item_id, kind = str(item["id"]), "fallback_decide"
+        recommendation = item["context"]["recommendation"]
+        try:
+            text = self._fallback_input(item["context"])
+        except (NotFound, ValueError, KeyError, TypeError, OSError):
+            # Nothing was reserved or sent: the item waits for a readable input.
+            return self._fallback_release(item, kind, "invalid_response", wait=True)
+        run = self.store.get_xhs_fallback_run(str(item["run_id"]))
+        try:
+            item, day = self.store.begin_xhs_fallback_call(
+                item_id,
+                expected_revision=item["revision"],
+                cap=int(self.settings.daily_calls["gpt"]),
+            )
+        except (RevisionConflict, InvalidTransition):
+            return UnitOutcome(item_id, kind, "lost")
+        if day is None:
+            return UnitOutcome(item_id, kind, "capped", "gpt")
+        payload = {
+            "input": text,
+            "gpt_base": self.settings.gpt_base,
+            # The run's own model and effort, whatever the configuration says now.
+            "gpt_model": str(run["model"]),
+            "gpt_effort": str(run["effort"]),
+        }
+        try:
+            execution = self._supervisor.run("xhs_fallback_decide", payload)
+        except EffectPermanentlyRejected as rejection:
+            disabled = rejection.category == "runtime_activation_disabled"
+            # Never started. An unresolved credential stops the tick as `auth` does.
+            return self._fallback_release(
+                item, kind, rejection.category if disabled else "auth",
+                refund_day=day, wait=not disabled, stop=True,
+            )
+        try:
+            if not execution.ok:
+                category = execution.failure_category or "outcome_unknown"
+                if category in _UNBILLED:
+                    # The provider refused before running the model.
+                    return self._fallback_release(
+                        item, kind, category, refund_day=day, wait=True, stop=True
+                    )
+                return self._fallback_apply(
+                    item, kind, {"action": "needs_operator", "reason_code": "outcome_unknown"},
+                    category=category,
+                )
+            try:
+                engine = validate_engine("xhs_fallback_decide", execution.engine)
+                answered = (engine["prompt_version"], engine["input_text_sha256"])
+                if answered != (fallback.PROMPT_VERSION, fallback.input_text_sha256(text)):
+                    raise ValueError("the answer is for another input")
+            except ValueError:
+                # A call was made, and what came back cannot be read.
+                return self._fallback_apply(
+                    item, kind, {"action": "needs_operator", "reason_code": "outcome_unknown"},
+                    category="invalid_response",
+                )
+            usage = fallback.public_usage(engine["usage"])
+            # The child's parse is not taken on trust: the answer is checked again.
+            interpretation = fallback.interpret_answer(
+                engine["answer"],
+                kind=str(recommendation["kind"]),
+                error=_short(engine["answer_error"], 200),
+            )
+            if interpretation.verify is None:
+                return self._fallback_apply(
+                    item, kind, dict(interpretation.decision or {}),
+                    proposal=interpretation.proposal, usage=usage,
+                )
+            try:
+                self.store.record_xhs_fallback_proposal(
+                    item_id,
+                    expected_revision=item["revision"],
+                    proposal=interpretation.proposal,
+                    usage=usage,
+                )
+            except (RevisionConflict, InvalidTransition, NotFound, ValueError):
+                # The lease decides: an expired call is never made again.
+                return UnitOutcome(item_id, kind, "lost")
+            return UnitOutcome(item_id, kind, "verifying")
+        finally:
+            self._supervisor.discard(execution.marker)
+
+    def _fallback_verify(self, item: Mapping[str, Any]) -> UnitOutcome:
+        """Fetch the proposed page and apply what its title supports.
+
+        The model is not called. A retryable failure waits 10 minutes, then
+        an hour; the third failure, or any other, leaves the item to the
+        operator as `fetch_failed`, never as an exclusion.
+        """
+
+        item_id, kind = str(item["id"]), "fallback_verify"
+        recommendation = item["context"]["recommendation"]
+        try:
+            request = fallback.verification_request(item["proposal"] or {})
+        except (ValueError, TypeError):
+            return self._fallback_verification_failed(item, kind, "invalid_response")
+        try:
+            execution = self._supervisor.run("xhs_fallback_verify", request)
+        except EffectPermanentlyRejected as rejection:
+            # Never started: the attempt is not spent, and the tick stops.
+            disabled = rejection.category == "runtime_activation_disabled"
+            return self._fallback_release(
+                item, kind, rejection.category, wait=not disabled, stop=True
+            )
+        try:
+            if not execution.ok:
+                category = execution.failure_category or "outcome_unknown"
+                if category not in XHS_FAILURE_CATEGORIES:
+                    category = "outcome_unknown"
+                return self._fallback_verification_failed(item, kind, category)
+            expected = (
+                request["url"]
+                if request["check"] == "blog"
+                else fallback.arxiv_abs_url(request["arxiv_id"])
+            )
+            try:
+                page = validate_engine("xhs_fallback_verify", execution.engine)
+                if (page["check"], page["requested_url"]) != (request["check"], expected):
+                    raise ValueError("the check answers another page")
+            except ValueError:
+                return self._fallback_verification_failed(item, kind, "invalid_response")
+            decision, verification = fallback.verification_decision(
+                request,
+                page,
+                expected_title=str(recommendation["title"]),
+                reason=(item["proposal"] or {}).get("reason"),
+            )
+            return self._fallback_apply(item, kind, decision, verification=verification)
+        finally:
+            self._supervisor.discard(execution.marker)
+
+    def _fallback_apply(
+        self,
+        item: Mapping[str, Any],
+        kind: str,
+        decision: Mapping[str, Any],
+        *,
+        category: str | None = None,
+        **recorded: Any,
+    ) -> UnitOutcome:
+        try:
+            self.store.apply_xhs_fallback_result(
+                str(item["id"]), expected_revision=item["revision"], decision=decision, **recorded
+            )
+        except (RevisionConflict, InvalidTransition, NotFound, ValueError):
+            # Nothing was applied; the lease's expiry decides what happens next.
+            return UnitOutcome(str(item["id"]), kind, "lost", category)
+        return UnitOutcome(str(item["id"]), kind, "done", category)
+
+    def _fallback_verification_failed(
+        self, item: Mapping[str, Any], kind: str, category: str
+    ) -> UnitOutcome:
+        try:
+            after = self.store.fail_xhs_fallback_verification(
+                str(item["id"]),
+                expected_revision=item["revision"],
+                category=category,
+                verification={"failure": category},
+            )
+        except (RevisionConflict, InvalidTransition, NotFound):
+            return UnitOutcome(str(item["id"]), kind, "lost", category)
+        outcome = "retry" if after["state"] == "verifying" else "done"
+        return UnitOutcome(str(item["id"]), kind, outcome, category)
+
+    def _fallback_release(
+        self,
+        item: Mapping[str, Any],
+        kind: str,
+        category: str,
+        *,
+        refund_day: str | None = None,
+        wait: bool = False,
+        stop: bool = False,
+    ) -> UnitOutcome:
+        try:
+            self.store.release_xhs_fallback_item(
+                str(item["id"]),
+                expected_revision=item["revision"],
+                refund_day=refund_day,
+                delay_seconds=_FALLBACK_WAIT_SECONDS if wait else None,
+            )
+        except (RevisionConflict, InvalidTransition, NotFound):
+            return UnitOutcome(str(item["id"]), kind, "lost", category, stop)
+        return UnitOutcome(str(item["id"]), kind, "released", category, stop)
 
     # -- files and lookups --------------------------------------------------------
 

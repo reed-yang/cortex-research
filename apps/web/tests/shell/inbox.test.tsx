@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { copy } from "../../app/shell/copy";
 import { Shell } from "../../app/shell/shell";
 import { FakeControl } from "./fake-control";
+import { xhsNeedsDecisionItem } from "./xhs-fixtures";
 
 // `tests/jsdom-setup.ts` owns the Testing Library cleanup for every suite; this
 // hook also resets the query the shell reads once on mount, and unmounts first
@@ -417,10 +418,12 @@ describe("Inbox on a phone", () => {
     control.fragment(`fragment_${"c".repeat(32)}`, "from the bot", {
       origin: "telegram", thread_id: "thread_1", context_item_id: `ri_${"a".repeat(32)}`,
     });
+    control.xhsNeedsDecision = [xhsNeedsDecisionItem("xhs_rec_waiting")];
     const user = userEvent.setup();
     await openInbox(control);
     await screen.findByText("Allow the import?");
     await screen.findByText("from the bot");
+    await screen.findByText("An unlinked blog");
     await user.click(await screen.findByRole("button", { name: copy.inbox.reopen }));
     await screen.findByRole("button", { name: copy.capture.confirmReopen });
     return screen.getByRole("region", { name: copy.inbox.title });
@@ -431,7 +434,7 @@ describe("Inbox on a phone", () => {
 
     const buttons = [...inbox.querySelectorAll<HTMLButtonElement>("button")];
     expect(buttons.map((button) => button.textContent).sort()).toEqual([
-      copy.inbox.saveIdea, copy.inbox.capture, copy.inbox.open, copy.inbox.refreshIdeas, copy.inbox.refresh,
+      copy.inbox.saveIdea, copy.inbox.capture, copy.inbox.open, copy.inbox.open, copy.inbox.refreshIdeas, copy.inbox.refresh,
       copy.inbox.approve, copy.inbox.dismiss, copy.inbox.dismiss, copy.inbox.reopen,
       copy.capture.confirmReopen, copy.capture.cancelReopen, copy.capture.openSource,
     ].sort());
@@ -454,6 +457,76 @@ describe("Inbox on a phone", () => {
       expect(list.className).toContain("grid-cols-[max-content_minmax(0,1fr)]");
       expect(list.className).toContain("wrap-anywhere");
     }
+  });
+});
+
+describe("Inbox XHS recommendations", () => {
+  const LIST_READ = "xhs/recommendations?review=needs_operator&limit=100";
+
+  it("lists what the weekly review left to the operator above Ideas, and opens the note without changing anything", async () => {
+    const control = seeded();
+    control.xhsNote("source_note", "本周论文 Weekly reading list");
+    control.xhsNeedsDecision = [
+      xhsNeedsDecisionItem("xhs_rec_blog"),
+      xhsNeedsDecisionItem("xhs_rec_paper", { kind: "paper", title: "Synthetic Memory Networks", reason_code: "title_mismatch", reason: null, note_title: "" }),
+    ];
+    const user = userEvent.setup();
+    await openInbox(control);
+
+    const section = await screen.findByRole("region", { name: copy.inbox.xhsTitle });
+    const ideas = screen.getByRole("region", { name: copy.inbox.ideas });
+    expect(section.compareDocumentPosition(ideas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(section).getByText(copy.inbox.xhsIntro)).toBeTruthy();
+    const [blog, paper] = within(section).getAllByRole("article", { name: copy.inbox.xhsItem });
+    expect(within(blog!).getByText(copy.xhs.kinds.blog)).toBeTruthy();
+    expect(within(blog!).getByText("An unlinked blog")).toBeTruthy();
+    expect(within(blog!).getByText("The caption names the post but not where it lives.").hasAttribute("data-verbatim")).toBe(true);
+    expect(within(blog!).getByText("In 本周论文 Weekly reading list")).toBeTruthy();
+    expect(within(paper!).getByText(copy.xhs.reviewReasons.title_mismatch!)).toBeTruthy();
+    expect(within(paper!).getByText(copy.inbox.xhsUntitledNote)).toBeTruthy();
+    expect(within(section).queryByText(/^Showing /)).toBeNull();
+
+    await user.click(within(blog!).getByRole("button", { name: copy.inbox.open }));
+    await screen.findByLabelText("Library");
+    expect(await screen.findByRole("heading", { level: 3, name: "本周论文 Weekly reading list" })).toBeTruthy();
+    expect(control.posts).toEqual([]);
+  });
+
+  it("says how many wait beyond the page it shows", async () => {
+    const control = seeded();
+    control.xhsNeedsDecision = Array.from({ length: 101 }, (_, index) => xhsNeedsDecisionItem(`xhs_rec_${index}`, { title: `Synthetic blog ${index}` }));
+    await openInbox(control);
+
+    const section = await screen.findByRole("region", { name: copy.inbox.xhsTitle });
+    expect(within(section).getAllByRole("article")).toHaveLength(100);
+    expect(within(section).getByText("Showing 100 of 101.")).toBeTruthy();
+  });
+
+  it("shows nothing while nothing waits, and reads the list on entry and again after a command", async () => {
+    const control = seeded();
+    const user = userEvent.setup();
+    await openInbox(control);
+    await waitFor(() => expect(control.gets.filter((path) => path === LIST_READ)).toHaveLength(1));
+    expect(screen.queryByRole("region", { name: copy.inbox.xhsTitle })).toBeNull();
+
+    control.xhsNeedsDecision = [xhsNeedsDecisionItem("xhs_rec_blog")];
+    await user.type(screen.getByLabelText(copy.inbox.ideaLabel), "An idea");
+    await user.click(screen.getByRole("button", { name: copy.inbox.saveIdea }));
+
+    const section = await screen.findByRole("region", { name: copy.inbox.xhsTitle });
+    expect(within(section).getByText("An unlinked blog")).toBeTruthy();
+    expect(control.gets.filter((path) => path === LIST_READ).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("says the list could not be read, keeping the wire message under Details", async () => {
+    const control = seeded();
+    control.xhsNeedsDecision = [xhsNeedsDecisionItem("xhs_rec_blog")];
+    control.failNext = { path: /^xhs\/recommendations$/, status: 503, category: "unavailable" };
+    await openInbox(control);
+
+    const section = await screen.findByRole("region", { name: copy.inbox.xhsTitle });
+    expect(within(section).getByRole("alert").textContent).toContain(copy.inbox.xhsUnreadable);
+    expect(within(section).queryByRole("article")).toBeNull();
   });
 });
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { CortexControlClient } from "../control/client";
-import type { XhsStatus } from "../control/research-contracts";
+import type { XhsFallbackStatus, XhsStatus } from "../control/research-contracts";
 import { copy, humanCategory, label } from "./copy";
 
 // Scan times carry the hour, because a daily scan's day alone does not say
@@ -23,14 +23,36 @@ function summary(status: XhsStatus): string {
   return copy.status.xhs.offSchedule;
 }
 
+// The weekly review in one line: off, on or running; the last completed run's
+// counts and what became of its Telegram summary; and when the next run may
+// start. A reason Control names but this app cannot is spaced, never shown raw.
+function fallbackLine(fallback: XhsFallbackStatus): string {
+  const words = copy.status.xhs.fallback;
+  const parts: string[] = [];
+  if (fallback.running) parts.push(label.xhsFallbackRunning(fallback.running.remaining, fallback.running.items));
+  else parts.push(fallback.enabled ? words.on : words.off);
+  const last = fallback.last;
+  if (last && last.state === "completed" && last.finished_at) {
+    const state = words.digest[last.digest_state];
+    const reason = last.digest_reason ? words.digestReasons[last.digest_reason] ?? humanCategory(last.digest_reason) : null;
+    const digest = state ? label.xhsFallbackDigest(state, reason) : null;
+    parts.push(label.xhsFallbackLast(scanTime(last.finished_at), label.xhsFallbackCounts(last.summary), digest));
+  }
+  if (fallback.enabled && !fallback.running) {
+    parts.push(fallback.next_start_at ? label.xhsFallbackNext(scanTime(fallback.next_start_at)) : words.firstRun);
+  }
+  return parts.join(" ");
+}
+
 export function failurePhrase(category: string | null): string | null {
   if (!category) return null;
   return copy.status.xhs.failures[category] ?? humanCategory(category) ?? copy.status.unknown;
 }
 
 // One line for the XHS plugin: whether it scans, then each followed blogger's
-// last scan. A scan that found nothing new is not a success with new notes,
-// and neither is a provider failure, so each keeps its own words.
+// last scan, then the weekly review. A scan that found nothing new is not a
+// success with new notes, and neither is a provider failure, so each keeps its
+// own words.
 export function XhsStatusLine({ client }: { client: CortexControlClient }) {
   const [status, setStatus] = useState<XhsStatus | null>(null);
   const [failed, setFailed] = useState(false);
@@ -70,6 +92,7 @@ export function XhsStatusLine({ client }: { client: CortexControlClient }) {
               ))}
             </ul>
           ) : <p className="text-sm text-muted-foreground">{copy.status.xhs.noBloggers}</p>}
+          <p className="text-sm text-muted-foreground" data-fallback="">{fallbackLine(status.fallback)}</p>
         </>
       ) : null}
     </section>

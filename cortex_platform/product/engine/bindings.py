@@ -250,6 +250,9 @@ OPERATION_SECRET_SCOPES: Mapping[str, SecretScope] = MappingProxyType(
         "xhs_identify": SecretScope(frozenset({"sub2api-gpt"})),
         "xhs_resolve_link": SecretScope(frozenset({"sub2api-gpt"})),
         "blog_fetch": SecretScope(frozenset(), optional=frozenset({"jina"})),
+        "xhs_fallback_decide": SecretScope(frozenset({"sub2api-gpt"})),
+        # A page-title fetch under the public-web policy needs no credential.
+        "xhs_fallback_verify": SecretScope(frozenset()),
     }
 )
 

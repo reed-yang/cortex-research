@@ -32,7 +32,8 @@ _TOP_LEVEL_KEYS = {
 # The first-party XHS plugin. Every value is public: endpoints, a model name
 # and bounds. The TikHub and GPT keys come from `secret_refs` (`tikhub`,
 # `sub2api-gpt`), never from here. `enabled` alone arms nothing; the operator
-# also enables both schedule rows.
+# also enables both schedule rows. The `fallback_*` keys shape the weekly
+# recommendation review, which the drain starts only when `fallback_enabled`.
 _XHS_KEYS = {
     "enabled",
     "tikhub_base",
@@ -42,6 +43,10 @@ _XHS_KEYS = {
     "max_list_pages",
     "drain_units_per_tick",
     "daily_calls",
+    "fallback_enabled",
+    "fallback_weekly_cap",
+    "fallback_model",
+    "fallback_effort",
 }
 _XHS_DAILY_CALL_KEYS = ("tikhub", "ocr", "gpt")
 _XHS_EFFORT_PATTERN = re.compile(r"^[a-z]{1,16}$")
@@ -379,6 +384,11 @@ class XhsSettings:
     daily_calls: Mapping[str, int] = field(
         default_factory=lambda: {"tikhub": 100, "ocr": 1000, "gpt": 300}
     )
+    # The weekly review of recommendations the rules leave unimportable.
+    fallback_enabled: bool = False
+    fallback_weekly_cap: int = 100
+    fallback_model: str = "gpt-6.1-sol"
+    fallback_effort: str = "xhigh"
 
 
 def _validate_xhs_base(value: object, name: str, *, blank: bool) -> str:
@@ -426,20 +436,18 @@ def _validate_xhs(value: object) -> dict[str, object]:
         raise ConfigError(f"unsupported xhs fields: {sorted(unknown)}")
     xhs: dict[str, object] = {}
     for key, item in value.items():
-        if key == "enabled":
+        if key in {"enabled", "fallback_enabled"}:
             if type(item) is not bool:
-                raise ConfigError("xhs.enabled must be true or false")
+                raise ConfigError(f"xhs.{key} must be true or false")
         elif key in {"tikhub_base", "gpt_base"}:
             item = _validate_xhs_base(item, key, blank=key == "gpt_base")
-        elif key == "gpt_model":
+        elif key in {"gpt_model", "fallback_model"}:
             if not isinstance(item, str) or not _MODEL_PATTERN.fullmatch(item):
-                raise ConfigError("xhs.gpt_model must be a plain model identifier")
-        elif key == "gpt_effort":
+                raise ConfigError(f"xhs.{key} must be a plain model identifier")
+        elif key in {"gpt_effort", "fallback_effort"}:
             if not isinstance(item, str) or not _XHS_EFFORT_PATTERN.fullmatch(item):
-                raise ConfigError("xhs.gpt_effort must be a plain effort name")
-        elif key == "max_list_pages":
-            item = _xhs_bounded_int(item, key, 1, 100)
-        elif key == "drain_units_per_tick":
+                raise ConfigError(f"xhs.{key} must be a plain effort name")
+        elif key in {"max_list_pages", "drain_units_per_tick", "fallback_weekly_cap"}:
             item = _xhs_bounded_int(item, key, 1, 100)
         else:
             if not isinstance(item, dict) or not set(item) <= set(_XHS_DAILY_CALL_KEYS):
@@ -647,9 +655,10 @@ def _toml_string(value: str) -> str:
 
 
 def _toml_value(value: object) -> str:
-    # `[web] port` and the `[xhs]` bounds are integers, `xhs.enabled` is the one
-    # boolean and `xhs.daily_calls` the one inline table; everything else is a
-    # string, and a validated config holds nothing else.
+    # `[web] port` and the `[xhs]` bounds are integers, `xhs.enabled` and
+    # `xhs.fallback_enabled` are the booleans and `xhs.daily_calls` the one
+    # inline table; everything else is a string, and a validated config holds
+    # nothing else.
     if type(value) is bool:
         return "true" if value else "false"
     if type(value) is int:

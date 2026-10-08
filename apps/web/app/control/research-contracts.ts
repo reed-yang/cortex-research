@@ -1059,7 +1059,7 @@ export const XHS_SCAN_OUTCOMES = ["ok", "no_new_notes", "failed"] as const;
 export type XhsScanOutcome = (typeof XHS_SCAN_OUTCOMES)[number];
 export const XHS_IMPORT_DISPOSITIONS = ["capture_staged", "capture_reused", "blog_import_queued", "refused"] as const;
 export type XhsImportDisposition = (typeof XHS_IMPORT_DISPOSITIONS)[number];
-export const XHS_IMPORT_REFUSALS = ["not_found", "already_imported", "not_importable", "no_url", "no_arxiv_id"] as const;
+export const XHS_IMPORT_REFUSALS = ["not_found", "already_imported", "excluded", "not_importable", "no_url", "no_arxiv_id"] as const;
 export type XhsImportRefusal = (typeof XHS_IMPORT_REFUSALS)[number];
 const XHS_REFUSALS = ["disabled_in_config", "roots_not_ready"] as const;
 export type XhsRefusal = (typeof XHS_REFUSALS)[number];
@@ -1071,6 +1071,29 @@ const XHS_TASK_STATES = ["canceled", "done", "failed", "pending", "running"] as 
 const XHS_USAGE_PROVIDERS = ["gpt", "ocr", "tikhub"] as const;
 export const XHS_FAILURE_PROVIDERS = ["tikhub", "cdn", "ocr", "gpt", "blog"] as const;
 export type XhsFailureProvider = (typeof XHS_FAILURE_PROVIDERS)[number];
+// A recommendation's review, as `xhs_recommendation_reviews` stores it: the
+// weekly fallback's or the operator's own reading of a row.
+export const XHS_REVIEW_STATES = ["resolved_blog", "resolved_paper", "excluded", "needs_operator", "operator_owned"] as const;
+export type XhsReviewState = (typeof XHS_REVIEW_STATES)[number];
+const XHS_REVIEW_METHODS = ["rule", "model", "operator"] as const;
+export const XHS_REVIEW_REASONS = [
+  "arxiv_link", "duplicate", "not_on_arxiv", "not_a_blog", "not_a_recommendation", "insufficient_evidence",
+  "conflicting_evidence", "title_mismatch", "fetch_failed", "outcome_unknown", "operator",
+] as const;
+export type XhsReviewReason = (typeof XHS_REVIEW_REASONS)[number];
+// The fields a correction may set, in the order a review lists them.
+export const XHS_CORRECTABLE_FIELDS = ["kind", "arxiv_id", "url"] as const;
+export type XhsCorrectableField = (typeof XHS_CORRECTABLE_FIELDS)[number];
+const XHS_FALLBACK_RUN_STATES = ["running", "completed"] as const;
+const XHS_FALLBACK_TRIGGERS = ["schedule", "operator"] as const;
+// A completed run's counts by applied action, plus the items that went stale.
+export const XHS_FALLBACK_SUMMARY_KEYS = ["blog_queued", "paper_corrected", "paper_kept", "excluded", "needs_operator", "stale"] as const;
+export type XhsFallbackSummaryKey = (typeof XHS_FALLBACK_SUMMARY_KEYS)[number];
+export const XHS_FALLBACK_DIGEST_STATES = ["none", "pending", "sent", "suppressed", "blocked"] as const;
+export type XhsFallbackDigestState = (typeof XHS_FALLBACK_DIGEST_STATES)[number];
+const XHS_FALLBACK_MODEL = /^[\x21-\x7e]{1,128}$/;
+const XHS_FALLBACK_EFFORT = /^[a-z]{1,16}$/;
+const XHS_FALLBACK_PROMPT = /^[\x21-\x7e]{1,64}$/;
 const XHS_IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
 const XHS_ID = /^[0-9a-f]{24}$/;
 // A failure category as Control stores it: a short snake_case token, never text.
@@ -1085,6 +1108,8 @@ const MAX_XHS_RECOMMENDATIONS = 500;
 const MAX_XHS_IMPORT = 100;
 const MAX_SOURCE_LINKS = 1_000;
 const MAX_XHS_BLOGGERS = 500;
+// The operator's list holds at most one page of this many.
+export const MAX_XHS_NEEDS_DECISION = 100;
 
 export type XhsNoteHeader = {
   source_id: string;
@@ -1112,6 +1137,18 @@ export type XhsImage = {
   ocr_flags: Array<(typeof XHS_OCR_FLAGS)[number]>;
 };
 
+// Null on a recommendation that was never reviewed. `reason` is public text,
+// the model's or the operator's; `corrected_fields` names what a correction
+// set, which re-identification keeps.
+export type XhsReview = {
+  state: XhsReviewState;
+  method: (typeof XHS_REVIEW_METHODS)[number];
+  reason_code: XhsReviewReason | null;
+  reason: string | null;
+  corrected_fields: XhsCorrectableField[];
+  updated_at: string;
+};
+
 export type XhsRecommendation = {
   id: string;
   // Null when the caption, not an image, is the evidence.
@@ -1131,6 +1168,7 @@ export type XhsRecommendation = {
   import_state: XhsImportState;
   imported_source_id: string | null;
   imported_source_kind: SourceKind | null;
+  review: XhsReview | null;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -1173,7 +1211,22 @@ export type XhsImportItem = {
 };
 
 export type XhsImportResult = { note_source_id: string; items: XhsImportItem[] };
+// The answer of a link edit, an exclusion and a restore alike.
 export type XhsLinkResult = { recommendation: XhsRecommendation };
+
+// One unimported recommendation the weekly review left to the operator, with
+// the note it belongs to; `total` counts every such row, not only this page.
+export type XhsNeedsDecisionItem = {
+  note_source_id: string;
+  note_title: string;
+  recommendation_id: string;
+  kind: XhsRecommendationKind;
+  title: string;
+  reason_code: XhsReviewReason;
+  reason: string | null;
+  updated_at: string;
+};
+export type XhsNeedsDecision = { items: XhsNeedsDecisionItem[]; total: number };
 export type XhsImageRetryResult = { note: XhsNoteHeader; image: XhsImage };
 
 export type XhsBloggerStatus = {
@@ -1195,6 +1248,35 @@ export type XhsScheduleStatus = {
   last_outcome: (typeof XHS_SCHEDULE_OUTCOMES)[number] | null;
 };
 
+// One weekly fallback run. `summary` is empty while it runs and holds every
+// count once it completed; the digest exists only for a completed run.
+export type XhsFallbackRun = {
+  id: string;
+  state: (typeof XHS_FALLBACK_RUN_STATES)[number];
+  trigger: (typeof XHS_FALLBACK_TRIGGERS)[number];
+  started_at: string;
+  finished_at: string | null;
+  item_cap: number;
+  model: string;
+  effort: string;
+  prompt_version: string;
+  summary: Partial<Record<XhsFallbackSummaryKey, number>>;
+  digest_state: XhsFallbackDigestState;
+  digest_reason: string | null;
+};
+
+export type XhsFallbackStatus = {
+  enabled: boolean;
+  // The running run with how many items it took and how many are left.
+  running: (XhsFallbackRun & { items: number; remaining: number }) | null;
+  // The run started last, running or not.
+  last: XhsFallbackRun | null;
+  // When the weekly spacing next allows a run; null before the first one.
+  next_start_at: string | null;
+  backlog: number;
+  needs_operator: number;
+};
+
 export type XhsStatus = {
   // Configured, both roots ready and both schedule rows armed.
   enabled: boolean;
@@ -1207,6 +1289,7 @@ export type XhsStatus = {
   tasks: Record<(typeof XHS_TASK_STATES)[number], number>;
   usage: Record<(typeof XHS_USAGE_PROVIDERS)[number], { calls: number; cap: number }>;
   last_failures: Record<XhsFailureProvider, string | null>;
+  fallback: XhsFallbackStatus;
 };
 
 function exactRecord(value: unknown, path: string, fields: readonly string[]): ObjectValue {
@@ -1337,10 +1420,38 @@ export function decodeXhsImage(value: unknown, path = "xhs_image"): XhsImage {
   };
 }
 
+// The pairs Control's review table enforces: a reason code on an exclusion and
+// on a row left to the operator, nothing but the operator on a restored row,
+// and the corrected fields as one of the canonical ordered subsets.
+function decodeXhsReview(value: unknown, path: string): XhsReview {
+  const record = exactRecord(value, path, ["state", "method", "reason_code", "reason", "corrected_fields", "updated_at"]);
+  const state = oneOf(record.state, path + ".state", XHS_REVIEW_STATES);
+  const method = oneOf(record.method, path + ".method", XHS_REVIEW_METHODS);
+  const reasonCode = nullableOneOf(record.reason_code, path + ".reason_code", XHS_REVIEW_REASONS);
+  const reason = nullableCodePointText(record.reason, path + ".reason", 500);
+  const fields = boundedArray(record.corrected_fields, path + ".corrected_fields", XHS_CORRECTABLE_FIELDS.length, (item, itemPath) => oneOf(item, itemPath, XHS_CORRECTABLE_FIELDS));
+  const positions = fields.map((field) => XHS_CORRECTABLE_FIELDS.indexOf(field));
+  if (positions.some((position, index) => index > 0 && position <= positions[index - 1]!)) {
+    fail(path + ".corrected_fields", "corrected fields must be distinct and in canonical order");
+  }
+  if ((state === "excluded" || state === "needs_operator") && reasonCode === null) fail(path + ".reason_code", "this review needs a reason code");
+  if (state === "operator_owned" && (method !== "operator" || reasonCode !== null || reason !== null)) {
+    fail(path + ".state", "a restored row belongs to the operator and carries no reason");
+  }
+  return {
+    state,
+    method,
+    reason_code: reasonCode,
+    reason,
+    corrected_fields: fields,
+    updated_at: timestamp(record.updated_at, path + ".updated_at"),
+  };
+}
+
 const XHS_RECOMMENDATION_FIELDS = [
   "id", "image_ordinal", "kind", "title", "quote", "arxiv_id", "url", "url_state", "url_checked_title",
   "origin", "identify_run", "capture_id", "capture_state", "capture_revision", "import_state",
-  "imported_source_id", "imported_source_kind", "revision", "created_at", "updated_at",
+  "imported_source_id", "imported_source_kind", "review", "revision", "created_at", "updated_at",
 ];
 
 export function decodeXhsRecommendation(value: unknown, path = "xhs_recommendation"): XhsRecommendation {
@@ -1383,6 +1494,7 @@ export function decodeXhsRecommendation(value: unknown, path = "xhs_recommendati
     import_state: importState,
     imported_source_id: importedId,
     imported_source_kind: importedKind,
+    review: record.review === null ? null : decodeXhsReview(record.review, path + ".review"),
     revision: integer(record.revision, path + ".revision"),
     created_at: timestamp(record.created_at, path + ".created_at"),
     updated_at: timestamp(record.updated_at, path + ".updated_at"),
@@ -1492,6 +1604,32 @@ export function decodeXhsLinkResult(value: unknown, path = "xhs_link"): XhsLinkR
   return { recommendation: decodeXhsRecommendation(record.recommendation, path + ".recommendation") };
 }
 
+function decodeXhsNeedsDecisionItem(value: unknown, path: string): XhsNeedsDecisionItem {
+  const record = exactRecord(value, path, [
+    "note_source_id", "note_title", "recommendation_id", "kind", "title", "reason_code", "reason", "updated_at",
+  ]);
+  return {
+    note_source_id: identifier(record.note_source_id, path + ".note_source_id"),
+    note_title: codePointText(record.note_title, path + ".note_title", 500, 0),
+    recommendation_id: matching(record.recommendation_id, path + ".recommendation_id", PUBLIC_ID),
+    kind: oneOf(record.kind, path + ".kind", XHS_RECOMMENDATION_KINDS),
+    title: codePointText(record.title, path + ".title", 1_000),
+    // Only a row left to the operator is listed, and such a row has a code.
+    reason_code: oneOf(record.reason_code, path + ".reason_code", XHS_REVIEW_REASONS),
+    reason: nullableCodePointText(record.reason, path + ".reason", 500),
+    updated_at: timestamp(record.updated_at, path + ".updated_at"),
+  };
+}
+
+export function decodeXhsNeedsDecision(value: unknown, path = "xhs_needs_decision"): XhsNeedsDecision {
+  const record = exactRecord(value, path, ["items", "total"]);
+  const items = boundedArray(record.items, path + ".items", MAX_XHS_NEEDS_DECISION, decodeXhsNeedsDecisionItem);
+  requireUnique(items.map((item) => item.recommendation_id), path + ".items");
+  const total = integer(record.total, path + ".total");
+  if (total < items.length) fail(path + ".total", "total counts fewer rows than the page holds");
+  return { items, total };
+}
+
 export function decodeXhsImageRetryResult(value: unknown, path = "xhs_image_retry"): XhsImageRetryResult {
   const record = exactRecord(value, path, ["note", "image"]);
   return {
@@ -1533,9 +1671,65 @@ function decodeXhsBloggerStatus(value: unknown, path: string): XhsBloggerStatus 
   };
 }
 
+const XHS_FALLBACK_RUN_FIELDS = [
+  "id", "state", "trigger", "started_at", "finished_at", "item_cap", "model", "effort", "prompt_version",
+  "summary", "digest_state", "digest_reason",
+];
+
+// The pairs Control's run table enforces: a finish time exactly once the run
+// completed, and a digest only for a completed run. The summary is empty while
+// the run is running and names every count once it completed.
+function fallbackRun(record: ObjectValue, path: string): XhsFallbackRun {
+  const state = oneOf(record.state, path + ".state", XHS_FALLBACK_RUN_STATES);
+  const finishedAt = nullableTimestamp(record.finished_at, path + ".finished_at");
+  const digestState = oneOf(record.digest_state, path + ".digest_state", XHS_FALLBACK_DIGEST_STATES);
+  if ((state === "running") !== (finishedAt === null)) fail(path + ".finished_at", "finish time does not match the run state");
+  if (state === "running" && digestState !== "none") fail(path + ".digest_state", "a running run has no digest");
+  let summary: XhsFallbackRun["summary"] = {};
+  if (state === "running") exactRecord(record.summary, path + ".summary", []);
+  else summary = keyedRecord(record.summary, path + ".summary", XHS_FALLBACK_SUMMARY_KEYS, integer);
+  return {
+    id: identifier(record.id, path + ".id"),
+    state,
+    trigger: oneOf(record.trigger, path + ".trigger", XHS_FALLBACK_TRIGGERS),
+    started_at: timestamp(record.started_at, path + ".started_at"),
+    finished_at: finishedAt,
+    item_cap: boundedInteger(record.item_cap, path + ".item_cap", 1, 100),
+    model: matching(record.model, path + ".model", XHS_FALLBACK_MODEL),
+    effort: matching(record.effort, path + ".effort", XHS_FALLBACK_EFFORT),
+    prompt_version: matching(record.prompt_version, path + ".prompt_version", XHS_FALLBACK_PROMPT),
+    summary,
+    digest_state: digestState,
+    digest_reason: category(record.digest_reason, path + ".digest_reason"),
+  };
+}
+
+function decodeXhsFallbackStatus(value: unknown, path: string): XhsFallbackStatus {
+  const record = exactRecord(value, path, ["enabled", "running", "last", "next_start_at", "backlog", "needs_operator"]);
+  let running: XhsFallbackStatus["running"] = null;
+  if (record.running !== null) {
+    const runningPath = path + ".running";
+    const runningRecord = exactRecord(record.running, runningPath, [...XHS_FALLBACK_RUN_FIELDS, "items", "remaining"]);
+    const run = fallbackRun(runningRecord, runningPath);
+    if (run.state !== "running") fail(runningPath + ".state", "the running run is not running");
+    const items = boundedInteger(runningRecord.items, runningPath + ".items", 0, run.item_cap);
+    const remaining = boundedInteger(runningRecord.remaining, runningPath + ".remaining", 0, items);
+    running = { ...run, items, remaining };
+  }
+  return {
+    enabled: decodeBoolean(record.enabled, path + ".enabled"),
+    running,
+    last: record.last === null ? null : fallbackRun(exactRecord(record.last, path + ".last", XHS_FALLBACK_RUN_FIELDS), path + ".last"),
+    next_start_at: nullableTimestamp(record.next_start_at, path + ".next_start_at"),
+    backlog: integer(record.backlog, path + ".backlog"),
+    needs_operator: integer(record.needs_operator, path + ".needs_operator"),
+  };
+}
+
 export function decodeXhsStatus(value: unknown, path = "xhs_status"): XhsStatus {
   const record = exactRecord(value, path, [
     "enabled", "enabled_in_config", "roots_ready", "refusal", "roots", "schedules", "bloggers", "tasks", "usage", "last_failures",
+    "fallback",
   ]);
   return {
     enabled: decodeBoolean(record.enabled, path + ".enabled"),
@@ -1560,5 +1754,6 @@ export function decodeXhsStatus(value: unknown, path = "xhs_status"): XhsStatus 
       return { calls: integer(usage.calls, itemPath + ".calls"), cap: integer(usage.cap, itemPath + ".cap") };
     }),
     last_failures: keyedRecord(record.last_failures, path + ".last_failures", XHS_FAILURE_PROVIDERS, category),
+    fallback: decodeXhsFallbackStatus(record.fallback, path + ".fallback"),
   };
 }

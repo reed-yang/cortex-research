@@ -114,5 +114,92 @@ INSERT INTO threads VALUES('th1','ws1','Second','2026-09-07T00:01:00Z');
         self.assertIsNone(probe.thread_order(empty))
 
 
+class ControlMigration22Tests(unittest.TestCase):
+    """The probe's comparator accepts 21->22 as it is: three new empty tables,
+    no added column, every schema-21 row unchanged."""
+
+    def setUp(self):
+        from cortex_platform.product.control import schema
+
+        self.schema = schema
+        self.temp = tempfile.TemporaryDirectory(prefix="cortex-probe-22-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.database = self.root / "control.db"
+        with contextlib.closing(sqlite3.connect(self.database)) as db:
+            for version, script in schema.migration_scripts():
+                if version > schema.XHS_SOURCES_MIGRATION:
+                    break
+                db.executescript(script)
+                db.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, 'old')",
+                    (version,),
+                )
+            db.executescript("""
+INSERT INTO xhs_bloggers (user_id, role, followed, created_at, updated_at)
+VALUES ('fedcba9876543210fedcba98', 'curator', 1, 'x', 'x');
+INSERT INTO xhs_notes (note_id, user_id, note_type, state, title, caption,
+    caption_complete, content_version, created_at, updated_at)
+VALUES ('0123456789abcdef01234567', 'fedcba9876543210fedcba98', 'normal',
+    'identified', 'Note', 'caption', 1, 0, 'x', 'x');
+INSERT INTO xhs_recommendations (id, note_id, item_key, kind, title, quote, url,
+    url_state, origin, identify_run, created_at, updated_at)
+VALUES ('rec-1', '0123456789abcdef01234567', 'title:a', 'blog', 'A blog', 'A blog',
+    'https://arxiv.org/abs/2509.00001', 'from_text', 'model', 'run-1', 'x', 'x');
+""")
+            db.commit()
+
+    def migrate(self, path, interrupt=False):
+        schema = self.schema
+        script_22 = dict(schema.migration_scripts())[schema.XHS_FALLBACK_MIGRATION]
+        original = schema._execute_script_in_transaction
+
+        def interrupted(connection, script):
+            original(connection, script)
+            if script is script_22:
+                raise RuntimeError("migration_probe_interruption")
+
+        with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as db:
+            db.execute("PRAGMA foreign_keys = ON")
+            if not interrupt:
+                schema.apply_migrations(db, now="migration-probe")
+                return
+            schema._execute_script_in_transaction = interrupted
+            try:
+                with self.assertRaises(RuntimeError):
+                    schema.apply_migrations(db, now="migration-probe")
+            finally:
+                schema._execute_script_in_transaction = original
+
+    def test_the_upgrade_preserves_every_table_and_adds_three_empty_ones(self):
+        baseline = probe.inventory(self.database)
+        self.assertEqual(probe.applied_versions(self.database), list(range(1, 22)))
+        migrated = self.root / "migrated.db"
+        migrated.write_bytes(self.database.read_bytes())
+        self.migrate(migrated)
+
+        after = probe.inventory(migrated, probe.columns_of(baseline))
+        observed = probe.inventory(migrated)
+        self.assertEqual(probe.applied_versions(migrated), list(range(1, 23)))
+        for table in baseline:
+            if table == "schema_migrations":
+                continue
+            self.assertEqual(after[table], baseline[table], table)
+        self.assertEqual(
+            sorted(set(observed) - set(baseline)),
+            ["xhs_fallback_items", "xhs_fallback_runs", "xhs_recommendation_reviews"],
+        )
+        for table in set(observed) - set(baseline):
+            self.assertEqual(observed[table]["rows"], 0)
+
+    def test_an_interrupted_upgrade_leaves_the_baseline_inventory(self):
+        baseline = probe.inventory(self.database)
+        migrated = self.root / "interrupted.db"
+        migrated.write_bytes(self.database.read_bytes())
+        self.migrate(migrated, interrupt=True)
+
+        self.assertEqual(probe.inventory(migrated), baseline)
+
+
 if __name__ == "__main__":
     unittest.main()

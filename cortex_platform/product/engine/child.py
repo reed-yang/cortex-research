@@ -519,6 +519,72 @@ def _xhs_resolve_link(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {"engine": engine, "paper_dirs": []}
 
 
+def _xhs_fallback_decide(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """One weekly-fallback model call with web search, made once.
+
+    cortexd builds the input from Control state; this sends it and returns
+    the answer schema-checked. An answer that is not the asked-for JSON is
+    returned as `answer_error`, not as a failure: the call happened, and
+    cortexd leaves the item to the operator rather than call again.
+    """
+
+    from cortex_research import responses_client
+
+    from cortex_platform.product.xhs import fallback
+
+    text = _payload_text(payload, "input", maximum=fallback.MAX_INPUT_BYTES)
+    if len(text.encode("utf-8")) > fallback.MAX_INPUT_BYTES:
+        raise _Refusal("invalid_response", "invalid request: input is too large")
+    answer = _provider_call(
+        responses_client.create_response,
+        text,
+        instructions=fallback.DECIDE_INSTRUCTIONS,
+        tools=[{"type": "web_search"}],
+        timeout_seconds=fallback.DECIDE_TIMEOUT_SECONDS,
+        **_gpt_settings(payload),
+    )
+    parsed: dict[str, Any] | None = None
+    error: str | None = None
+    try:
+        parsed = fallback.parse_decide_answer(answer.text)
+    except fallback.FallbackAnswerError as failure:
+        error = f"responses: {failure}"[:200]
+    return {
+        "engine": {
+            "prompt_version": fallback.PROMPT_VERSION,
+            "input_text_sha256": fallback.input_text_sha256(text),
+            "response_id": answer.response_id,
+            "model": answer.model,
+            "usage": fallback.public_usage(answer.usage),
+            "answer": parsed,
+            "answer_error": error,
+        },
+        "paper_dirs": [],
+    }
+
+
+def _xhs_fallback_verify(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Fetch the page a fallback proposal names; cortexd matches its title."""
+
+    from cortex_research import xhs_fallback
+
+    check = payload.get("check")
+    try:
+        if check == "blog":
+            page = _provider_call(
+                xhs_fallback.check_blog_page, _payload_text(payload, "url", maximum=2_048)
+            )
+        elif check == "arxiv":
+            page = _provider_call(
+                xhs_fallback.check_arxiv_page, _payload_text(payload, "arxiv_id", maximum=32)
+            )
+        else:
+            raise _Refusal("invalid_response", "invalid request: check")
+    except ValueError as error:
+        raise _Refusal("invalid_response", f"invalid request: {error}") from error
+    return {"engine": page.to_dict(), "paper_dirs": []}
+
+
 def _write_file(path: Path, data: bytes) -> dict[str, Any]:
     import hashlib
 
@@ -593,6 +659,8 @@ _HANDLERS = {
     "xhs_identify": lambda request: _xhs_identify(request.payload),
     "xhs_resolve_link": lambda request: _xhs_resolve_link(request.payload),
     "blog_fetch": lambda request: _blog_fetch(request.payload, _write_roots(request)),
+    "xhs_fallback_decide": lambda request: _xhs_fallback_decide(request.payload),
+    "xhs_fallback_verify": lambda request: _xhs_fallback_verify(request.payload),
 }
 
 

@@ -6,14 +6,16 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ControlNetworkError, ControlProblemError, type CortexControlClient } from "../control/client";
+import { ControlNetworkError, ControlProblemError, type CortexControlClient, type PreparedMutation } from "../control/client";
 import {
   decodeXhsRecommendation,
   type SourceLinks,
   type SourceProjection,
   type XhsImportItem,
+  type XhsLinkResult,
   type XhsNote,
   type XhsRecommendation,
+  type XhsReview,
 } from "../control/research-contracts";
 import type { ReaderTab } from "../control/source-knowledge";
 import { copy, label, refusalText } from "./copy";
@@ -190,10 +192,11 @@ function commandFailure(lead: string, error: unknown): string {
 }
 
 // A row can be selected only when Control would import it: a paper with its
-// arXiv id or a blog with a link, not yet staged or imported. A blog still
-// without a link, and anything else, waits.
+// arXiv id or a blog with a link, not yet staged or imported, and not
+// excluded. A blog still without a link, and anything else, waits.
 export function importable(recommendation: XhsRecommendation): boolean {
   if (recommendation.import_state !== "none" && recommendation.import_state !== "failed") return false;
+  if (recommendation.review?.state === "excluded") return false;
   if (recommendation.kind === "paper") return recommendation.arxiv_id !== null;
   if (recommendation.kind === "blog") return recommendation.url !== null;
   return false;
@@ -295,6 +298,92 @@ function LinkEditor({ client, noteSourceId, recommendation, onChanged }: {
   );
 }
 
+// The newer row a revision conflict answered with, when it is this one.
+function conflictCurrent(error: unknown, id: string): XhsRecommendation | null {
+  if (!(error instanceof ControlProblemError) || error.problem.category !== "revision_conflict") return null;
+  try {
+    const current = decodeXhsRecommendation(error.problem.current, "problem.current");
+    return current.id === id ? current : null;
+  } catch {
+    return null;
+  }
+}
+
+// Why a row was excluded or left to the operator: the review's own sentence,
+// which is the model's or the operator's and shown as written, or else the
+// words for its reason code.
+function ReviewReason({ review }: { review: XhsReview }) {
+  if (review.reason) return <span className="whitespace-pre-wrap" data-review-reason="" data-verbatim>{review.reason}</span>;
+  const said = review.reason_code ? copy.xhs.reviewReasons[review.reason_code] : undefined;
+  return said ? <span data-review-reason="">{said}</span> : null;
+}
+
+// What a row's review says: excluded with its reason and Restore; corrected
+// automatically with the fields that changed; a paper identified and waiting
+// for the operator to import it, or one Cortex cannot import; or a row left to
+// the operator with the reason. A row the operator restored says nothing more.
+function ReviewLine({ recommendation, disabled, onRestore }: {
+  recommendation: XhsRecommendation;
+  disabled: boolean;
+  onRestore: () => void;
+}) {
+  const review = recommendation.review;
+  if (!review || review.state === "operator_owned") return null;
+  const open = recommendation.import_state === "none" || recommendation.import_state === "failed";
+  const corrected = review.method !== "operator" && review.corrected_fields.length > 0;
+  let paper: string | null = null;
+  if (review.state === "resolved_paper" && recommendation.kind === "paper") {
+    if (recommendation.arxiv_id === null) paper = copy.xhs.reviews.notOnArxiv;
+    else if (open) paper = copy.xhs.reviews.importReady;
+  }
+  return (
+    <div className="flex flex-col gap-1 text-sm" data-review={review.state}>
+      {review.state === "excluded" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{copy.xhs.reviews.excluded}</Badge>
+          <ReviewReason review={review} />
+          <Button aria-label={label.restoreRecommendation(recommendation.title)} disabled={disabled} onClick={onRestore} size="sm" type="button" variant="outline">
+            {copy.xhs.restore}
+          </Button>
+        </div>
+      ) : null}
+      {review.state === "needs_operator" && open ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary">{copy.xhs.reviews.needsDecision}</Badge>
+          <ReviewReason review={review} />
+        </div>
+      ) : null}
+      {corrected ? (
+        <span className="text-muted-foreground" data-review-corrected="">
+          {label.correctedFields(review.corrected_fields.map((field) => copy.xhs.correctedFields[field]))}
+        </span>
+      ) : null}
+      {paper ? <span className="text-muted-foreground" data-review-paper="">{paper}</span> : null}
+    </div>
+  );
+}
+
+// The operator's exclusion of a row that is not imported: a short reason,
+// which the row shows from then on, and the row is never imported until it is
+// restored.
+function ExcludeForm({ disabled, onExclude }: { disabled: boolean; onExclude: (reason: string) => Promise<boolean> }) {
+  const [reason, setReason] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const text = reason.trim();
+    if (!text) return;
+    if (await onExclude(text)) setReason("");
+  }
+
+  return (
+    <form className="flex w-full items-center gap-2" data-exclude="" onSubmit={(event) => void submit(event)}>
+      <Input aria-label={copy.xhs.excludeLabel} disabled={disabled} maxLength={500} onChange={(event) => setReason(event.target.value)} placeholder={copy.xhs.excludePlaceholder} type="text" value={reason} />
+      <Button disabled={disabled || !reason.trim()} size="sm" type="submit" variant="outline">{copy.xhs.exclude}</Button>
+    </form>
+  );
+}
+
 // One recommendation: its title, what it is, where in the note it came from
 // and how far its import has gone. Expanded, it shows that evidence -- the
 // image and its verbatim transcription, or the caption -- and then what was
@@ -315,11 +404,42 @@ function RecommendationRow({ client, note, recommendation, selected, disabled, o
 }) {
   const [open, setOpen] = useState(false);
   const [imageMissing, setImageMissing] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewOutcome, setReviewOutcome] = useState<Outcome | null>(null);
   const ordinal = recommendation.image_ordinal;
   const image = ordinal === null ? null : note.images.find((item) => item.ordinal === ordinal) ?? null;
   const importState = copy.xhs.importStates[recommendation.import_state];
   const linkEditable = recommendation.kind === "blog" && recommendation.import_state !== "importing" && recommendation.import_state !== "imported";
   const section = ordinal !== null && transcription?.state === "ready" ? transcription.sections.get(ordinal) : undefined;
+  // Control excludes only a row that is not staged, importing or imported.
+  const excludable = (recommendation.import_state === "none" || recommendation.import_state === "failed") && recommendation.review?.state !== "excluded";
+
+  // An exclusion or a restore moves the row's own revision only, so the answer
+  // replaces the row; a refusal shows the newer row it carries, or reads the
+  // note again.
+  async function changeReview(command: PreparedMutation<XhsLinkResult>, done: string, notDone: string): Promise<boolean> {
+    setReviewBusy(true);
+    setReviewOutcome(null);
+    try {
+      const { value } = await command.execute();
+      onChanged(value.recommendation);
+      setReviewOutcome({ tone: "success", text: done });
+      return true;
+    } catch (error) {
+      onChanged(conflictCurrent(error, recommendation.id));
+      setReviewOutcome({ tone: "error", text: commandFailure(notDone, error) });
+      return false;
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  const exclude = (reason: string) => changeReview(
+    client.prepareExcludeRecommendation(note.source_id, recommendation, reason), copy.xhs.excludeDone, copy.xhs.excludeNotDone,
+  );
+  const restore = () => void changeReview(
+    client.prepareRestoreRecommendation(note.source_id, recommendation), copy.xhs.restoreDone, copy.xhs.restoreNotDone,
+  );
   return (
     <li className="flex flex-col gap-2 rounded-md border p-3" data-recommendation-id={recommendation.id}>
       <div className="flex items-start gap-3">
@@ -345,7 +465,9 @@ function RecommendationRow({ client, note, recommendation, selected, disabled, o
               <button className="font-medium text-foreground underline-offset-2 hover:underline" onClick={() => onOpenSource(recommendation.imported_source_id!)} type="button">{copy.xhs.open}</button>
             ) : null}
           </span>
+          <ReviewLine disabled={disabled || reviewBusy} onRestore={restore} recommendation={recommendation} />
           {outcome ? <p className={cn("text-sm", outcome.tone === "error" ? "text-destructive" : "text-foreground")} data-import-outcome={outcome.tone} role="status">{outcome.text}</p> : null}
+          {reviewOutcome ? <p className={cn("text-sm", reviewOutcome.tone === "error" ? "text-destructive" : "text-muted-foreground")} data-review-outcome={reviewOutcome.tone} role="status">{reviewOutcome.text}</p> : null}
         </div>
       </div>
       <Collapsible className="flex w-full flex-col items-start gap-2" onOpenChange={(next) => { setOpen(next); if (next) onExpand(); }} open={open}>
@@ -404,6 +526,7 @@ function RecommendationRow({ client, note, recommendation, selected, disabled, o
               ) : null}
             </dl>
           </div>
+          {excludable ? <ExcludeForm disabled={disabled || reviewBusy} onExclude={exclude} /> : null}
         </CollapsibleContent>
       </Collapsible>
     </li>

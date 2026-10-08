@@ -37,8 +37,10 @@ import {
   decodeXhsImageRetryResult,
   decodeXhsImportResult,
   decodeXhsLinkResult,
+  decodeXhsNeedsDecision,
   decodeXhsNote,
   decodeXhsStatus,
+  MAX_XHS_NEEDS_DECISION,
   type SourceContent,
   type SourceContentKind,
   type SourceDocument,
@@ -48,6 +50,7 @@ import {
   type XhsImageRetryResult,
   type XhsImportResult,
   type XhsLinkResult,
+  type XhsNeedsDecision,
   type XhsNote,
   type XhsStatus,
   type ArtifactVersionContent,
@@ -317,6 +320,17 @@ export class CortexControlClient {
 
   getXhsStatus(signal?: AbortSignal): Promise<XhsStatus> {
     return this.read("/xhs/status", decodeXhsStatus, signal);
+  }
+
+  // The unimported recommendations the weekly review left to the operator,
+  // newest review first, across every note: one page and the whole count.
+  getXhsNeedsDecision(limit = MAX_XHS_NEEDS_DECISION, signal?: AbortSignal): Promise<XhsNeedsDecision> {
+    const params = new URLSearchParams({ review: "needs_operator", limit: String(limit) });
+    return this.read(`/xhs/recommendations?${params}`, (value, path = "xhs_needs_decision") => {
+      const decoded = decodeXhsNeedsDecision(value, path);
+      if (decoded.items.length > limit) throw new ContractDecodeError(path + ".items", "page holds more rows than requested");
+      return decoded;
+    }, signal);
   }
 
   // R1c: the research catalog. `signal` is carried through to `fetch`, so a
@@ -600,6 +614,26 @@ export class CortexControlClient {
     );
   }
 
+  // Excludes one unimported recommendation with the operator's reason: the row
+  // stays, shows the reason and is never imported until it is restored.
+  // `expected_revision` is the recommendation's.
+  prepareExcludeRecommendation(
+    noteSourceId: string,
+    recommendation: { id: string; revision: number },
+    reason: string,
+  ): PreparedMutation<XhsLinkResult> {
+    return this.prepareReview(noteSourceId, recommendation, "exclude", { reason, expected_revision: recommendation.revision });
+  }
+
+  // Undoes an exclusion; the row is the operator's from then on, and the
+  // weekly review leaves it alone. `expected_revision` is the recommendation's.
+  prepareRestoreRecommendation(
+    noteSourceId: string,
+    recommendation: { id: string; revision: number },
+  ): PreparedMutation<XhsLinkResult> {
+    return this.prepareReview(noteSourceId, recommendation, "restore", { expected_revision: recommendation.revision });
+  }
+
   // Resets one failed image of a saved note; `expected_revision` is the note's.
   prepareRetryXhsImage(note: { source_id: string; revision: number }, ordinal: number): PreparedMutation<XhsImageRetryResult> {
     return this.prepare(
@@ -609,6 +643,31 @@ export class CortexControlClient {
         const decoded = decodeXhsImageRetryResult(value, path);
         if (decoded.note.source_id !== note.source_id || decoded.image.ordinal !== ordinal) {
           throw new ContractDecodeError(path, "retried image does not match the request");
+        }
+        return decoded;
+      },
+    );
+  }
+
+  // The answer must name the same recommendation, now in the review state the
+  // command sets: excluded, or the operator's own after a restore.
+  private prepareReview(
+    noteSourceId: string,
+    recommendation: { id: string; revision: number },
+    action: "exclude" | "restore",
+    body: Record<string, unknown>,
+  ): PreparedMutation<XhsLinkResult> {
+    const expected = action === "exclude" ? "excluded" : "operator_owned";
+    return this.prepare(
+      `/sources/${encodeURIComponent(noteSourceId)}/recommendations/${encodeURIComponent(recommendation.id)}/${action}`,
+      body,
+      (value, path = `xhs_${action}`) => {
+        const decoded = decodeXhsLinkResult(value, path);
+        if (decoded.recommendation.id !== recommendation.id) {
+          throw new ContractDecodeError(path + ".recommendation.id", "recommendation identity does not match the request");
+        }
+        if (decoded.recommendation.review?.state !== expected) {
+          throw new ContractDecodeError(path + ".recommendation.review", "review does not match the command");
         }
         return decoded;
       },

@@ -30,7 +30,7 @@ ARCHIVE_SCHEMA = "cortex-offline-recovery-archive/2"
 LEGACY_ARCHIVE_SCHEMA = "cortex-offline-recovery-archive/1"
 #: The pair every `/1` archive was written for; it carried no target of its own.
 LEGACY_PAIR = (16, 17)
-SUPPORTED_SCHEMAS = (16, 17, 18, 19, 20, 21)
+SUPPORTED_SCHEMAS = (16, 17, 18, 19, 20, 21, 22)
 
 
 def staging_suffixes(source_schema, target_schema):

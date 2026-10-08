@@ -850,6 +850,40 @@ class TransportDeliveryStore:
             for row in rows
         ]
 
+    def transport_deliveries_for_event(
+        self, *, transport: str, event_id: str
+    ) -> list[JsonObject]:
+        """Every frozen delivery of one event, whatever its destination or state.
+
+        For a sender whose work source is not the ledger: before freezing a
+        message it asks whether one was already frozen for any destination, so
+        a changed recipient cannot receive a second copy. Identity and state
+        only, as in `pending_transport_deliveries`.
+        """
+
+        transport = self._transport_name(transport)
+        event_id = self._required_text(event_id, "event_id", maximum=500)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT transport, destination_digest, event_id,
+                          projection_version, state, created_at
+                   FROM transport_delivery_projections
+                   WHERE transport = ? AND event_id = ?
+                   ORDER BY created_at, operation_id""",
+                (transport, event_id),
+            ).fetchall()
+        return [
+            {
+                "transport": str(row["transport"]),
+                "destination_digest": str(row["destination_digest"]),
+                "event_id": str(row["event_id"]),
+                "projection_version": int(row["projection_version"]),
+                "state": str(row["state"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     @classmethod
     def _transport_delivery_key(
         cls, value: Any

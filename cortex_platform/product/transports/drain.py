@@ -28,7 +28,14 @@ from typing import Any, Iterable, Mapping
 from ..control import ControlStore, TransportDeliveryKey
 from ..control.errors import NotFound
 from ..redaction import redact
-from .models import COMMAND_REPLY_PREFIX, TelegramDestination, TelegramScope
+from ..xhs.fallback import DIGEST_PENDING_REASONS
+from .models import (
+    COMMAND_REPLY_PREFIX,
+    XHS_DIGEST_PREFIX,
+    TelegramDestination,
+    TelegramScope,
+    TransportProblem,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -76,6 +83,17 @@ PENDING_LIMIT = 500
 
 #: How many distinct unroutable pairs are remembered. A count, not a queue.
 UNROUTABLE_LIMIT = 1_000
+
+#: How many owed XHS fallback digests one pass reads, oldest first. Runs are a
+#: week apart, so more than one is owed only after a long closed gate.
+XHS_DIGEST_LIMIT = 10
+
+#: What a digest's frozen delivery state makes of its run, once it is final.
+_XHS_DIGEST_SETTLED = {
+    "delivered": ("sent", None),
+    "manual_required": ("blocked", "outcome_unknown"),
+    "failed": ("blocked", "delivery_rejected"),
+}
 
 
 @dataclass(frozen=True)
@@ -229,10 +247,14 @@ class TransportDeliveryDrain:
         cursor: int | None = None,
         batch: int = EVENT_BATCH,
         serializer: Any | None = None,
+        web_origin: str | None = None,
     ) -> None:
         self._store = store
         self._adapter = adapter
         self._directory = directory
+        # ⟦XHS fallback⟧ The validated `web.public_origin`, the only base a
+        # digest's Inbox link is built from. None keeps every digest pending.
+        self._web_origin = web_origin
         # ⟦P5.5⟧ The poller decides how long to park `getUpdates` for, and the
         # only honest input to that decision is whether this loop still owes
         # the operator a message. Reported after every pass; `None` in the unit
@@ -318,6 +340,7 @@ class TransportDeliveryDrain:
                 deadline,
                 skip={str(item["event_id"]) for item in resumed},
             )
+            outcomes += self._xhs_digests(bindings, deadline)
         except BaseException:
             # ⟦P5.6⟧ A pass that died before its report left the line's last
             # answer standing (batch D D-3). Nothing this pass learned is
@@ -359,6 +382,10 @@ class TransportDeliveryDrain:
                 break
             digest = str(row["destination_digest"])
             event_id = str(row["event_id"])
+            if event_id.startswith(XHS_DIGEST_PREFIX):
+                # The digest pass owns these: it resumes a frozen digest and
+                # records on its run what became of it.
+                continue
             resolved = bindings.by_digest.get(digest)
             if resolved is None:
                 # The binding exists but this process cannot name the scope
@@ -473,22 +500,7 @@ class TransportDeliveryDrain:
         try:
             outcome = self._deliver(event, destination, source=source)
         except Exception as exc:  # noqa: BLE001 - a pass that dies must not lose the row
-            failure = {
-                "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "error": type(exc).__name__,
-                "detail": redact(str(exc)),
-                "event_id": str(event.get("id")),
-            }
-            with self._status_lock:
-                self.counts["deliver_raised"] += 1
-                self.failures += 1
-                self.last_failure = failure
-            _log.warning(
-                "transport delivery raised for event %s: %s: %s",
-                failure["event_id"],
-                failure["error"],
-                failure["detail"],
-            )
+            self._failed(str(event.get("id")), exc)
             self._remember(str(event.get("id")))
             return None
         if outcome["retryable"] and not outcome["delivered"]:
@@ -496,6 +508,154 @@ class TransportDeliveryDrain:
             # can prove happened before any socket. Nothing else is re-entered.
             self._remember(str(event.get("id")), not_before=_not_before(outcome))
         return outcome
+
+    def _failed(self, event_id: str, exc: Exception) -> None:
+        """Count and log a delivery that raised, with its redacted message."""
+
+        failure = {
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "error": type(exc).__name__,
+            "detail": redact(str(exc)),
+            "event_id": event_id,
+        }
+        with self._status_lock:
+            self.counts["deliver_raised"] += 1
+            self.failures += 1
+            self.last_failure = failure
+        _log.warning(
+            "transport delivery raised for event %s: %s: %s",
+            failure["event_id"],
+            failure["error"],
+            failure["detail"],
+        )
+
+    # -- the weekly XHS fallback digest -----------------------------------
+
+    def _xhs_digests(
+        self, bindings: Bindings, deadline: float
+    ) -> list[dict[str, object]]:
+        """Send the weekly fallback digests Control says are owed.
+
+        The work source is the run row (`digest_state = 'pending'`), not the
+        event cursor, so a digest owed while no daemon ran is still found.
+        Once a digest is frozen, the ledger decides: a pending delivery is
+        resumed to the destination it was frozen for, a delivered one makes
+        the run `sent`, and one whose outcome is unknown makes it `blocked`.
+        Nothing here re-sends an unknown outcome or opens the gate.
+        """
+
+        outcomes: list[dict[str, object]] = []
+        try:
+            owed = self._store.pending_xhs_fallback_digests(limit=XHS_DIGEST_LIMIT)
+        except Exception as exc:  # noqa: BLE001 - the pass's other work is done
+            self._failed(f"{XHS_DIGEST_PREFIX}*", exc)
+            return outcomes
+        for run in owed:
+            if time.monotonic() >= deadline:
+                self.deadline_stops += 1
+                break
+            event_id = f"{XHS_DIGEST_PREFIX}{run['id']}"
+            try:
+                outcome = self._xhs_digest(run, event_id, bindings)
+            except Exception as exc:  # noqa: BLE001 - the run row keeps the work
+                self._failed(event_id, exc)
+                continue
+            if outcome is not None:
+                outcomes.append(outcome)
+        return outcomes
+
+    def _xhs_digest(
+        self, run: Mapping[str, Any], event_id: str, bindings: Bindings
+    ) -> dict[str, object] | None:
+        run_id = str(run["id"])
+        frozen = self._store.transport_deliveries_for_event(
+            transport=TRANSPORT, event_id=event_id
+        )
+        if frozen:
+            row = frozen[0]
+            if self._settle_xhs_digest(run_id, str(row["state"])):
+                return None
+            resolved = bindings.by_digest.get(str(row["destination_digest"]))
+            if resolved is None:
+                # Frozen for a recipient this process cannot name any more. It
+                # is never re-frozen for another one.
+                self._xhs_digest_waits(run, "recipient_unavailable")
+                return None
+            result = self._adapter.deliver_command_reply(
+                delivery_key=TransportDeliveryKey(
+                    transport=TRANSPORT,
+                    destination_digest=str(row["destination_digest"]),
+                    event_id=event_id,
+                    projection_version=int(row["projection_version"]),
+                ),
+                destination=resolved[0],
+            )
+        else:
+            items = self._store.xhs_fallback_digest_items(run_id)
+            if items["count"] == 0:
+                # The operator handled every item before the digest could go.
+                self._store.set_xhs_fallback_digest(run_id, state="suppressed")
+                return None
+            reason = self._xhs_digest_refusal()
+            if reason is not None:
+                self._xhs_digest_waits(run, reason)
+                return None
+            result = self._adapter.deliver_xhs_digest(
+                run_id=run_id,
+                count=int(items["count"]),
+                titles=list(items["titles"]),
+                web_origin=str(self._web_origin),
+            )
+        if result.category in DIGEST_PENDING_REASONS:
+            self._xhs_digest_waits(run, result.category)
+            return None
+        outcome = self._record(event_id, result, source="xhs_digest")
+        rows = self._store.transport_deliveries_for_event(
+            transport=TRANSPORT, event_id=event_id
+        )
+        if not (rows and self._settle_xhs_digest(run_id, str(rows[0]["state"]))):
+            # Still owed, for no reason the Status view needs to show: a
+            # rate limit, a busy line or a refusal proven before any send.
+            self._xhs_digest_waits(run, None)
+        return outcome
+
+    def _xhs_digest_refusal(self) -> str | None:
+        """Why a digest cannot be frozen now, as its run's `digest_reason`."""
+
+        if getattr(getattr(self._adapter, "config", None), "mode", None) == "shadow":
+            return "shadow"
+        if not self._web_origin:
+            return "web_origin_missing"
+        try:
+            self._adapter.xhs_digest_recipient()
+        except TransportProblem as exc:
+            return exc.category
+        return None
+
+    def _settle_xhs_digest(self, run_id: str, ledger_state: str) -> bool:
+        """Make the run say what a final delivery state says; False if not final."""
+
+        final = _XHS_DIGEST_SETTLED.get(ledger_state)
+        if final is None:
+            return False
+        self._store.set_xhs_fallback_digest(run_id, state=final[0], reason=final[1])
+        return True
+
+    def _xhs_digest_waits(self, run: Mapping[str, Any], reason: str | None) -> None:
+        if run.get("digest_reason") != reason:
+            self._store.set_xhs_fallback_digest(
+                str(run["id"]), state="pending", reason=reason
+            )
+
+    def gate_closed(self) -> None:
+        """Outside a window no pass runs; each owed digest says so.
+
+        The supervisor calls this on the ticks it skips the drain. It writes
+        only when a digest's reason changes, and it opens nothing.
+        """
+
+        for run in self._store.pending_xhs_fallback_digests(limit=XHS_DIGEST_LIMIT):
+            self._xhs_digest_waits(run, "transport_disabled")
 
     def _count_unroutable(self, digest: str, event_id: str) -> None:
         if len(self._unroutable) < UNROUTABLE_LIMIT:

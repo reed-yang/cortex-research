@@ -4,7 +4,7 @@ cortexd records a provider result only after it passes `validate_engine` for
 its operation. A result that fails is treated as `invalid_response`: the
 child's document is untrusted until checked, like any other provider answer.
 Only shape is checked here; meaning (verbatim evidence, title matches) is
-`identify.py`'s.
+`identify.py`'s, and for the weekly fallback `fallback.py`'s.
 """
 
 from __future__ import annotations
@@ -116,7 +116,32 @@ ENGINE_SHAPES: Mapping[str, Mapping[str, tuple[type, ...]]] = {
         "metadata": _DICT,
         "files": _DICT,
     },
+    "xhs_fallback_decide": {
+        "prompt_version": _STR,
+        "input_text_sha256": _STR,
+        "response_id": _OPT_STR,
+        "model": _OPT_STR,
+        "usage": _OPT_DICT,
+        "answer": _OPT_DICT,
+        "answer_error": _OPT_STR,
+    },
+    "xhs_fallback_verify": {
+        "check": _STR,
+        "requested_url": _STR,
+        "final_url": _OPT_STR,
+        "title": _OPT_STR,
+        "og_title": _OPT_STR,
+        "paper_host": _BOOL,
+    },
 }
+_FALLBACK_ANSWER = {
+    "outcome": _STR,
+    "url": _OPT_STR,
+    "arxiv_id": _OPT_STR,
+    "reason_code": _OPT_STR,
+    "reason": _OPT_STR,
+}
+_FALLBACK_CHECKS = frozenset({"blog", "arxiv"})
 _NESTED: Mapping[tuple[str, str], Mapping[str, tuple[type, ...]]] = {
     ("xhs_note_detail", "note"): _DETAIL_NOTE,
     ("xhs_download_image", "image"): _DOWNLOADED,
@@ -183,4 +208,15 @@ def validate_engine(operation: str, engine: Any) -> Mapping[str, Any]:
             raise ValueError("blog_fetch.metadata.content_source is unsupported")
         if "article.md" not in engine["files"]:
             raise ValueError("blog_fetch.files has no article.md")
+    elif operation == "xhs_fallback_decide":
+        # The call answered, usably or not: exactly one of the two is set.
+        if (engine["answer"] is None) == (engine["answer_error"] is None):
+            raise ValueError("xhs_fallback_decide answer and answer_error disagree")
+        if engine["answer"] is not None:
+            _check(engine["answer"], _FALLBACK_ANSWER, f"{operation}.answer")
+    elif operation == "xhs_fallback_verify":
+        if engine["check"] not in _FALLBACK_CHECKS:
+            raise ValueError("xhs_fallback_verify.check is unsupported")
+        if engine["final_url"] is None and not engine["paper_host"]:
+            raise ValueError("xhs_fallback_verify fetched no page")
     return engine

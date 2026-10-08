@@ -142,7 +142,7 @@ const noteRecommendations = [
     quote: "Echo-Infinity (arXiv 2606.04527): memory that only writes what is new", arxiv_id: "2606.04527",
     url: null, url_state: "none", url_checked_title: null, origin: "rule+model", identify_run: "xhs_task_identify_c1",
     capture_id: null, capture_state: null, capture_revision: null, import_state: "imported",
-    imported_source_id: "src_echo", imported_source_kind: "paper", revision: 2, created_at: dayBefore, updated_at: dayBefore,
+    imported_source_id: "src_echo", imported_source_kind: "paper", review: null, revision: 2, created_at: dayBefore, updated_at: dayBefore,
   },
   // Not in the library yet, so the note detail scene has a row to select.
   {
@@ -150,20 +150,20 @@ const noteRecommendations = [
     quote: "Windowed recall (arXiv 2607.01234): a smaller memory window first", arxiv_id: "2607.01234",
     url: null, url_state: "none", url_checked_title: null, origin: "rule+model", identify_run: "xhs_task_identify_c1",
     capture_id: null, capture_state: null, capture_revision: null, import_state: "none",
-    imported_source_id: null, imported_source_kind: null, revision: 0, created_at: dayBefore, updated_at: dayBefore,
+    imported_source_id: null, imported_source_kind: null, review: null, revision: 0, created_at: dayBefore, updated_at: dayBefore,
   },
   {
     id: "xhs_rec_blog", image_ordinal: 2, kind: "blog", title: "Memory drift, measured layer by layer",
     quote: "博客：Memory drift, measured layer by layer", arxiv_id: null, url: BLOG_URL, url_state: "auto_matched",
     url_checked_title: "Memory drift, measured layer by layer | Example blog", origin: "model", identify_run: "xhs_task_identify_c1",
     capture_id: null, capture_state: null, capture_revision: null, import_state: "imported",
-    imported_source_id: blogSource.id, imported_source_kind: "blog", revision: 2, created_at: dayBefore, updated_at: dayBefore,
+    imported_source_id: blogSource.id, imported_source_kind: "blog", review: null, revision: 2, created_at: dayBefore, updated_at: dayBefore,
   },
   {
     id: "xhs_rec_other", image_ordinal: null, kind: "other", title: "A weekly reading group",
     quote: "每周读书会 weekly reading group", arxiv_id: null, url: null, url_state: "none", url_checked_title: null,
     origin: "model", identify_run: "xhs_task_identify_c1", capture_id: null, capture_state: null, capture_revision: null,
-    import_state: "none", imported_source_id: null, imported_source_kind: null, revision: 0, created_at: dayBefore, updated_at: dayBefore,
+    import_state: "none", imported_source_id: null, imported_source_kind: null, review: null, revision: 0, created_at: dayBefore, updated_at: dayBefore,
   },
 ];
 
@@ -215,6 +215,18 @@ const xhsStatus = {
   tasks: { canceled: 0, done: 14, failed: 1, pending: 2, running: 0 },
   usage: { gpt: { calls: 3, cap: 300 }, ocr: { calls: 4, cap: 1000 }, tikhub: { calls: 5, cap: 100 } },
   last_failures: { tikhub: "rate_limited", cdn: null, ocr: null, gpt: null, blog: null },
+  // The weekly review ran once and nothing it left is waiting any more, so
+  // the Inbox scene holds no XHS row.
+  fallback: {
+    enabled: true, running: null,
+    last: {
+      id: "xhs_fallback_run_mock", state: "completed", trigger: "schedule", started_at: "2026-07-20T06:05:00Z",
+      finished_at: "2026-07-20T06:40:00Z", item_cap: 100, model: "gpt-6.1-sol", effort: "xhigh", prompt_version: "xhs-fallback-1",
+      summary: { blog_queued: 2, paper_corrected: 3, paper_kept: 1, excluded: 2, needs_operator: 0, stale: 0 },
+      digest_state: "suppressed", digest_reason: null,
+    },
+    next_start_at: "2026-07-27T06:05:00Z", backlog: 0, needs_operator: 0,
+  },
 };
 
 // The stored files of the note and the blog, in the layout Control saves them
@@ -392,6 +404,9 @@ export async function startMockControlServer(port = 8799) {
       const kind = url.searchParams.get("kind");
       send(response, 200, page(sources.filter((item) => !kind || item.source_kind === kind)));
     } else if (url.pathname === "/api/v1/xhs/status") send(response, 200, xhsStatus);
+    else if (url.pathname === "/api/v1/xhs/recommendations" && url.searchParams.get("review") === "needs_operator") {
+      send(response, 200, { items: [], total: 0 });
+    }
     else if (noteRoute && noteRoute[1] === noteSource.id) send(response, 200, noteProjection);
     else if (linksRoute && sourcesById.has(linksRoute[1])) send(response, 200, sourceLinks.get(linksRoute[1]) ?? { recommended_in: [], recommends: [] });
     else if (stored !== undefined) {

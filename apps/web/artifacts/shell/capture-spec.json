@@ -112,14 +112,14 @@
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library&kind=xhs_note",
-      "sha256": "582761015b047a80ac0c0576cf3d0232ee8ea7b51d499d980a3a8b66bee000c1"
+      "sha256": "8ffe98ac1763185c3c55b2fefaf334c770bf58dacac5f398aa3ade61ff6ed1ad"
     },
     "xhs-note-dark-desktop.png": {
       "scene": "xhs-note",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=library&kind=xhs_note",
-      "sha256": "7634e3fe108bfdd5aa54e2850e290e23156ec8db47af955321ecf0191ec8c22d"
+      "sha256": "3cde2f692fb9208821cfb76482e2e5b04a721bdba05fd8c98c2fded99f7c4ed9"
     },
     "inbox-light-desktop.png": {
       "scene": "inbox",
@@ -140,14 +140,14 @@
       "scheme": "light",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=status",
-      "sha256": "092f630446389efa8a7f0f77b12dd33735a6215bbb24a6b541041b27927c5a15"
+      "sha256": "c30623295e840bf4754a852b30501c300da258b04144b4368335f89254697499"
     },
     "status-dark-desktop.png": {
       "scene": "status",
       "scheme": "dark",
       "viewport": "desktop",
       "url": "http://127.0.0.1:3002/?project=ws_mobile&view=status",
-      "sha256": "c4ed85a7bec78800a95b21faefa6820c30435fbf87edafcb135b12f8ed2f50bf"
+      "sha256": "b2d65f70b784c217a1151a1cb0e56a99389a4314c6698b78bb3acfcf4a31597b"
     },
     "drawer-light-mobile.png": {
       "scene": "drawer",

@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import type { CortexControlClient } from "../control/client";
 import type { Capture, Decision } from "../control/contracts";
+import type { XhsNeedsDecision } from "../control/research-contracts";
 import { CaptureCard } from "./capture-card";
 import { FragmentCard } from "./fragment-card";
 import { copy, decisionKindLabel, label } from "./copy";
@@ -125,6 +127,64 @@ function IdeaComposer({ disabled, onSave }: {
   );
 }
 
+// The XHS recommendations the weekly review left to the operator, across
+// every note. The list is read on entry and again after each command, and a
+// failed read keeps the rows already shown. Open goes to the note in the
+// Library, where the row is imported, fixed or excluded; nothing here changes
+// a row. With nothing waiting the section is not shown.
+function XhsRecommendations({ client, commandPending, onOpenSource }: {
+  client: CortexControlClient;
+  commandPending: boolean;
+  onOpenSource: (id: string) => void;
+}) {
+  const [list, setList] = useState<XhsNeedsDecision | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (commandPending) return;
+    const controller = new AbortController();
+    client.getXhsNeedsDecision(undefined, controller.signal).then(
+      (value) => { if (!controller.signal.aborted) { setList(value); setError(null); } },
+      (failure: unknown) => {
+        if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : copy.errors.unreadable);
+      },
+    );
+    return () => controller.abort();
+  }, [client, commandPending]);
+
+  const items = list?.items ?? [];
+  if (!items.length && !error) return null;
+  return (
+    <section aria-labelledby="inbox-xhs-title" className="flex flex-col gap-2">
+      <h2 className="text-sm font-medium" id="inbox-xhs-title">{copy.inbox.xhsTitle}</h2>
+      {items.length ? <p className="text-sm text-muted-foreground">{copy.inbox.xhsIntro}</p> : null}
+      {error ? (
+        <div className="flex flex-col gap-1" role="alert">
+          <p className="text-sm text-destructive">{copy.inbox.xhsUnreadable}</p>
+          <details className="text-xs text-muted-foreground" data-details>
+            <summary>{copy.inbox.details}</summary>
+            <p>{error}</p>
+          </details>
+        </div>
+      ) : null}
+      {items.map((item) => (
+        <article aria-label={copy.inbox.xhsItem} className="flex flex-col gap-2 rounded-lg border p-3" data-xhs-recommendation={item.recommendation_id} key={item.recommendation_id}>
+          <div className="flex items-start justify-between gap-3">
+            <Badge variant="outline">{copy.xhs.kinds[item.kind]}</Badge>
+            <Button onClick={() => onOpenSource(item.note_source_id)} size="sm" type="button" variant="outline">{copy.inbox.open}</Button>
+          </div>
+          <p className="text-sm">{item.title}</p>
+          {item.reason ? (
+            <p className="whitespace-pre-wrap text-sm text-muted-foreground" data-verbatim>{item.reason}</p>
+          ) : <p className="text-sm text-muted-foreground">{copy.xhs.reviewReasons[item.reason_code] ?? copy.xhs.reviews.needsDecision}</p>}
+          <p className="text-xs text-muted-foreground">{label.inNote(item.note_title)}</p>
+        </article>
+      ))}
+      {list && list.total > items.length ? <p className="text-sm text-muted-foreground">{label.xhsWaitingBeyond(items.length, list.total)}</p> : null}
+    </section>
+  );
+}
+
 export function InboxView({ state, actions, client }: ViewProps) {
   const [reopenConfirmId, setReopenConfirmId] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -228,6 +288,8 @@ export function InboxView({ state, actions, client }: ViewProps) {
             );
           })}
         </section>
+
+        <XhsRecommendations client={client} commandPending={state.commandPending} onOpenSource={actions.openSource} />
 
         <section aria-busy={state.fragmentsLoading} aria-labelledby="inbox-ideas-title" className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">

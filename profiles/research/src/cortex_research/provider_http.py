@@ -1,8 +1,8 @@
 """Shared HTTP rules for the first-party provider clients.
 
-`xhs_client`, `image_ocr`, `responses_client` and `blog_fetch` run only inside
-an engine child, which imports them lazily per operation. None of the nine
-arXiv bridge modules imports this module or them.
+`xhs_client`, `image_ocr`, `responses_client`, `blog_fetch` and `xhs_fallback`
+run only inside an engine child, which imports them lazily per operation. None
+of the nine arXiv bridge modules imports this module or them.
 
 Every failure leaves as a `ProviderError` carrying one category from
 `CATEGORIES`. Its message names the provider, the HTTP status or the refused

@@ -521,6 +521,164 @@ def test_blog_fetch_writes_copied_images_under_assets(monkeypatch, credentials, 
     assert (engine["metadata"]["images"], engine["metadata"]["images_not_copied"]) == (1, 1)
 
 
+# -- the weekly fallback ------------------------------------------------------
+
+
+def fallback_payload(**extra) -> dict[str, Any]:
+    from cortex_platform.product.xhs import fallback
+
+    payload = {
+        "input": fallback.build_decide_input(
+            {"kind": "blog", "title": "Attention Sinks", "quote": "推荐阅读 Attention Sinks 博客",
+             "url": None, "url_state": "not_found", "url_checked_title": None,
+             "image_ordinal": 3},
+            note_title="Weekly papers",
+            cited_text="推荐阅读 Attention Sinks 博客, by Example Lab",
+        ),
+        "gpt_base": "https://gpt.example/v1",
+        "gpt_model": "gpt-6.1-sol",
+        "gpt_effort": "xhigh",
+    }
+    payload.update(extra)
+    return payload
+
+
+def test_fallback_decide_calls_once_with_search_and_returns_the_checked_answer(
+    monkeypatch, credentials
+) -> None:
+    from cortex_research import responses_client
+
+    from cortex_platform.product.xhs import fallback
+
+    answer = {"outcome": "corrected_url", "url": "https://blog.example/sinks", "arxiv_id": None,
+              "reason_code": "found", "reason": "The lab's blog has this post.", "extra": 1}
+    document = responses_answer(json.dumps(answer))
+    document["usage"] = {"input_tokens": 900, "output_tokens": 40, "label": "dropped"}
+    recorder = Recorder(lambda request: httpx.Response(200, json=document))
+    fake_http(monkeypatch, recorder)
+    timeouts: list[float] = []
+    real = responses_client.create_response
+
+    def spy(*args, **kwargs):
+        timeouts.append(kwargs["timeout_seconds"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(responses_client, "create_response", spy)
+    payload = fallback_payload()
+    engine = dispatch("xhs_fallback_decide", payload)["engine"]
+    assert len(recorder.requests) == 1 and timeouts == [240.0]
+    request = recorder.requests[0]
+    assert request.headers["authorization"] == "Bearer dummy-gpt"
+    body = json.loads(request.content)
+    assert body["tools"] == [{"type": "web_search"}] and body["stream"] is False
+    assert (body["model"], body["reasoning"]) == ("gpt-6.1-sol", {"effort": "xhigh"})
+    assert body["input"] == payload["input"]
+    assert body["instructions"] == fallback.DECIDE_INSTRUCTIONS
+    assert engine["answer"] == {key: answer[key] for key in fallback._ANSWER_FIELDS}
+    assert engine["answer_error"] is None
+    assert engine["input_text_sha256"] == fallback.input_text_sha256(payload["input"])
+    assert engine["usage"] == {"input_tokens": 900, "output_tokens": 40}
+
+
+@pytest.mark.parametrize("text", ["not json", '{"outcome": 3}', '{"url": null}'])
+def test_a_malformed_fallback_answer_is_returned_not_retried(monkeypatch, credentials, text) -> None:
+    recorder = Recorder(lambda request: httpx.Response(200, json=responses_answer(text)))
+    fake_http(monkeypatch, recorder)
+    engine = dispatch("xhs_fallback_decide", fallback_payload())["engine"]
+    assert engine["answer"] is None and engine["answer_error"].startswith("responses: ")
+    assert len(recorder.requests) == 1
+
+
+def test_fallback_decide_fails_closed_without_a_base_or_with_a_huge_input(
+    monkeypatch, credentials
+) -> None:
+    recorder = Recorder(lambda request: httpx.Response(200))
+    fake_http(monkeypatch, recorder)
+    assert refusal("xhs_fallback_decide", fallback_payload(gpt_base="")).category == "auth"
+    oversized = fallback_payload(input="中" * 12_000)
+    assert refusal("xhs_fallback_decide", oversized).category == "invalid_response"
+    assert recorder.requests == []
+
+
+def _pages(monkeypatch, respond):
+    from cortex_research import blog_fetch
+
+    site = Recorder(respond)
+    real = blog_fetch.fetch_title
+    monkeypatch.setattr(
+        blog_fetch,
+        "fetch_title",
+        lambda url, **options: real(
+            url, **{**options, "transport": httpx.MockTransport(site), "resolver": public_resolver}
+        ),
+    )
+    return site
+
+
+def test_fallback_verify_fetches_the_page_title_without_a_credential(monkeypatch, credentials) -> None:
+    site = _pages(monkeypatch, lambda request: httpx.Response(
+        200, text="<title>Attention Sinks | Example Lab</title>",
+        headers={"content-type": "text/html"},
+    ))
+    engine = dispatch(
+        "xhs_fallback_verify", {"check": "blog", "url": "https://blog.example/sinks"}
+    )["engine"]
+    assert engine == {
+        "check": "blog", "requested_url": "https://blog.example/sinks",
+        "final_url": "https://blog.example/sinks", "title": "Attention Sinks | Example Lab",
+        "og_title": None, "paper_host": False,
+    }
+    assert "authorization" not in site.requests[0].headers
+    engine = dispatch("xhs_fallback_verify", {"check": "arxiv", "arxiv_id": "2501.01234"})["engine"]
+    # The fetch connects to the resolved address and names the host in `Host`.
+    last = site.requests[-1]
+    assert (last.headers["host"], last.url.path) == ("arxiv.org", "/abs/2501.01234")
+    assert engine["requested_url"] == "https://arxiv.org/abs/2501.01234"
+    assert (engine["check"], engine["paper_host"]) == ("arxiv", False)
+
+
+def test_fallback_verify_never_fetches_a_paper_page_and_marks_a_redirect_to_one(
+    monkeypatch, credentials
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.headers["host"] == "blog.example":
+            return httpx.Response(302, headers={"location": "https://openreview.net/forum?id=x"})
+        return httpx.Response(200, text="<title>A Paper</title>",
+                              headers={"content-type": "text/html"})
+
+    site = _pages(monkeypatch, respond)
+    engine = dispatch(
+        "xhs_fallback_verify", {"check": "blog", "url": "https://arxiv.org/abs/2501.01234"}
+    )["engine"]
+    assert engine["paper_host"] is True and engine["final_url"] is None
+    assert site.requests == []
+    engine = dispatch(
+        "xhs_fallback_verify", {"check": "blog", "url": "https://blog.example/moved"}
+    )["engine"]
+    assert engine["paper_host"] is True
+    assert engine["final_url"] == "https://openreview.net/forum?id=x"
+
+
+def test_fallback_verify_refusals_keep_their_category(monkeypatch, credentials) -> None:
+    _pages(monkeypatch, lambda request: httpx.Response(503))
+    failed = refusal("xhs_fallback_verify", {"check": "blog", "url": "https://blog.example/x"})
+    assert failed.category == "transient"
+    # A private address is refused by the fetch policy before any request.
+    from cortex_research import blog_fetch
+
+    real = blog_fetch.fetch_title
+    monkeypatch.setattr(
+        blog_fetch, "fetch_title",
+        lambda url, **options: real(url, **{**options, "transport": httpx.MockTransport(
+            lambda request: httpx.Response(200)
+        )}),
+    )
+    refused = refusal("xhs_fallback_verify", {"check": "blog", "url": "http://127.0.0.1/a"})
+    assert refused.category == "not_found"
+    for payload in ({"check": "arxiv", "arxiv_id": "../etc"}, {"check": "page", "url": "x"}):
+        assert refusal("xhs_fallback_verify", payload).category == "invalid_response"
+
+
 # -- the real child -----------------------------------------------------------
 
 

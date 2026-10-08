@@ -9,6 +9,12 @@ calls a provider or reads a credential.
 read. `[xhs] enabled` in the configuration is a separate switch, and the
 plugin runs only when both are on and both asset roots are ready.
 `init-roots` creates and registers those roots at their default locations.
+
+`fallback status` and `fallback run --dry-run` read only: the dry run shows
+what the free rules would change and which recommendations a weekly run would
+take, without writing or migrating anything. `fallback run --yes` starts a run
+under the drain's own rule (none running, none started in the last 7 days);
+there is no force. The drain makes its model calls.
 """
 
 from __future__ import annotations
@@ -33,8 +39,11 @@ from .config import (
 from .control import ControlStore, ControlStoreError, NotFound
 from .control.xhs_store import XHS_ROLES, XHS_TASK_KINDS
 from .paths import PathRegistry
+from .xhs.fallback import MAX_RUN_ITEMS
 from .xhs.status import public_blogger as _blogger
+from .xhs.status import public_fallback_run as _fallback_run
 from .xhs.status import schedule_keys as _schedule_keys
+from .xhs.status import xhs_fallback_status as _fallback_status
 from .xhs.status import xhs_refusal as _refusal
 from .xhs.status import xhs_schedules as _schedules
 from .xhs.status import xhs_status as _status
@@ -75,6 +84,22 @@ def add_xhs_parser(subparsers: Any, *, common: argparse.ArgumentParser) -> None:
     retry.add_argument("--failed", action="store_true")
     retry.add_argument("--kind", choices=sorted(XHS_TASK_KINDS))
     writer("refetch-blog").add_argument("source_id")
+    steps = actions.add_parser("fallback", parents=[common]).add_subparsers(
+        dest="fallback_command", required=True
+    )
+    steps.add_parser("status", parents=[common])
+    run = steps.add_parser("run", parents=[common])
+    mode = run.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--yes", action="store_true")
+
+
+def _reads_only(arguments: argparse.Namespace) -> bool:
+    """Whether a command only reads, so the database is neither created nor migrated."""
+
+    if arguments.xhs_command == "fallback":
+        return not getattr(arguments, "yes", False)
+    return arguments.xhs_command in {"list", "status"}
 
 
 def _key(arguments: argparse.Namespace, prefix: str) -> str:
@@ -114,7 +139,7 @@ def run_xhs_command(arguments: argparse.Namespace, paths: PathRegistry) -> int:
         settings = xhs_settings(config)
         database = paths.control_database_file
         store = ControlStore(database)
-        if command in {"list", "status"}:
+        if _reads_only(arguments):
             # These read: no `initialize()`, so nothing is created or migrated.
             if not database.is_file():
                 raise ValueError("the Control database does not exist; run `cortex init`")
@@ -205,7 +230,61 @@ def _run(
             actor_id=actor,
             idempotency_key=_key(arguments, "refetch"),
         ).value
+    if command == "fallback":
+        return _fallback(arguments, store, settings)
     raise ValueError(f"unknown xhs command: {command}")
+
+
+def _fallback(
+    arguments: argparse.Namespace, store: ControlStore, settings: XhsSettings
+) -> dict[str, Any] | None:
+    """The weekly fallback's status, its dry run, or an operator start."""
+
+    if arguments.fallback_command == "status":
+        return _fallback_status(store, settings)
+    if arguments.dry_run:
+        preview = store.preview_xhs_fallback_run(item_cap=settings.fallback_weekly_cap)
+        return {
+            "dry_run": True,
+            "enabled": settings.fallback_enabled,
+            "plugin_refusal": _refusal(settings, store),
+            "item_cap": min(settings.fallback_weekly_cap, MAX_RUN_ITEMS),
+            "model": settings.fallback_model,
+            "effort": settings.fallback_effort,
+            **preview,
+        }
+    refusal = _refusal(settings, store)
+    if refusal is not None:
+        raise ValueError(f"the XHS plugin will not run: {refusal}")
+    if not settings.fallback_enabled:
+        raise ValueError("the fallback is off: set [xhs] fallback_enabled = true")
+    started = store.start_xhs_fallback_run(
+        trigger="operator",
+        item_cap=settings.fallback_weekly_cap,
+        model=settings.fallback_model,
+        effort=settings.fallback_effort,
+    )
+    if started["run"] is None:
+        print(
+            json.dumps(
+                {
+                    "error": started["refusal"],
+                    "message": "no fallback run was started",
+                    "next_start_at": started["next_start_at"],
+                    "rules": started["rules"],
+                    "selection": started["selection"],
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return None
+    return {
+        "run": _fallback_run(started["run"]),
+        "next_start_at": started["next_start_at"],
+        "rules": started["rules"],
+        "selection": started["selection"],
+    }
 
 
 def _overlaps(first: Path, second: Path) -> bool:

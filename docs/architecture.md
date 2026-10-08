@@ -80,7 +80,8 @@ Each is stored as write-once versions `v<N>` under its own asset root,
 never scans them. Control schema 21 records bloggers, notes, per-ordinal
 images, recommendations, the task queue, daily usage, append-only content
 bindings and `source_links` from a note to the paper or blog it recommends.
-The reader, document and asset routes resolve these kinds through their latest
+Control schema 22 adds recommendation reviews and the weekly fallback's runs
+and items. The reader, document and asset routes resolve these kinds through their latest
 content binding with the same no-follow reads as papers; papers keep the
 adoption join.
 
@@ -92,9 +93,9 @@ child operation outside any transaction, checks the answer
 staging files, and records the result in one transaction fenced by the task
 revision. Saving a note and linking a Capture run locally without a child.
 
-The seven child operations (`xhs_list_page`, `xhs_note_detail`,
+The nine child operations (`xhs_list_page`, `xhs_note_detail`,
 `xhs_download_image`, `xhs_ocr_image`, `xhs_identify`, `xhs_resolve_link`,
-`blog_fetch`) import their clients from the research profile inside the
+`blog_fetch`, `xhs_fallback_decide`, `xhs_fallback_verify`) import their clients from the research profile inside the
 handler. Each receives only its own credentials (`engine/bindings.py`), never
 opens `research.db`, and only the download and blog fetch get a write root:
 the one asset root their caller binds. Identification rules, the verbatim
@@ -103,6 +104,20 @@ cortexd re-runs them on its own copy of the transcriptions. Importing a paper
 recommendation stages an ordinary Capture, so ingestion stays the existing
 arXiv path. See the [XHS runbook](runbooks/xhs.md) and the
 [plan](plans/xhs-sources.md).
+
+With `[xhs] fallback_enabled`, each `xhs_drain` tick first applies free rules
+(a blog whose link is an arXiv page becomes that paper), starts a weekly run
+when one is due, and runs at most two of its stages within the tick's budget.
+`xhs_fallback_decide` makes one Responses call with web search per item and
+is never retried after dispatch; `xhs_fallback_verify` fetches the proposed
+page's title without credentials. Pure rules and answer checks live in
+`product/xhs/fallback.py`, and the store applies each result in one
+transaction fenced by the recommendation revision and input digest. A
+verified blog only gets a queued import; automatic code never imports a paper
+or stages a Capture. A run that leaves items to the operator owes one Telegram
+digest, which the transport drain sends through the delivery ledger as event
+`xhs-fallback:<run_id>`. See the
+[fallback plan](plans/xhs-recommendation-fallback.md).
 
 ## External readings publication
 

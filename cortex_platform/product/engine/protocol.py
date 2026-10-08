@@ -25,7 +25,9 @@ ARXIV_OPERATIONS: frozenset[str] = frozenset(
 # ⟦XHS⟧ First-party provider calls. Each is one bounded request (or one short
 # chain, for OCR's fallback and link verification), imports its research
 # profile client inside its handler, never opens `research.db`, and receives
-# only its own credentials (`bindings.OPERATION_SECRET_SCOPES`).
+# only its own credentials (`bindings.OPERATION_SECRET_SCOPES`). The weekly
+# fallback's model call and its page-title check are two operations, so a
+# verification retry never calls the model again.
 PROVIDER_OPERATIONS: frozenset[str] = frozenset(
     {
         "xhs_list_page",
@@ -35,6 +37,8 @@ PROVIDER_OPERATIONS: frozenset[str] = frozenset(
         "xhs_identify",
         "xhs_resolve_link",
         "blog_fetch",
+        "xhs_fallback_decide",
+        "xhs_fallback_verify",
     }
 )
 OPERATIONS: frozenset[str] = ARXIV_OPERATIONS | PROVIDER_OPERATIONS

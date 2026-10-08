@@ -212,6 +212,7 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
         RESEARCH_ITEMS_MIGRATION,
         RUNTIME_RELEASE_APPROVAL_SCHEMA_VERSION,
         TRANSPORT_ACTIVATION_MIGRATION,
+        XHS_FALLBACK_MIGRATION,
         XHS_SOURCES_MIGRATION,
     )
 
@@ -255,6 +256,11 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
                 "source_links",
                 "xhs_tasks",
                 "xhs_usage",
+                # The weekly recommendation fallback: review states, runs and
+                # the recommendations each run took.
+                "xhs_recommendation_reviews",
+                "xhs_fallback_runs",
+                "xhs_fallback_items",
             ),
             # Each table is required only from the version that creates it: an
             # older snapshot legitimately has none of them, and demanding one
@@ -282,6 +288,9 @@ def default_database_specs(*, home: Path | None = None) -> list[DatabaseSpec]:
                 ("source_links", XHS_SOURCES_MIGRATION),
                 ("xhs_tasks", XHS_SOURCES_MIGRATION),
                 ("xhs_usage", XHS_SOURCES_MIGRATION),
+                ("xhs_recommendation_reviews", XHS_FALLBACK_MIGRATION),
+                ("xhs_fallback_runs", XHS_FALLBACK_MIGRATION),
+                ("xhs_fallback_items", XHS_FALLBACK_MIGRATION),
             ),
         ),
         DatabaseSpec(

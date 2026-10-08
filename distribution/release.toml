@@ -13,13 +13,13 @@
 format_version = 1
 
 [product]
-version = "0.1.35"
-release_id = "cortex-research-35"
-release_sequence = 35
+version = "0.1.36"
+release_id = "cortex-research-36"
+release_sequence = 36
 
 [control]
-target_schema = 21
-upgrade_from_schemas = [16, 17, 18, 19, 20]
+target_schema = 22
+upgrade_from_schemas = [16, 17, 18, 19, 20, 21]
 
 [worker]
 release_id = "hermes-0.15.0-gen10"
