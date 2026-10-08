@@ -7,6 +7,7 @@ import {
   decodeSourceLinks,
   decodeXhsImageRetryResult,
   decodeXhsImportResult,
+  decodeXhsNeedsDecision,
   decodeXhsNote,
   decodeXhsNoteHeader,
   decodeXhsStatus,
@@ -15,10 +16,14 @@ import {
 import {
   sourceLinkEntry,
   xhsBloggerStatus,
+  xhsFallbackRun,
+  xhsFallbackStatus,
   xhsImage,
+  xhsNeedsDecisionItem,
   xhsNoteHeader,
   xhsNoteProjection,
   xhsRecommendation,
+  xhsReview,
   xhsStatusProjection,
   XHS_USER_ID,
 } from "./shell/xhs-fixtures";
@@ -1372,5 +1377,133 @@ describe("XHS note, link and status contracts", () => {
     answers["/api/cortex/sources/source_note/images/1/retry"] = answers["/api/cortex/sources/source_note/images/2/retry"];
     await expect(client.prepareRetryXhsImage(header, 1).execute()).rejects.toThrow("does not match the request");
     expect(() => decodeXhsImageRetryResult({ ...(answers["/api/cortex/sources/source_note/images/2/retry"] as object), lease_until: now })).toThrowError(ContractDecodeError);
+  });
+
+  it("decodes every review a recommendation can carry", () => {
+    for (const review of [
+      xhsReview("needs_operator"),
+      xhsReview("excluded", { method: "operator", reason_code: "operator", reason: "Not about memory." }),
+      xhsReview("excluded", { method: "rule", reason_code: "duplicate", reason: null }),
+      xhsReview("resolved_paper", { method: "rule", reason_code: "arxiv_link", reason: null, corrected_fields: ["kind", "arxiv_id"] }),
+      xhsReview("resolved_paper", { reason_code: "not_on_arxiv", corrected_fields: ["kind"] }),
+      xhsReview("resolved_blog", { reason_code: null, corrected_fields: ["url"] }),
+      xhsReview("operator_owned"),
+    ]) {
+      expect(decodeXhsNote(withRecommendation({ review })).recommendations[0]!.review).toEqual(review);
+    }
+  });
+
+  it.each([
+    ["an unknown state", xhsReview("ignored")],
+    ["an exclusion without a reason code", xhsReview("excluded", { reason_code: null })],
+    ["a row left to the operator without a reason code", xhsReview("needs_operator", { reason_code: null })],
+    ["a restored row with a reason", xhsReview("operator_owned", { reason: "Kept." })],
+    ["a restored row the model owns", xhsReview("operator_owned", { method: "model" })],
+    ["an unknown reason code", xhsReview("needs_operator", { reason_code: "gave_up" })],
+    ["a reason over 500 code points", xhsReview("needs_operator", { reason: "📄".repeat(501) })],
+    ["corrected fields out of order", xhsReview("resolved_paper", { corrected_fields: ["arxiv_id", "kind"] })],
+    ["a corrected field twice", xhsReview("resolved_paper", { corrected_fields: ["kind", "kind"] })],
+    ["a corrected title", xhsReview("resolved_paper", { corrected_fields: ["title"] })],
+    ["the run that made it", { ...xhsReview("needs_operator"), run_id: "xhs_fallback_run_1" }],
+  ])("refuses a review with %s", (_label, review) => {
+    expect(() => decodeXhsNote(withRecommendation({ review }))).toThrowError(ContractDecodeError);
+  });
+
+  it("refuses a recommendation without its review field", () => {
+    const value: Record<string, unknown> = xhsRecommendation("xhs_rec_paper");
+    delete value.review;
+    expect(() => decodeXhsNote({ ...note, recommendations: [value] })).toThrow("expected a field");
+  });
+
+  it("decodes the operator's list and refuses one that miscounts or carries more", () => {
+    const list = { items: [xhsNeedsDecisionItem("xhs_rec_a"), xhsNeedsDecisionItem("xhs_rec_b", { kind: "paper", reason_code: "title_mismatch", reason: null })], total: 7 };
+    expect(decodeXhsNeedsDecision(list)).toEqual(list);
+    expect(() => decodeXhsNeedsDecision({ ...list, total: 1 })).toThrow("fewer rows");
+    expect(() => decodeXhsNeedsDecision({ ...list, items: [list.items[0], list.items[0]] })).toThrow("unique");
+    expect(() => decodeXhsNeedsDecision({ ...list, next_cursor: null })).toThrowError(ContractDecodeError);
+    expect(() => decodeXhsNeedsDecision({ items: [{ ...list.items[0], reason_code: null }], total: 1 })).toThrowError(ContractDecodeError);
+    expect(() => decodeXhsNeedsDecision({ items: [{ ...list.items[0], run_id: "xhs_fallback_run_1" }], total: 1 })).toThrowError(ContractDecodeError);
+    const many = Array.from({ length: 101 }, (_, index) => xhsNeedsDecisionItem(`xhs_rec_${index}`));
+    expect(() => decodeXhsNeedsDecision({ items: many, total: 101 })).toThrow("contract bound");
+  });
+
+  it("decodes the weekly review's status, running or completed", () => {
+    const running = { ...xhsFallbackRun({ id: "xhs_fallback_run_2", state: "running", finished_at: null, summary: {}, digest_state: "none" }), items: 40, remaining: 12 };
+    const fallback = xhsFallbackStatus({ enabled: true, running, last: xhsFallbackRun({ digest_state: "pending", digest_reason: "shadow" }), backlog: 61, needs_operator: 3 });
+    expect(decodeXhsStatus({ ...status, fallback }).fallback).toEqual(fallback);
+    expect(decodeXhsStatus(status).fallback).toEqual(xhsFallbackStatus());
+  });
+
+  const runningRun = (extra: Record<string, unknown> = {}) => ({
+    ...xhsFallbackRun({ state: "running", finished_at: null, summary: {}, digest_state: "none" }), items: 4, remaining: 2, ...extra,
+  });
+  it.each([
+    ["no fallback block", undefined],
+    ["an extra field", xhsFallbackStatus({ items: [] })],
+    ["a completed run without a finish time", xhsFallbackStatus({ last: xhsFallbackRun({ finished_at: null }) })],
+    ["a running run with a finish time", xhsFallbackStatus({ running: runningRun({ finished_at: now }) })],
+    ["a running run with a digest", xhsFallbackStatus({ running: runningRun({ digest_state: "pending" }) })],
+    ["a running run with counts", xhsFallbackStatus({ running: runningRun({ summary: { blog_queued: 1 } }) })],
+    ["a completed run missing a count", xhsFallbackStatus({ last: xhsFallbackRun({ summary: { blog_queued: 1 } }) })],
+    ["an unknown count", xhsFallbackStatus({ last: xhsFallbackRun({ summary: { ...(xhsFallbackRun().summary as object), imported: 1 } }) })],
+    ["a completed run as the running one", xhsFallbackStatus({ running: { ...xhsFallbackRun(), items: 1, remaining: 0 } })],
+    ["more left than taken", xhsFallbackStatus({ running: runningRun({ items: 2, remaining: 3 }) })],
+    ["more taken than the cap", xhsFallbackStatus({ running: runningRun({ item_cap: 3, items: 4 }) })],
+    ["a digest reason as text", xhsFallbackStatus({ last: xhsFallbackRun({ digest_state: "blocked", digest_reason: "Telegram said 400 Bad Request" }) })],
+    ["an item's model input", xhsFallbackStatus({ last: { ...xhsFallbackRun(), input_sha256: "a".repeat(64) } })],
+    ["an unknown trigger", xhsFallbackStatus({ last: xhsFallbackRun({ trigger: "telegram" }) })],
+  ])("refuses a weekly review status with %s", (_label, fallback) => {
+    const value: Record<string, unknown> = { ...status, fallback };
+    if (fallback === undefined) delete value.fallback;
+    expect(() => decodeXhsStatus(value)).toThrowError(ContractDecodeError);
+  });
+
+  it("reads the operator's list on its exact route and refuses a page longer than asked", async () => {
+    const requests: string[] = [];
+    const list = { items: [xhsNeedsDecisionItem("xhs_rec_a"), xhsNeedsDecisionItem("xhs_rec_b")], total: 2 };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      requests.push(String(input));
+      return new Response(JSON.stringify(list), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const client = new CortexControlClient({ fetcher: fetcher as typeof fetch });
+    expect((await client.getXhsNeedsDecision()).total).toBe(2);
+    await expect(client.getXhsNeedsDecision(1)).rejects.toThrow("more rows than requested");
+    expect(requests).toEqual([
+      "/api/cortex/xhs/recommendations?review=needs_operator&limit=100",
+      "/api/cortex/xhs/recommendations?review=needs_operator&limit=1",
+    ]);
+  });
+
+  it("excludes and restores with exact bodies, one key across a retry, and the review the command sets", async () => {
+    const bodies: Array<{ url: string; body: unknown; key: string | null }> = [];
+    const excluded = xhsRecommendation("xhs_rec_blog", { kind: "blog", arxiv_id: null, revision: 3, review: xhsReview("excluded", { method: "operator", reason_code: "operator", reason: "Not about memory." }) });
+    const restored = { ...excluded, revision: 4, review: xhsReview("operator_owned") };
+    const answers: Record<string, unknown> = {
+      "/api/cortex/sources/source_note/recommendations/xhs_rec_blog/exclude": { recommendation: excluded },
+      "/api/cortex/sources/source_note/recommendations/xhs_rec_blog/restore": { recommendation: restored },
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push({ url: String(input), body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get("Idempotency-Key") });
+      return new Response(JSON.stringify(answers[String(input)]), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    let keys = 0;
+    const client = new CortexControlClient({ fetcher: fetcher as typeof fetch, idempotencyKeyFactory: () => `web-xhs-review-000${++keys}` });
+    const excluding = client.prepareExcludeRecommendation("source_note", { id: "xhs_rec_blog", revision: 2 }, "Not about memory.");
+    expect((await excluding.execute()).value.recommendation.review?.state).toBe("excluded");
+    await excluding.execute();
+    const restoring = client.prepareRestoreRecommendation("source_note", { id: "xhs_rec_blog", revision: 3 });
+    expect((await restoring.execute()).value.recommendation.review?.state).toBe("operator_owned");
+    expect(bodies).toEqual([
+      { url: "/api/cortex/sources/source_note/recommendations/xhs_rec_blog/exclude", body: { reason: "Not about memory.", expected_revision: 2 }, key: "web-xhs-review-0001" },
+      { url: "/api/cortex/sources/source_note/recommendations/xhs_rec_blog/exclude", body: { reason: "Not about memory.", expected_revision: 2 }, key: "web-xhs-review-0001" },
+      { url: "/api/cortex/sources/source_note/recommendations/xhs_rec_blog/restore", body: { expected_revision: 3 }, key: "web-xhs-review-0002" },
+    ]);
+    // An answer about another row, or one the command did not produce, is refused.
+    answers["/api/cortex/sources/source_note/recommendations/xhs_rec_paper/exclude"] = { recommendation: excluded };
+    await expect(client.prepareExcludeRecommendation("source_note", { id: "xhs_rec_paper", revision: 0 }, "x").execute()).rejects.toThrow("identity");
+    answers["/api/cortex/sources/source_note/recommendations/xhs_rec_blog/exclude"] = { recommendation: restored };
+    await expect(client.prepareExcludeRecommendation("source_note", { id: "xhs_rec_blog", revision: 2 }, "x").execute()).rejects.toThrow("review does not match");
+    answers["/api/cortex/sources/source_note/recommendations/xhs_rec_blog/restore"] = { recommendation: excluded };
+    await expect(client.prepareRestoreRecommendation("source_note", { id: "xhs_rec_blog", revision: 3 }).execute()).rejects.toThrow("review does not match");
   });
 });

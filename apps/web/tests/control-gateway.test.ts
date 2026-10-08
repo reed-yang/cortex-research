@@ -1489,6 +1489,9 @@ describe("XHS note and blog gateway", () => {
     "sources/source_note/note",
     "sources/source_blog/links",
     "xhs/status",
+    "xhs/recommendations?review=needs_operator",
+    "xhs/recommendations?review=needs_operator&limit=100",
+    "xhs/recommendations?limit=1&review=needs_operator",
   ])("forwards %s unchanged", async (requestPath) => {
     configureControlGateway();
     const upstream = vi.fn(async () => new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }));
@@ -1513,6 +1516,13 @@ describe("XHS note and blog gateway", () => {
     "xhs/bloggers",
     "sources/source_note/recommendations",
     "sources/source_note/images/1",
+    "xhs/recommendations",
+    "xhs/recommendations?review=excluded",
+    "xhs/recommendations?review=needs_operator&review=needs_operator",
+    "xhs/recommendations?review=needs_operator&limit=101",
+    "xhs/recommendations?review=needs_operator&limit=0",
+    "xhs/recommendations?review=needs_operator&note=source_note",
+    "xhs/recommendations/xhs_rec_1",
   ])("refuses %s before Control", async (requestPath) => {
     configureControlGateway();
     const upstream = vi.fn();
@@ -1528,6 +1538,9 @@ describe("XHS note and blog gateway", () => {
     ["a link", ["sources", "source_note", "recommendations", "xhs_rec_1", "link"], { url: "https://example.org/博客/post?x=1", expected_revision: 2 }],
     ["an image retry", ["sources", "source_note", "images", "1", "retry"], { expected_revision: 4 }],
     ["the last image", ["sources", "source_note", "images", "100", "retry"], { expected_revision: 4 }],
+    ["an exclusion", ["sources", "source_note", "recommendations", "xhs_rec_1", "exclude"], { reason: "不是推荐 Not a recommendation", expected_revision: 2 }],
+    ["an exclusion with a 500 code point reason", ["sources", "source_note", "recommendations", "xhs_rec_1", "exclude"], { reason: "📄".repeat(500), expected_revision: 0 }],
+    ["a restore", ["sources", "source_note", "recommendations", "xhs_rec_1", "restore"], { expected_revision: 3 }],
   ])("forwards %s with its exact body and key", async (_label, path, body) => {
     configureControlGateway();
     const upstream = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -1546,7 +1559,19 @@ describe("XHS note and blog gateway", () => {
   const importPath = ["sources", "source_note", "recommendations", "import"];
   const linkPath = ["sources", "source_note", "recommendations", "xhs_rec_1", "link"];
   const retryPath = ["sources", "source_note", "images", "2", "retry"];
+  const excludePath = ["sources", "source_note", "recommendations", "xhs_rec_1", "exclude"];
+  const restorePath = ["sources", "source_note", "recommendations", "xhs_rec_1", "restore"];
   it.each([
+    ["an exclusion without a reason", excludePath, { expected_revision: 0 }],
+    ["an empty reason", excludePath, { reason: "", expected_revision: 0 }],
+    ["a reason of spaces only", excludePath, { reason: "   ", expected_revision: 0 }],
+    ["a reason over 500 code points", excludePath, { reason: "📄".repeat(501), expected_revision: 0 }],
+    ["a reason with a line break", excludePath, { reason: "first\nsecond", expected_revision: 0 }],
+    ["a non-string reason", excludePath, { reason: 7, expected_revision: 0 }],
+    ["an exclusion without a revision", excludePath, { reason: "Not a recommendation" }],
+    ["an exclusion with an extra field", excludePath, { reason: "Not a recommendation", expected_revision: 0, reason_code: "operator" }],
+    ["a restore with a reason", restorePath, { reason: "Back", expected_revision: 0 }],
+    ["a restore with a string revision", restorePath, { expected_revision: "3" }],
     ["an import with no ids", importPath, { recommendation_ids: [], expected_revision: 0 }],
     ["an import of 101 ids", importPath, { recommendation_ids: Array.from({ length: 101 }, (_, i) => `xhs_rec_${i}`), expected_revision: 0 }],
     ["a repeated id", importPath, { recommendation_ids: ["xhs_rec_1", "xhs_rec_1"], expected_revision: 0 }],
@@ -1580,8 +1605,11 @@ describe("XHS note and blog gateway", () => {
     [["sources", "source_note", "images", "101", "retry"]],
     [["sources", "source_note", "images", "01", "retry"]],
     [["sources", "source_note", "recommendations", "xhs_rec_1", "import"]],
+    [["sources", "source_note", "recommendations", "xhs_rec_1", "review"]],
+    [["sources", "source_note", "recommendations", "exclude"]],
     [["sources", "source_note", "note"]],
     [["xhs", "status"]],
+    [["xhs", "recommendations"]],
   ])("does not forward a POST to %j", async (path) => {
     configureControlGateway();
     const upstream = vi.fn();
@@ -1596,7 +1624,10 @@ describe("XHS note and blog gateway", () => {
     const upstream = vi.fn();
     vi.stubGlobal("fetch", upstream);
 
-    for (const path of ["sources/source_note/recommendations/import", "sources/source_note/images/1/retry"]) {
+    for (const path of [
+      "sources/source_note/recommendations/import", "sources/source_note/images/1/retry",
+      "sources/source_note/recommendations/xhs_rec_1/exclude", "sources/source_note/recommendations/xhs_rec_1/restore",
+    ]) {
       expect((await read(path)).status).toBe(404);
     }
     expect(upstream).not.toHaveBeenCalled();

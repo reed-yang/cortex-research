@@ -31,6 +31,8 @@ const GET_ROUTES = [
   new RegExp(`^sources\\/${ID}\\/links$`),
   new RegExp(`^sources\\/${ID}$`),
   /^xhs\/status$/,
+  // The recommendations the weekly review left to the operator, across notes.
+  /^xhs\/recommendations$/,
   /^events$/,
   /^decisions$/,
   /^captures$/,
@@ -80,6 +82,7 @@ const POST_ROUTES = [
   // An image ordinal is 1 to 100, the carousel bound Control stores.
   new RegExp(`^sources\\/${ID}\\/recommendations\\/import$`),
   new RegExp(`^sources\\/${ID}\\/recommendations\\/${ID}\\/link$`),
+  new RegExp(`^sources\\/${ID}\\/recommendations\\/${ID}\\/(?:exclude|restore)$`),
   new RegExp(`^sources\\/${ID}\\/images\\/(?:[1-9][0-9]?|100)\\/retry$`),
 ];
 
@@ -179,6 +182,10 @@ function validQuery(path: string, searchParams: URLSearchParams): boolean {
     return only("after_cursor", "limit") &&
       (!searchParams.has("after_cursor") || (once("after_cursor") && Boolean(cursor?.match(/^[A-Za-z0-9_-]{1,512}$/)))) &&
       (!searchParams.has("limit") || (once("limit") && Boolean(limit?.match(/^\d{1,4}$/))));
+  }
+  // Control answers one review filter, and a page of at most 100 rows.
+  if (path === "xhs/recommendations") {
+    return only("review", "limit") && once("review") && searchParams.get("review") === "needs_operator" && boundedLimit(100);
   }
   if (path === "captures") {
     const state = searchParams.get("state");
@@ -293,6 +300,22 @@ function hasExactRecommendationLinkBody(body: string): boolean {
     isRevision(decoded.expected_revision);
 }
 
+// An exclusion carries the operator's reason: 1 to 500 code points once
+// trimmed, Control's bound, on one line; Control trims and checks it again.
+function hasExactRecommendationExcludeBody(body: string): boolean {
+  const decoded = exactObjectBody(body, ["reason", "expected_revision"]);
+  if (!decoded || typeof decoded.reason !== "string") return false;
+  const length = [...decoded.reason.trim()].length;
+  return length >= 1 && length <= 500 && !/[\u0000-\u001f\u007f]/.test(decoded.reason) &&
+    isRevision(decoded.expected_revision);
+}
+
+// A restore carries the recommendation revision alone.
+function hasExactRecommendationRestoreBody(body: string): boolean {
+  const decoded = exactObjectBody(body, ["expected_revision"]);
+  return decoded !== null && isRevision(decoded.expected_revision);
+}
+
 function hasExactImageRetryBody(body: string): boolean {
   const decoded = exactObjectBody(body, ["expected_revision"]);
   return decoded !== null && isRevision(decoded.expected_revision);
@@ -311,6 +334,8 @@ const EXACT_BODY_ROUTES: Array<[RegExp, (body: string) => boolean, string]> = [
   [new RegExp(`^threads\\/${ID}\\/(?:archive|unarchive)$`), hasExactRevisionBody, "The archive command body is invalid"],
   [new RegExp(`^sources\\/${ID}\\/recommendations\\/import$`), hasExactRecommendationImportBody, "The import command body is invalid"],
   [new RegExp(`^sources\\/${ID}\\/recommendations\\/${ID}\\/link$`), hasExactRecommendationLinkBody, "The link command body is invalid"],
+  [new RegExp(`^sources\\/${ID}\\/recommendations\\/${ID}\\/exclude$`), hasExactRecommendationExcludeBody, "The exclude command body is invalid"],
+  [new RegExp(`^sources\\/${ID}\\/recommendations\\/${ID}\\/restore$`), hasExactRecommendationRestoreBody, "The restore command body is invalid"],
   [new RegExp(`^sources\\/${ID}\\/images\\/(?:[1-9][0-9]?|100)\\/retry$`), hasExactImageRetryBody, "The image retry body is invalid"],
 ];
 
