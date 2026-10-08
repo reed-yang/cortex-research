@@ -3578,6 +3578,17 @@ class XhsStore:
                 "next_start_at": next_start,
             }
 
+    def xhs_needs_operator_count(self) -> int:
+        """Unimported recommendations whose review leaves them to the operator."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS count FROM xhs_recommendation_reviews v
+                   JOIN xhs_recommendations r ON r.id = v.recommendation_id
+                   WHERE v.state = 'needs_operator' AND r.import_state IN ('none', 'failed')"""
+            ).fetchone()
+            return int(row["count"])
+
     def _xhs_fallback_item(self, conn: sqlite3.Connection, item_id: str) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM xhs_fallback_items WHERE id = ?", (item_id,)).fetchone()
         if row is None:
@@ -3631,10 +3642,15 @@ class XhsStore:
 
     def _xhs_fallback_current(self, conn: sqlite3.Connection, item: Mapping[str, Any]) -> bool:
         """Whether the item's recommendation is still at the revision the run
-        selected and still one a run may take."""
+        selected, still one a run may take, and its model input unchanged
+        (a caption, note title or cited transcription moves no revision)."""
 
         rows = self._xhs_fallback_candidates(conn, str(item["recommendation_id"]))
-        return bool(rows) and int(rows[0]["revision"]) == int(item["expected_revision"])
+        return (
+            bool(rows)
+            and int(rows[0]["revision"]) == int(item["expected_revision"])
+            and self._xhs_fallback_digest(conn, rows[0]) == item["input_sha256"]
+        )
 
     def _xhs_fallback_context(
         self, conn: sqlite3.Connection, item: Mapping[str, Any]
@@ -3792,23 +3808,34 @@ class XhsStore:
         expected_revision: int,
         not_before: str | None = None,
         refund_day: str | None = None,
+        delay_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Return a leased stage that never reached its provider.
 
         A deciding item goes back to pending, with its reserved call refunded
         to `refund_day` when one was reserved; a verifying item waits again
-        without spending an attempt. It is due at `not_before`, or at once.
+        without spending an attempt. It is due at `not_before`, after
+        `delay_seconds`, or at once.
         """
 
+        if delay_seconds is not None and (
+            type(delay_seconds) is not int or not 1 <= delay_seconds <= 86_400
+        ):
+            raise ValueError("delay_seconds must be between 1 and 86400")
+        if delay_seconds is not None and not_before is not None:
+            raise ValueError("name not_before or delay_seconds, not both")
         with self._transaction() as conn:
             item = self._xhs_fallback_leased(
                 conn, item_id, expected_revision, {"deciding", "verifying"}
             )
-            next_attempt_at = (
-                self._registry_now()
-                if not_before is None
-                else self._required_text(not_before, "not_before", maximum=64)
-            )
+            if delay_seconds is not None:
+                next_attempt_at = self._format_registry_time(
+                    self._utc_now() + timedelta(seconds=delay_seconds)
+                )
+            elif not_before is None:
+                next_attempt_at = self._registry_now()
+            else:
+                next_attempt_at = self._required_text(not_before, "not_before", maximum=64)
             if item["state"] == "verifying":
                 return self._xhs_fallback_update(
                     conn, item, lease_until=None, next_attempt_at=next_attempt_at,

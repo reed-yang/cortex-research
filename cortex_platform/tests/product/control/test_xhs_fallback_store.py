@@ -607,6 +607,48 @@ def test_apply_finds_a_changed_recommendation_stale_and_changes_nothing(
     assert finished["summary"]["stale"] == 1 and finished["digest_state"] == "suppressed"
 
 
+def test_a_changed_input_without_a_new_revision_is_stale_before_its_call(
+    store: ControlStore,
+) -> None:
+    _saved(store)
+    blog = _rec(store, "blog:a", "blog", "A blog")
+    run = _start(store)["run"]
+    # The caption the model would read changed; the recommendation did not.
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            "UPDATE xhs_notes SET caption = 'Another caption.' WHERE note_id = ?", (NOTE,)
+        )
+    assert store.get_xhs_recommendation(blog["id"])["revision"] == blog["revision"]
+    assert store.claim_xhs_fallback_item(lease_seconds=LEASE) is None
+    (item,) = store.list_xhs_fallback_items(run["id"])
+    assert (item["state"], item["call_state"]) == ("stale", "not_started")
+    assert store.xhs_usage()["gpt"] == 0
+    assert store.get_xhs_fallback_run(run["id"])["summary"]["stale"] == 1
+
+
+def test_a_release_may_wait_a_given_delay(store: ControlStore, clock: MovableClock) -> None:
+    _saved(store)
+    _rec(store, "blog:a", "blog", "A blog")
+    _start(store)
+    claimed = store.claim_xhs_fallback_item(lease_seconds=LEASE)
+    with pytest.raises(ValueError):
+        store.release_xhs_fallback_item(
+            claimed["id"], expected_revision=claimed["revision"], delay_seconds=0
+        )
+    with pytest.raises(ValueError):
+        store.release_xhs_fallback_item(
+            claimed["id"], expected_revision=claimed["revision"], delay_seconds=60,
+            not_before="2026-09-01T13:00:00.000000Z",
+        )
+    released = store.release_xhs_fallback_item(
+        claimed["id"], expected_revision=claimed["revision"], delay_seconds=3_600
+    )
+    assert released["next_attempt_at"] == "2026-09-01T13:00:00.000000Z"
+    assert store.claim_xhs_fallback_item(lease_seconds=LEASE) is None
+    clock.advance(3_600)
+    assert store.claim_xhs_fallback_item(lease_seconds=LEASE)["id"] == claimed["id"]
+
+
 def test_an_expired_call_is_never_made_again(store: ControlStore, clock: MovableClock) -> None:
     _saved(store)
     blog = _rec(store, "blog:a", "blog", "A blog")

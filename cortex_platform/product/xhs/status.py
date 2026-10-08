@@ -20,6 +20,20 @@ _BLOGGER_FIELDS = (
     "last_scan_error",
     "last_new_note_at",
 )
+_FALLBACK_RUN_FIELDS = (
+    "id",
+    "state",
+    "trigger",
+    "started_at",
+    "finished_at",
+    "item_cap",
+    "model",
+    "effort",
+    "prompt_version",
+    "summary",
+    "digest_state",
+    "digest_reason",
+)
 
 
 def xhs_refusal(settings: XhsSettings, store: Any) -> str | None:
@@ -57,6 +71,39 @@ def xhs_schedules(store: Any) -> dict[str, dict[str, Any]]:
     return schedules
 
 
+def public_fallback_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    return None if run is None else {name: run.get(name) for name in _FALLBACK_RUN_FIELDS}
+
+
+def xhs_fallback_status(store: Any, settings: XhsSettings) -> dict[str, Any]:
+    """The weekly fallback: its switch, the running and the last run, when the
+    next may start, the backlog it would take, and what waits for the operator.
+
+    `backlog` counts the recommendations a run could still take once the rules
+    applied; an input an earlier run already took is not counted. Read-only.
+    """
+
+    state = store.xhs_fallback_state()
+    running = public_fallback_run(state["running"])
+    if running is not None:
+        items = store.list_xhs_fallback_items(running["id"])
+        running["items"] = len(items)
+        running["remaining"] = sum(
+            1 for item in items if item["state"] in {"pending", "deciding", "verifying"}
+        )
+    selection = store.preview_xhs_fallback_run(item_cap=settings.fallback_weekly_cap)[
+        "selection"
+    ]
+    return {
+        "enabled": settings.fallback_enabled,
+        "running": running,
+        "last": public_fallback_run(state["last"]),
+        "next_start_at": state["next_start_at"],
+        "backlog": selection["eligible"] - selection["already_reviewed"],
+        "needs_operator": store.xhs_needs_operator_count(),
+    }
+
+
 def xhs_status(store: Any, settings: XhsSettings) -> dict[str, Any]:
     usage = store.xhs_usage()
     return {
@@ -73,4 +120,5 @@ def xhs_status(store: Any, settings: XhsSettings) -> dict[str, Any]:
             for provider, cap in sorted(settings.daily_calls.items())
         },
         "last_failures": store.xhs_last_failures(),
+        "fallback": xhs_fallback_status(store, settings),
     }
