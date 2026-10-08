@@ -99,9 +99,9 @@ def store(tmp_path: Path) -> ControlStore:
 # -- the migration ------------------------------------------------------------
 
 
-def test_migration_21_is_the_newest_and_follows_fragments() -> None:
+def test_migration_21_follows_fragments() -> None:
     assert XHS_SOURCES_MIGRATION == IDEA_FRAGMENTS_MIGRATION + 1 == 21
-    assert SCHEMA_VERSION == XHS_SOURCES_MIGRATION == max(MIGRATION_VERSIONS)
+    assert XHS_SOURCES_MIGRATION in MIGRATION_VERSIONS
     assert list(MIGRATION_VERSIONS) == list(range(1, SCHEMA_VERSION + 1))
 
 

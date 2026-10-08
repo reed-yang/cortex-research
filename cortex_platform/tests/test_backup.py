@@ -355,6 +355,9 @@ def test_every_gated_table_arrives_at_exactly_the_version_its_gate_names(
         "source_links": control_schema.XHS_SOURCES_MIGRATION,
         "xhs_tasks": control_schema.XHS_SOURCES_MIGRATION,
         "xhs_usage": control_schema.XHS_SOURCES_MIGRATION,
+        "xhs_recommendation_reviews": control_schema.XHS_FALLBACK_MIGRATION,
+        "xhs_fallback_runs": control_schema.XHS_FALLBACK_MIGRATION,
+        "xhs_fallback_items": control_schema.XHS_FALLBACK_MIGRATION,
     }
     for table, version in spec.table_since_schema_version:
         before = tmp_path / f"before-{table}/control.db"
