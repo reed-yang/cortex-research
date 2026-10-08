@@ -303,6 +303,7 @@ def test_the_child_keeps_the_same_paper_hosts() -> None:
 
     assert xhs_fallback.PAPER_HOSTS == fallback.PAPER_HOSTS
     assert xhs_fallback.ARXIV_ABS_BASE == fallback.ARXIV_ABS_BASE
-    for url in ("https://arxiv.org/pdf/2501.01234", "https://www.openreview.net/x",
+    for url in ("https://arxiv.org/pdf/2501.01234", "https://arxiv.org./abs/2501.01234",
+                "https://www.openreview.net/x",
                 "https://blog.example/a.pdf", "https://blog.example/post"):
         assert xhs_fallback.is_paper_url(url) == fallback.is_paper_url(url)

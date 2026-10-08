@@ -38,7 +38,8 @@ def is_paper_url(url: str) -> bool:
     """Whether a URL is a paper host's page or a PDF."""
 
     split = urlsplit(url)
-    host = (split.hostname or "").lower()
+    # A DNS absolute name (`arxiv.org.`) is the same host.
+    host = (split.hostname or "").lower().rstrip(".")
     return split.path.lower().endswith(".pdf") or any(
         host == name or host.endswith("." + name) for name in PAPER_HOSTS
     )

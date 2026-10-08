@@ -38,6 +38,7 @@ def html(title: str) -> httpx.Response:
     [
         ("https://arxiv.org/abs/2501.01234", True),
         ("https://export.arxiv.org/pdf/2501.01234", True),
+        ("https://arxiv.org./abs/2501.01234", True),
         ("https://openreview.net/forum?id=x", True),
         ("https://doi.org/10.1/x", True),
         ("https://aclanthology.org/2024.acl-long.1/", True),
