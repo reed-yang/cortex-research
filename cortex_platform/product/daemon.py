@@ -24,6 +24,7 @@ from .config import (
     load_config,
     telegram_allowed_user_ids,
     telegram_mode,
+    web_settings,
     xhs_settings,
 )
 from .transports.bridge import InboundTurnBridge
@@ -625,6 +626,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # drain's "I still owe a message" and the poller's "how
                     # long may I park" are one decision and not two.
                     serializer=worker_rpc.serializer,
+                    # The weekly XHS digest links to the Web Inbox under this
+                    # origin and nowhere else.
+                    web_origin=web_settings(product_config).public_origin,
                 ),
             )
         # ⟦P8⟧ The bridge the poller's sink is bound to is the bridge the API

@@ -2374,7 +2374,8 @@ class XhsStore:
             ).fetchone()
             if row is None:
                 raise NotFound("xhs recommendation", recommendation_id)
-            recommendation = self._xhs_recommendation(conn, recommendation_id)
+            # The whole view, so a revision conflict answers with the review too.
+            recommendation = self._xhs_recommendation_view(conn, recommendation_id)
             self._expect_revision(recommendation, expected_revision)
             if recommendation["kind"] != "blog":
                 raise InvalidTransition("xhs_recommendation_not_linkable", "operator_set")
@@ -3142,7 +3143,8 @@ class XhsStore:
         ).fetchone()
         if row is None:
             raise NotFound("xhs recommendation", recommendation_id)
-        recommendation = self._xhs_recommendation(conn, recommendation_id)
+        # The whole view, so a revision conflict answers with the review too.
+        recommendation = self._xhs_recommendation_view(conn, recommendation_id)
         self._expect_revision(recommendation, expected_revision)
         if recommendation["import_state"] in {"staged", "importing", "imported"}:
             raise InvalidTransition(str(recommendation["import_state"]), "reviewed")
@@ -4104,6 +4106,111 @@ class XhsStore:
             conn, "xhs_fallback_run", run_id, "xhs.fallback.completed",
             {"summary": summary, "digest_state": digest_state},
         )
+
+    # -- the weekly fallback: the Telegram digest and the operator's list -------------
+
+    def pending_xhs_fallback_digests(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Completed runs whose digest is still owed, oldest first."""
+
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id FROM xhs_fallback_runs WHERE digest_state = 'pending'
+                   ORDER BY finished_at, id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            return [self._xhs_fallback_run(conn, str(row["id"])) for row in rows]
+
+    def xhs_fallback_digest_items(self, run_id: str) -> dict[str, Any]:
+        """What one run's digest says: how many of the items it left to the
+        operator still wait, and the first titles in run order.
+
+        An item the operator has imported, excluded or restored since is not
+        counted, so a digest sent late does not name work already done.
+        """
+
+        with self._connect() as conn:
+            self._xhs_fallback_run(conn, run_id)
+            rows = conn.execute(
+                """SELECT r.title FROM xhs_fallback_items i
+                   JOIN xhs_recommendations r ON r.id = i.recommendation_id
+                   JOIN xhs_recommendation_reviews v ON v.recommendation_id = r.id
+                   WHERE i.run_id = ? AND i.applied = 'needs_operator'
+                     AND v.state = 'needs_operator'
+                     AND r.import_state IN ('none', 'failed')
+                   ORDER BY i.ordinal""",
+                (run_id,),
+            ).fetchall()
+        return {
+            "count": len(rows),
+            "titles": [str(row["title"]) for row in rows[: fallback.DIGEST_TITLES]],
+        }
+
+    def set_xhs_fallback_digest(
+        self, run_id: str, *, state: str, reason: str | None = None
+    ) -> dict[str, Any]:
+        """Record what became of a pending digest.
+
+        `pending` keeps it owed with the reason it waits (or None); `sent`,
+        `suppressed` and `blocked` are final and audited. Only a pending
+        digest changes, and an unchanged one writes nothing.
+        """
+
+        if state == "pending":
+            valid = reason is None or reason in fallback.DIGEST_PENDING_REASONS
+        elif state == "blocked":
+            valid = reason in fallback.DIGEST_BLOCKED_REASONS
+        else:
+            valid = state in {"sent", "suppressed"} and reason is None
+        if not valid:
+            raise ValueError("xhs fallback digest state is unsupported")
+        with self._transaction() as conn:
+            run = self._xhs_fallback_run(conn, run_id)
+            if run["digest_state"] != "pending":
+                raise InvalidTransition(str(run["digest_state"]), state)
+            if state == "pending" and run["digest_reason"] == reason:
+                return run
+            updated = self._xhs_fenced_update(
+                conn,
+                table="xhs_fallback_runs",
+                where={"id": run_id},
+                expected_revision=int(run["revision"]),
+                values={"digest_state": state, "digest_reason": reason},
+                current=lambda: self._xhs_fallback_run(conn, run_id),
+            )
+            if state != "pending":
+                self._audit(
+                    conn, "xhs_fallback_run", run_id, "xhs.fallback.digest",
+                    {"digest_state": state, "digest_reason": reason},
+                )
+            return updated
+
+    def list_xhs_needs_operator(self, *, limit: int) -> dict[str, Any]:
+        """Unimported recommendations whose review leaves them to the operator,
+        newest review first, each with its note; and how many there are.
+
+        `total` counts the same rows as `xhs_needs_operator_count`.
+        """
+
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        where = """FROM xhs_recommendation_reviews v
+                   JOIN xhs_recommendations r ON r.id = v.recommendation_id
+                   JOIN xhs_notes n ON n.note_id = r.note_id
+                   WHERE v.state = 'needs_operator'
+                     AND r.import_state IN ('none', 'failed')"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT n.source_id AS note_source_id, n.title AS note_title,
+                           r.id AS recommendation_id, r.kind, r.title,
+                           v.reason_code, v.reason, v.updated_at
+                    {where}
+                    ORDER BY v.updated_at DESC, r.id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            total = conn.execute(f"SELECT COUNT(*) AS count {where}").fetchone()
+        return {"items": [self._row(row) for row in rows], "total": int(total["count"])}
 
     # -- shared -----------------------------------------------------------------
 

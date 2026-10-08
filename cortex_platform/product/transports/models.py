@@ -22,6 +22,12 @@ MAX_MEDIA_ITEMS = 10
 #: here rather than in either of them; no run event id can carry it.
 COMMAND_REPLY_PREFIX = "cmd:"
 
+#: The namespace of the weekly XHS fallback's digest: `xhs-fallback:<run_id>`.
+#: Like a command reply it has no run event. The fallback run row says that a
+#: digest is owed and the ledger says what became of it, so the drain owns
+#: these rows in its digest pass rather than in the generic resume.
+XHS_DIGEST_PREFIX = "xhs-fallback:"
+
 
 class TransportProblem(Exception):
     """A stable transport error that never carries a raw provider exception."""

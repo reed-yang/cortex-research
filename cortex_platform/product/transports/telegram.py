@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import threading
+import unicodedata
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -36,9 +37,11 @@ from ..control import (
     transport_delivery_projection_hash,
 )
 from ..redaction import redact
+from ..xhs.fallback import DIGEST_TITLE_CHARACTERS, DIGEST_TITLES
 from .hermes import HermesTelegramClient, _HermesTransportRPC
 from .models import (
     COMMAND_REPLY_PREFIX,
+    XHS_DIGEST_PREFIX,
     AdapterResult,
     DeliveryResult,
     OutboundMessage,
@@ -698,7 +701,7 @@ class TelegramAdapter:
         delivery_key: TransportDeliveryKey,
         destination: TelegramDestination,
     ) -> DeliveryResult:
-        """Send one frozen command reply the ledger still owes the operator.
+        """Send one frozen command reply (or XHS digest) the ledger still owes.
 
         Nothing is re-derived. The claim carries Control's own frozen
         projection, so a restart mid-delivery resends the exact bytes -- and
@@ -770,6 +773,123 @@ class TelegramAdapter:
             state.release(claim=claim, proof="rpc_not_started")
         except Exception:  # noqa: BLE001 - the lease expires on its own
             pass
+
+    # -- the weekly XHS fallback digest -----------------------------------
+
+    def xhs_digest_recipient(self) -> tuple[TelegramDestination, Mapping[str, Any]]:
+        """The one operator a fallback digest may go to, with its binding.
+
+        That is an allowlisted user whose private chat (its id is the user's)
+        is bound at the root. None is `recipient_unavailable` and more than one
+        `recipient_ambiguous`: a digest is never broadcast, and a group or a
+        topic is never its destination.
+        """
+
+        bound: list[tuple[TelegramDestination, Mapping[str, Any]]] = []
+        for user_id in sorted(self.config.allowed_user_ids):
+            binding = self._store.resolve_transport(
+                transport=TRANSPORT,
+                external_scope=self._scope(user_id, None).canonical(),
+            )
+            if binding is not None:
+                bound.append(
+                    (TelegramDestination(chat_id=user_id, topic_id=None), binding)
+                )
+        if not bound:
+            raise TransportProblem("recipient_unavailable")
+        if len(bound) > 1:
+            raise TransportProblem("recipient_ambiguous")
+        return bound[0]
+
+    def deliver_xhs_digest(
+        self,
+        *,
+        run_id: str,
+        count: int,
+        titles: tuple[str, ...] | list[str],
+        web_origin: str,
+    ) -> DeliveryResult:
+        """Freeze one fallback run's digest for its recipient, then send it.
+
+        One chunk, no buttons and no capability: the only link is the Web
+        Inbox under the configured public origin. The text is frozen before
+        any send, so a restart sends the same bytes; an earlier freeze of the
+        same digest wins over this one, as it does for a command reply. The
+        caller has checked that this digest was frozen for no other recipient.
+        """
+
+        if self.config.mode == "shadow":
+            return DeliveryResult(category="shadow", delivered=False)
+        state = self._chunk_state
+        client = self._chunk_client
+        if state is None or client is None:
+            return DeliveryResult(category="delivery_unavailable", delivered=False)
+        event_id = f"{XHS_DIGEST_PREFIX}{run_id}"
+        try:
+            destination, binding = self.xhs_digest_recipient()
+            try:
+                capability_digest = client.capability_binding_digest()
+            except Exception:  # noqa: BLE001 - capability detail stays private.
+                return DeliveryResult(
+                    category="transport_unavailable", delivered=False, retryable=True
+                )
+            text = _xhs_digest_text(count, titles, web_origin)
+            projection, targets = self._build_command_reply_projection(
+                event_id=event_id,
+                text=text,
+                binding=binding,
+                destination=destination,
+                capability_digest=capability_digest,
+                prepared=(),
+            )
+            if len(projection.chunks) != 1:
+                raise RuntimeError("an XHS digest is one chunk")
+            request_hash = self._command_reply_request_hash(
+                event_id=event_id,
+                text=text,
+                binding=binding,
+                destination=destination,
+                capability_digest=capability_digest,
+                opaque_targets=targets,
+            )
+            try:
+                state.freeze(
+                    projection=projection,
+                    opaque_targets=targets,
+                    request_hash=request_hash,
+                )
+            except IdempotencyConflict:
+                _log.info("the XHS digest of this run was already frozen")
+            except InvalidTransition as exc:
+                if exc.source not in {"projection_conflict", "projection_drift"}:
+                    raise
+                _log.info("the XHS digest of this run was already frozen")
+        except TransportProblem as exc:
+            return DeliveryResult(
+                category=exc.category,
+                delivered=False,
+                retryable=exc.retryable,
+                retry_after_ms=exc.retry_after_ms,
+            )
+        except ControlStoreError as exc:
+            return DeliveryResult(
+                category=exc.category,
+                delivered=False,
+                retryable=bool(exc.retryable),
+            )
+        except Exception:  # noqa: BLE001 - never leak a provider detail
+            return DeliveryResult(
+                category="projection_failure", delivered=False, retryable=False
+            )
+        return self.deliver_command_reply(
+            delivery_key=TransportDeliveryKey(
+                transport=TRANSPORT,
+                destination_digest=str(binding["external_scope"]),
+                event_id=event_id,
+                projection_version=PROJECTION_VERSION,
+            ),
+            destination=destination,
+        )
 
     def deliver_event(
         self,
@@ -2254,6 +2374,47 @@ def _prepared_target_registration(
             expires_at=target.expires_at,
         ),
     )
+
+
+def _xhs_digest_title(value: object) -> str:
+    """One recommendation title as a digest names it: redacted as any provider
+    text is, without control characters, and at most 60 characters long."""
+
+    title = unicodedata.normalize("NFC", sanitize_text(value, maximum=1_000))
+    title = "".join(char for char in title if unicodedata.category(char) != "Cc")
+    if len(title) > DIGEST_TITLE_CHARACTERS:
+        title = title[: DIGEST_TITLE_CHARACTERS - 1].rstrip() + "…"
+    return title
+
+
+def _xhs_digest_text(
+    count: int, titles: tuple[str, ...] | list[str], web_origin: str
+) -> str:
+    """The digest's plain text; `chunk_markdown_v2` escapes all of it.
+
+    The link is the Web Inbox under the configured public origin and nothing
+    else: no recommendation URL, no token, no request header.
+    """
+
+    if type(count) is not int or count < 1:
+        raise ValueError("an XHS digest names at least one item")
+    parsed = urlsplit(web_origin)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or web_origin != f"https://{parsed.hostname}"
+    ):
+        raise ValueError("web origin must be https://<hostname>")
+    lines = [
+        f"XHS recommendations: {count} "
+        f"{'needs' if count == 1 else 'need'} your decision."
+    ]
+    for raw in titles[:DIGEST_TITLES]:
+        title = _xhs_digest_title(raw)
+        if title:
+            lines.append(f"• {title}")
+    lines.append(f"Open: {web_origin}/?view=inbox")
+    return "\n".join(lines)
 
 
 def _markdown_link_target(value: str) -> str:

@@ -66,6 +66,21 @@ REASON_CODES = frozenset(
         "operator",
     }
 )
+#: Why a run's Telegram digest still waits; the next transport pass looks again.
+DIGEST_PENDING_REASONS = frozenset(
+    {
+        "transport_disabled",
+        "shadow",
+        "recipient_unavailable",
+        "recipient_ambiguous",
+        "web_origin_missing",
+    }
+)
+#: Why a digest is never sent: its send outcome is unknown or was refused.
+DIGEST_BLOCKED_REASONS = frozenset({"outcome_unknown", "delivery_rejected"})
+#: How many titles a digest names, and their length in characters.
+DIGEST_TITLES = 3
+DIGEST_TITLE_CHARACTERS = 60
 #: The fields a correction may set, in the order a review lists them.
 CORRECTABLE_FIELDS = ("kind", "arxiv_id", "url")
 APPLIED_ACTIONS = ("blog_queued", "paper_corrected", "paper_kept", "excluded", "needs_operator")

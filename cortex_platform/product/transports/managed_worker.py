@@ -1321,6 +1321,13 @@ class TransportWindowSupervisor:
             # standing (batch D D-3): outside a window there is no outbound
             # work the poller should stay short for.
             self._report_outbound_pending(False)
+            gate_closed = getattr(self._drain, "gate_closed", None)
+            if gate_closed is not None:
+                # An owed XHS digest says why it waits; nothing is sent.
+                try:
+                    gate_closed()
+                except Exception:  # noqa: BLE001 - a status note, not a pass
+                    pass
             return
         try:
             self._drain.drain()  # type: ignore[attr-defined]

@@ -856,3 +856,109 @@ def test_an_exclusion_keeps_the_corrections_a_rule_made(store: ControlStore) -> 
     assert view["review"]["corrected_fields"] == ["kind", "arxiv_id"]
     again = _rec(store, "blog:a", "blog", "A blog")
     assert (again["kind"], again["arxiv_id"]) == ("paper", "2509.00001")
+
+
+def test_a_revision_conflict_answers_with_the_review(store: ControlStore) -> None:
+    source_id = _saved(store)
+    blog = _rec(store, "blog:a", "blog", "A blog", url="https://blog.example/a")
+    excluded = store.exclude_xhs_recommendation(
+        note_source_id=source_id, recommendation_id=blog["id"], reason="Not a recommendation",
+        expected_revision=blog["revision"], actor_id=ACTOR,
+        idempotency_key="exclude-00000000001",
+    ).value["recommendation"]
+    with pytest.raises(RevisionConflict) as conflict:
+        store.restore_xhs_recommendation(
+            note_source_id=source_id, recommendation_id=blog["id"],
+            expected_revision=blog["revision"], actor_id=ACTOR,
+            idempotency_key="restore-0000000001",
+        )
+    assert conflict.value.current["review"] == excluded["review"]
+    with pytest.raises(RevisionConflict) as conflict:
+        store.set_xhs_recommendation_link(
+            note_source_id=source_id, recommendation_id=blog["id"],
+            url="https://blog.example/b", expected_revision=blog["revision"],
+            actor_id=ACTOR, idempotency_key="link-000000000001",
+        )
+    assert conflict.value.current["review"]["state"] == "excluded"
+
+
+# -- the digest and the operator's list ------------------------------------------------
+
+
+def test_a_digest_changes_only_while_pending(store: ControlStore, clock: MovableClock) -> None:
+    _saved(store)
+    first = _rec(store, "blog:a", "blog", "First", clock=clock)
+    _rec(store, "blog:b", "blog", "Second", clock=clock)
+    run = _start(store)["run"]
+    for _ in range(2):
+        item = _decide(store)
+        store.apply_xhs_fallback_result(
+            item["id"], expected_revision=item["revision"],
+            decision={"action": "needs_operator", "reason_code": "insufficient_evidence"},
+        )
+    assert store.pending_xhs_fallback_digests() == [store.get_xhs_fallback_run(run["id"])]
+    assert store.xhs_fallback_digest_items(run["id"]) == {
+        "count": 2, "titles": ["First", "Second"],
+    }
+    waiting = store.set_xhs_fallback_digest(run["id"], state="pending", reason="shadow")
+    assert (waiting["digest_state"], waiting["digest_reason"]) == ("pending", "shadow")
+    # The same reason writes nothing.
+    assert store.set_xhs_fallback_digest(
+        run["id"], state="pending", reason="shadow"
+    )["revision"] == waiting["revision"]
+    for state, reason in (
+        ("pending", "outcome_unknown"), ("blocked", None), ("blocked", "shadow"),
+        ("sent", "shadow"), ("none", None), ("suppressed", "web_origin_missing"),
+    ):
+        with pytest.raises(ValueError):
+            store.set_xhs_fallback_digest(run["id"], state=state, reason=reason)
+    # An item the operator is importing since is no longer counted.
+    with store._transaction() as conn:
+        conn.execute(
+            "UPDATE xhs_recommendations SET import_state = 'importing' WHERE id = ?",
+            (first["id"],),
+        )
+    assert store.xhs_fallback_digest_items(run["id"]) == {"count": 1, "titles": ["Second"]}
+
+    blocked = store.set_xhs_fallback_digest(
+        run["id"], state="blocked", reason="outcome_unknown"
+    )
+    assert (blocked["digest_state"], blocked["digest_reason"]) == ("blocked", "outcome_unknown")
+    assert _events(store, "xhs.fallback.digest") == ["xhs.fallback.digest"]
+    assert store.pending_xhs_fallback_digests() == []
+    with pytest.raises(InvalidTransition):
+        store.set_xhs_fallback_digest(run["id"], state="sent")
+
+
+def test_the_operator_list_shows_unimported_items_left_to_the_operator(
+    store: ControlStore, clock: MovableClock
+) -> None:
+    source_id = _saved(store)
+    rows = [_rec(store, f"blog:{key}", "blog", f"Blog {key}", clock=clock) for key in "abc"]
+    for row in rows:
+        clock.advance(1)
+        with store._transaction() as conn:
+            store._xhs_set_review(
+                conn, row["id"], state="needs_operator", method="model",
+                reason_code="conflicting_evidence", reason=f"Two pages for {row['title']}.",
+            )
+    with store._transaction() as conn:
+        conn.execute(
+            "UPDATE xhs_recommendations SET import_state = 'importing' WHERE id = ?",
+            (rows[0]["id"],),
+        )
+    listed = store.list_xhs_needs_operator(limit=1)
+    assert listed["total"] == 2 == store.xhs_needs_operator_count()
+    (item,) = listed["items"]
+    assert item | {"updated_at": None} == {
+        "note_source_id": source_id, "note_title": "本周论文 weekly papers",
+        "recommendation_id": rows[2]["id"], "kind": "blog", "title": "Blog c",
+        "reason_code": "conflicting_evidence", "reason": "Two pages for Blog c.",
+        "updated_at": None,
+    }
+    assert [i["recommendation_id"] for i in store.list_xhs_needs_operator(limit=100)["items"]] == [
+        rows[2]["id"], rows[1]["id"],
+    ]
+    for limit in (0, 101, "5"):
+        with pytest.raises(ValueError):
+            store.list_xhs_needs_operator(limit=limit)
