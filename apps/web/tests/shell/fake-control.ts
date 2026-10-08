@@ -47,6 +47,9 @@ export class FakeControl {
   xhsNotes: Record<string, Row> = {};
   sourceLinks: Record<string, { recommended_in: Row[]; recommends: Row[] }> = {};
   xhsStatus: Row = xhsStatusProjection();
+  // The rows the weekly review left to the operator, newest first; none unless
+  // a test adds them.
+  xhsNeedsDecision: Row[] = [];
   research: Record<string, Row> = {};
   // R1c: research items hold their detail fields here; the list route answers
   // with the catalog fields only, exactly as the contract says.
@@ -312,6 +315,11 @@ export class FakeControl {
       return list(this.sources.filter((s) => !kind || s.source_kind === kind));
     }
     if (path === "xhs/status") return this.json(this.xhsStatus);
+    if (path === "xhs/recommendations") {
+      if (params.get("review") !== "needs_operator") return this.problem(400, "invalid_request");
+      const limit = Number(params.get("limit") ?? "100");
+      return this.json({ items: this.xhsNeedsDecision.slice(0, limit), total: this.xhsNeedsDecision.length });
+    }
     m = path.match(/^sources\/([^/]+)\/note$/);
     if (m) {
       const note = this.xhsNotes[m[1]];
@@ -440,6 +448,28 @@ export class FakeControl {
       // As in Control, a changed link moves the note's revision.
       const note = this.xhsNotes[m[1]]!;
       note.revision = (note.revision as number) + 1;
+      return this.json({ recommendation });
+    }
+    // The operator's own review, as Control records it: an exclusion keeps the
+    // row with the reason, a restore makes it the operator's without one. Only
+    // the recommendation's revision moves, and a row on its way into the
+    // library is refused.
+    m = path.match(/^sources\/([^/]+)\/recommendations\/([^/]+)\/(exclude|restore)$/);
+    if (m) {
+      const recommendation = ((this.xhsNotes[m[1]]?.recommendations as Row[] | undefined) ?? []).find((r) => r.id === m![2]);
+      if (!recommendation) return this.problem(404, "not_found");
+      if (body.expected_revision !== recommendation.revision) return this.problem(409, "revision_conflict", recommendation);
+      const review = recommendation.review as Row | null;
+      const excluding = m[3] === "exclude";
+      if (!["none", "failed"].includes(String(recommendation.import_state)) || (excluding ? review?.state === "excluded" : review?.state !== "excluded")) {
+        return this.problem(409, "invalid_transition");
+      }
+      Object.assign(recommendation, {
+        review: excluding
+          ? { state: "excluded", method: "operator", reason_code: "operator", reason: String(body.reason).trim(), corrected_fields: [], updated_at: now }
+          : { state: "operator_owned", method: "operator", reason_code: null, reason: null, corrected_fields: [], updated_at: now },
+        revision: (recommendation.revision as number) + 1, updated_at: now,
+      });
       return this.json({ recommendation });
     }
     m = path.match(/^sources\/([^/]+)\/images\/([0-9]+)\/retry$/);

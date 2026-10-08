@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BANNED_WORDS, copy, decisionKindLabel, problemSentence, runStateLabel } from "../../app/shell/copy";
 import { Shell } from "../../app/shell/shell";
 import { FakeControl, now } from "./fake-control";
-import { xhsBloggerStatus, xhsStatusProjection, XHS_USER_ID } from "./xhs-fixtures";
+import {
+  xhsBloggerStatus, xhsFallbackRun, xhsFallbackStatus, xhsNeedsDecisionItem, xhsRecommendation, xhsReview, xhsStatusProjection, XHS_USER_ID,
+} from "./xhs-fixtures";
 
 afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
 
@@ -77,10 +79,30 @@ function seeded(): FakeControl {
   control.link("source_0a1e", "source_11aabbcc", null);
   control.sourceContent("source_b10b", "full_text", "# Notes on synthetic retrieval\n\nThe article body.\n");
   control.sourceContent("source_0a1e", "full_text", "# Transcription\n\n## Image 1\n\n![Image 1](assets/1-000000000001.png)\n\n第一张图 Synthetic Memory Networks\n");
+  // Each review a row can show -- corrected by a rule, excluded as a
+  // duplicate, left to the operator -- and the same row in the Inbox list.
+  const blog = { kind: "blog", arxiv_id: null, url_state: "not_found" };
+  Object.assign(control.xhsNotes.source_0a1e!, {
+    recommendations: [
+      xhsRecommendation("xhs_rec_paper", { review: xhsReview("resolved_paper", { method: "rule", reason_code: "arxiv_link", reason: null, corrected_fields: ["kind", "arxiv_id"] }) }),
+      xhsRecommendation("xhs_rec_duplicate", { ...blog, title: "A duplicate post", review: xhsReview("excluded", { method: "rule", reason_code: "duplicate", reason: null }) }),
+      xhsRecommendation("xhs_rec_undecided", { ...blog, title: "An undecided post", review: xhsReview("needs_operator", { reason_code: "outcome_unknown", reason: null }) }),
+      xhsRecommendation("xhs_rec_off_arxiv", { title: "A workshop paper", arxiv_id: null, review: xhsReview("resolved_paper", { reason_code: "not_on_arxiv", reason: null }) }),
+    ],
+  });
+  control.xhsNeedsDecision = [
+    xhsNeedsDecisionItem("xhs_rec_undecided", { note_source_id: "source_0a1e", note_title: "Weekly reading list", title: "An undecided post", reason_code: "outcome_unknown", reason: null }),
+    xhsNeedsDecisionItem("xhs_rec_elsewhere", { note_source_id: "source_0a1e", note_title: "" }),
+  ];
   // Each scan outcome, and a blogger with no name, whose 24-hex id may only
   // appear inside a disclosure.
+  // The weekly review's line, with a summary Telegram could not take yet.
   control.xhsStatus = xhsStatusProjection({
     enabled: true, enabled_in_config: true, refusal: null,
+    fallback: xhsFallbackStatus({
+      enabled: true, next_start_at: "2026-09-13T12:00:00Z", needs_operator: 2,
+      last: xhsFallbackRun({ digest_state: "pending", digest_reason: "recipient_ambiguous" }),
+    }),
     bloggers: [
       xhsBloggerStatus(XHS_USER_ID, "Synthetic Curator", { last_scan_at: now, last_scan_outcome: "ok" }),
       xhsBloggerStatus("00000000000000000000b0b2", "Quiet curator", { last_scan_at: now, last_scan_outcome: "no_new_notes" }),
@@ -162,6 +184,10 @@ describe("shell copy audit", () => {
       return node!;
     });
     expect(idea.textContent).toBe(VERBATIM_IDEA);
+    // The XHS rows the weekly review left to the operator: their reasons and
+    // notes in words, and the note's identity only behind Open.
+    await screen.findByRole("region", { name: copy.inbox.xhsTitle });
+    check("inbox XHS recommendations");
 
     // The Library reader around a stored copy: its view controls and the
     // sentence that names a figure the copy does not hold.
@@ -189,9 +215,11 @@ describe("shell copy audit", () => {
     await screen.findByRole("region", { name: copy.xhs.failedImages });
     check("xhs note record");
 
-    // The XHS line names each blogger's last scan in words.
+    // The XHS line names each blogger's last scan in words, and the weekly
+    // review's last run and why its summary waits.
     await open("status");
     await screen.findByText(/last scan failed \(outcome unknown\)/);
+    await screen.findByText(/Telegram summary waiting \(more than one Telegram recipient\)/);
     check("status XHS line");
 
     // The dossier too: it is the one screen that holds an item's original

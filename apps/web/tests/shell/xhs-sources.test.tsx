@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { copy } from "../../app/shell/copy";
 import { Shell } from "../../app/shell/shell";
 import { FakeControl } from "./fake-control";
-import { xhsBloggerStatus, xhsImage, xhsRecommendation, xhsStatusProjection, XHS_NOTE_ID, XHS_USER_ID } from "./xhs-fixtures";
+import {
+  xhsBloggerStatus, xhsFallbackRun, xhsFallbackStatus, xhsImage, xhsRecommendation, xhsReview, xhsStatusProjection, XHS_NOTE_ID, XHS_USER_ID,
+} from "./xhs-fixtures";
 
 afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
 
@@ -410,6 +412,121 @@ describe("XHS note record", () => {
     await waitFor(() => expect(failedImages.querySelector("[data-failed-image='3'] [data-retry-outcome]")?.getAttribute("data-retry-outcome")).toBe("error"));
     expect(failedImages.querySelector("[data-failed-image='3'] [data-retry-outcome]")?.textContent).toBe("Not retried. Someone else changed this first. It has been refreshed; try again.");
   });
+
+  // Every review a row can carry, from the rules, the weekly review and the
+  // operator, beside a row nobody reviewed.
+  function reviewed(control: FakeControl) {
+    const blog = { kind: "blog", arxiv_id: null, url_state: "not_found" };
+    Object.assign(control.xhsNotes.source_note!, {
+      recommendations: [
+        // With its link, only the exclusion keeps this blog from import.
+        xhsRecommendation("xhs_rec_excluded", {
+          ...blog, title: "An excluded blog", url: "https://blog.example.org/excluded", url_state: "auto_matched",
+          review: xhsReview("excluded", { method: "operator", reason_code: "operator", reason: "Not about memory." }),
+        }),
+        xhsRecommendation("xhs_rec_duplicate", { ...blog, title: "A duplicate", review: xhsReview("excluded", { method: "rule", reason_code: "duplicate", reason: null }) }),
+        xhsRecommendation("xhs_rec_converted", {
+          title: "A converted paper", arxiv_id: "2405.00005", url: "https://arxiv.org/abs/2405.00005", url_state: "from_text",
+          review: xhsReview("resolved_paper", { method: "rule", reason_code: "arxiv_link", reason: null, corrected_fields: ["kind", "arxiv_id"] }),
+        }),
+        xhsRecommendation("xhs_rec_off_arxiv", { title: "A workshop paper", arxiv_id: null, review: xhsReview("resolved_paper", { reason_code: "not_on_arxiv", reason: "Only on the workshop site.", corrected_fields: ["kind"] }) }),
+        xhsRecommendation("xhs_rec_found", {
+          ...blog, title: "A found blog", url: "https://blog.example.org/found", url_state: "auto_matched", import_state: "importing",
+          review: xhsReview("resolved_blog", { reason_code: null, reason: "Found on the author's blog.", corrected_fields: ["url"] }),
+        }),
+        xhsRecommendation("xhs_rec_undecided", { ...blog, title: "An undecided blog", review: xhsReview("needs_operator") }),
+        xhsRecommendation("xhs_rec_imported", {
+          title: "An imported paper", arxiv_id: "2403.00003", import_state: "imported", imported_source_id: "source_paper", imported_source_kind: "paper",
+          review: xhsReview("needs_operator", { reason_code: "title_mismatch", reason: null }),
+        }),
+        xhsRecommendation("xhs_rec_restored", { ...blog, title: "A restored blog", review: xhsReview("operator_owned") }),
+        xhsRecommendation("xhs_rec_plain"),
+      ],
+    });
+  }
+
+  it("shows each review on its row, and an excluded row is never offered for import", async () => {
+    const control = seeded();
+    reviewed(control);
+    const region = await openNote(control);
+    const line = (id: string) => row(region, id).querySelector<HTMLElement>("[data-review]");
+
+    const excluded = row(region, "xhs_rec_excluded");
+    expect(line("xhs_rec_excluded")?.getAttribute("data-review")).toBe("excluded");
+    expect(within(excluded).getByText(copy.xhs.reviews.excluded)).toBeTruthy();
+    expect(excluded.querySelector("[data-review-reason]")?.textContent).toBe("Not about memory.");
+    expect(excluded.querySelector("[data-review-reason]")?.hasAttribute("data-verbatim")).toBe(true);
+    expect(within(excluded).getByRole("button", { name: "Restore An excluded blog" }).textContent).toBe(copy.xhs.restore);
+    expect(row(region, "xhs_rec_duplicate").querySelector("[data-review-reason]")?.textContent).toBe(copy.xhs.reviewReasons.duplicate);
+
+    expect(row(region, "xhs_rec_converted").querySelector("[data-review-corrected]")?.textContent).toBe("Corrected automatically: kind, arXiv id");
+    expect(row(region, "xhs_rec_converted").querySelector("[data-review-paper]")?.textContent).toBe(copy.xhs.reviews.importReady);
+    expect(row(region, "xhs_rec_off_arxiv").querySelector("[data-review-corrected]")?.textContent).toBe("Corrected automatically: kind");
+    expect(row(region, "xhs_rec_off_arxiv").querySelector("[data-review-paper]")?.textContent).toBe(copy.xhs.reviews.notOnArxiv);
+    expect(row(region, "xhs_rec_found").querySelector("[data-review-corrected]")?.textContent).toBe("Corrected automatically: link");
+    expect(row(region, "xhs_rec_found").querySelector("[data-review-paper]")).toBeNull();
+
+    const undecided = row(region, "xhs_rec_undecided");
+    expect(within(undecided).getByText(copy.xhs.reviews.needsDecision)).toBeTruthy();
+    expect(undecided.querySelector("[data-review-reason]")?.textContent).toBe("The caption names the post but not where it lives.");
+    // Imported since, the row no longer waits for a decision; a restored row
+    // and a row nobody reviewed say nothing about a review.
+    expect(within(row(region, "xhs_rec_imported")).queryByText(copy.xhs.reviews.needsDecision)).toBeNull();
+    expect(line("xhs_rec_restored")).toBeNull();
+    expect(line("xhs_rec_plain")).toBeNull();
+
+    const selectable = within(region).getAllByRole("checkbox").map((box) => box.closest("[data-recommendation-id]")?.getAttribute("data-recommendation-id"));
+    expect(selectable).toEqual(["xhs_rec_converted", "xhs_rec_plain"]);
+  });
+
+  it("excludes a row with the operator's reason and restores it, each its own command", async () => {
+    const control = seeded();
+    const region = await openNote(control);
+    const paper = row(region, "xhs_rec_paper");
+    await userEvent.click(within(paper).getByRole("button", { name: copy.xhs.evidence }));
+    const submit = within(paper).getByRole("button", { name: copy.xhs.exclude });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.type(within(paper).getByRole("textbox", { name: copy.xhs.excludeLabel }), "  Not about memory  ");
+    await userEvent.click(submit);
+
+    await waitFor(() => expect(paper.querySelector("[data-review-outcome]")?.textContent).toBe(copy.xhs.excludeDone));
+    expect(control.posts.map(({ path, body }) => [path, body])).toEqual([
+      ["sources/source_note/recommendations/xhs_rec_paper/exclude", { reason: "Not about memory", expected_revision: 0 }],
+    ]);
+    expect(paper.querySelector("[data-review-reason]")?.textContent).toBe("Not about memory");
+    expect(within(paper).queryByRole("checkbox")).toBeNull();
+    expect(within(paper).queryByRole("textbox", { name: copy.xhs.excludeLabel })).toBeNull();
+
+    await userEvent.click(within(paper).getByRole("button", { name: "Restore Synthetic Memory Networks" }));
+    await waitFor(() => expect(paper.querySelector("[data-review-outcome]")?.textContent).toBe(copy.xhs.restoreDone));
+    expect(control.posts.at(-1)).toMatchObject({ path: "sources/source_note/recommendations/xhs_rec_paper/restore", body: { expected_revision: 1 } });
+    expect(Object.keys(control.posts.at(-1)!.body)).toEqual(["expected_revision"]);
+    expect(paper.querySelector("[data-review]")).toBeNull();
+    expect(within(paper).getByRole("checkbox", { name: "Select Synthetic Memory Networks" })).toBeTruthy();
+    expect(within(paper).getByRole("textbox", { name: copy.xhs.excludeLabel })).toBeTruthy();
+    // Each command answered with the row, so the note itself was read once.
+    expect(control.gets.filter((path) => path === "sources/source_note/note")).toHaveLength(1);
+  });
+
+  it("offers no exclusion for a row on its way into the library, and shows the newer row after a conflict", async () => {
+    const control = seeded();
+    choices(control);
+    const region = await openNote(control);
+    const done = row(region, "xhs_rec_done");
+    await userEvent.click(within(done).getByRole("button", { name: copy.xhs.evidence }));
+    expect(within(done).queryByRole("textbox", { name: copy.xhs.excludeLabel })).toBeNull();
+
+    const unlinked = row(region, "xhs_rec_unlinked");
+    await userEvent.click(within(unlinked).getByRole("button", { name: copy.xhs.evidence }));
+    const stored = (control.xhsNotes.source_note!.recommendations as Array<Record<string, unknown>>).find((item) => item.id === "xhs_rec_unlinked")!;
+    const newer = { ...stored, revision: 1, review: xhsReview("excluded", { method: "model", reason_code: "not_a_blog", reason: "It is a course page." }) };
+    control.failNext = { path: /\/exclude$/, status: 409, category: "revision_conflict", current: newer };
+    await userEvent.type(within(unlinked).getByRole("textbox", { name: copy.xhs.excludeLabel }), "Not useful");
+    await userEvent.click(within(unlinked).getByRole("button", { name: copy.xhs.exclude }));
+    expect(await within(unlinked).findByText(/^Not excluded\. Someone else changed this first/)).toBeTruthy();
+    expect(unlinked.querySelector("[data-review-reason]")?.textContent).toBe("It is a course page.");
+    expect(within(unlinked).getByRole("button", { name: "Restore An unlinked blog" })).toBeTruthy();
+  });
 });
 
 describe("Status XHS line", () => {
@@ -452,6 +569,43 @@ describe("Status XHS line", () => {
     const section = await status(control);
     expect(await within(section).findByText(sentence)).toBeTruthy();
     expect(within(section).getByText(copy.status.xhs.noBloggers)).toBeTruthy();
+  });
+
+  it.each([
+    ["off with no run", xhsFallbackStatus(), "Weekly review is off."],
+    ["on before the first run", xhsFallbackStatus({ enabled: true, backlog: 21 }), "Weekly review is on. The first run starts when a recommendation is waiting."],
+    [
+      "on after a run whose summary was sent",
+      xhsFallbackStatus({ enabled: true, last: xhsFallbackRun(), next_start_at: "2026-10-11T08:00:00Z", needs_operator: 3 }),
+      "Weekly review is on. Last run Oct 4, 2026, 08:20 UTC: 2 blogs queued, 1 paper corrected, 1 excluded, 3 need your decision; Telegram summary sent. Next run after Oct 11, 2026, 08:00 UTC.",
+    ],
+    [
+      "running",
+      xhsFallbackStatus({
+        enabled: true,
+        running: { ...xhsFallbackRun({ state: "running", finished_at: null, summary: {}, digest_state: "none" }), items: 40, remaining: 12 },
+        last: xhsFallbackRun({ state: "running", finished_at: null, summary: {}, digest_state: "none" }),
+      }),
+      "Weekly review is running: 12 of 40 left.",
+    ],
+    [
+      "on with a summary waiting for Telegram",
+      xhsFallbackStatus({
+        enabled: true, next_start_at: "2026-10-11T08:00:00Z",
+        last: xhsFallbackRun({ summary: { blog_queued: 0, paper_corrected: 0, paper_kept: 2, excluded: 0, needs_operator: 1, stale: 1 }, digest_state: "pending", digest_reason: "shadow" }),
+      }),
+      "Weekly review is on. Last run Oct 4, 2026, 08:20 UTC: 2 not on arXiv, 1 needs your decision, 1 changed meanwhile; Telegram summary waiting (Telegram is in shadow mode). Next run after Oct 11, 2026, 08:00 UTC.",
+    ],
+    [
+      "off after a run whose summary may not have arrived",
+      xhsFallbackStatus({ last: xhsFallbackRun({ summary: { blog_queued: 0, paper_corrected: 0, paper_kept: 0, excluded: 0, needs_operator: 0, stale: 0 }, digest_state: "blocked", digest_reason: "outcome_unknown" }), next_start_at: "2026-10-11T08:00:00Z" }),
+      "Weekly review is off. Last run Oct 4, 2026, 08:20 UTC: nothing changed; Telegram summary not sent (delivery unknown; check the chat).",
+    ],
+  ])("says where the weekly review stands: %s", async (_label, fallback, sentence) => {
+    const control = seeded();
+    control.xhsStatus = xhsStatusProjection({ fallback });
+    const section = await status(control);
+    await waitFor(() => expect(section.querySelector("[data-fallback]")?.textContent).toBe(sentence));
   });
 
   it("says the status could not be read rather than guessing", async () => {

@@ -126,6 +126,13 @@ export const copy = Object.freeze({
     loadingIdeas: "Reading your ideas…",
     ideasUnreadable: "Your ideas could not be read. Try again.",
     noIdeas: "No idea has been saved yet.",
+    // The XHS recommendations the weekly review left to the operator. The
+    // section is shown only when one is waiting or the list could not be read.
+    xhsTitle: "XHS recommendations",
+    xhsIntro: "The weekly review could not decide these. Open the note to import, fix or exclude each one.",
+    xhsItem: "XHS recommendation",
+    xhsUnreadable: "The XHS recommendations waiting for you could not be read.",
+    xhsUntitledNote: "In an untitled note",
   },
   fragment: {
     label: "Idea",
@@ -335,6 +342,38 @@ export const copy = Object.freeze({
     retry: "Retry",
     retryQueued: "Retry queued; the note is saved again when it finishes.",
     retryNotDone: "Not retried",
+    // A row's review: the weekly review's reading of it, or the operator's.
+    reviews: {
+      excluded: "Excluded",
+      corrected: "Corrected automatically",
+      importReady: "Paper identified — import when ready",
+      notOnArxiv: "Not on arXiv — Cortex imports arXiv papers only",
+      needsDecision: "Needs your decision",
+    },
+    correctedFields: { kind: "kind", arxiv_id: "arXiv id", url: "link" },
+    // Why a row was excluded or left to the operator, when the review itself
+    // gives no sentence of its own.
+    reviewReasons: {
+      arxiv_link: "Its link is an arXiv paper.",
+      duplicate: "Another recommendation in this note is the same paper.",
+      not_on_arxiv: "This paper is not on arXiv.",
+      not_a_blog: "The link is not a blog.",
+      not_a_recommendation: "This is not a recommendation.",
+      insufficient_evidence: "The evidence was not enough to decide.",
+      conflicting_evidence: "The evidence points different ways.",
+      title_mismatch: "The page found does not match the title.",
+      fetch_failed: "The page could not be read.",
+      outcome_unknown: "The automatic review did not report back.",
+      operator: "Excluded by you.",
+    } as Record<string, string | undefined>,
+    exclude: "Exclude",
+    excludeLabel: "Reason to exclude",
+    excludePlaceholder: "Why it does not belong here",
+    excludeDone: "Excluded. It is not imported until you restore it.",
+    excludeNotDone: "Not excluded",
+    restore: "Restore",
+    restoreDone: "Restored. The weekly review leaves it to you from now on.",
+    restoreNotDone: "Not restored",
   },
   // The Library reader's own words around a stored document: Preview, Source
   // and Copy source are the shared document controls' labels.
@@ -433,6 +472,28 @@ export const copy = Object.freeze({
         invalid_response: "unreadable provider answer",
         url_expired: "image link expired",
       } as Record<string, string | undefined>,
+      // The weekly review of unimported recommendations: one line.
+      fallback: {
+        off: "Weekly review is off.",
+        on: "Weekly review is on.",
+        firstRun: "The first run starts when a recommendation is waiting.",
+        nothingChanged: "nothing changed",
+        digest: {
+          pending: "Telegram summary waiting",
+          sent: "Telegram summary sent",
+          suppressed: "no Telegram summary needed",
+          blocked: "Telegram summary not sent",
+        } as Record<string, string | undefined>,
+        digestReasons: {
+          transport_disabled: "Telegram is not running",
+          shadow: "Telegram is in shadow mode",
+          recipient_unavailable: "no Telegram recipient is set up",
+          recipient_ambiguous: "more than one Telegram recipient",
+          web_origin_missing: "the Web address is not configured",
+          outcome_unknown: "delivery unknown; check the chat",
+          delivery_rejected: "Telegram refused it",
+        } as Record<string, string | undefined>,
+      },
     },
   },
   errors: {
@@ -679,6 +740,29 @@ export const label = Object.freeze({
   xhsImage: (ordinal: number) => `Image ${ordinal}`,
   xhsImageFailed: (ordinal: number, step: string, reason: string) => `Image ${ordinal}: ${step} failed (${reason})`,
   retryImage: (ordinal: number) => `Retry image ${ordinal}`,
+  restoreRecommendation: (title: string) => `Restore ${title}`,
+  correctedFields: (fields: string[]) => `${copy.xhs.reviews.corrected}: ${fields.join(", ")}`,
+  // The Inbox's XHS rows: which note each came from, and how many wait beyond
+  // the page shown.
+  inNote: (title: string) => (title ? `In ${title}` : copy.inbox.xhsUntitledNote),
+  xhsWaitingBeyond: (shown: number, total: number) => `Showing ${shown} of ${total}.`,
+  // The weekly review's Status line, in parts.
+  xhsFallbackRunning: (remaining: number, items: number) => `Weekly review is running: ${remaining} of ${items} left.`,
+  xhsFallbackLast: (when: string, counts: string, digest: string | null) => `Last run ${when}: ${counts}${digest ? `; ${digest}` : ""}.`,
+  xhsFallbackNext: (when: string) => `Next run after ${when}.`,
+  xhsFallbackDigest: (state: string, reason: string | null) => (reason ? `${state} (${reason})` : state),
+  xhsFallbackCounts: (counts: Partial<Record<string, number>>) => {
+    const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+    const parts = [
+      counts.blog_queued ? plural(counts.blog_queued, "blog queued", "blogs queued") : null,
+      counts.paper_corrected ? plural(counts.paper_corrected, "paper corrected", "papers corrected") : null,
+      counts.paper_kept ? `${counts.paper_kept} not on arXiv` : null,
+      counts.excluded ? `${counts.excluded} excluded` : null,
+      counts.needs_operator ? plural(counts.needs_operator, "needs your decision", "need your decision") : null,
+      counts.stale ? `${counts.stale} changed meanwhile` : null,
+    ].filter((part) => part !== null);
+    return parts.length ? parts.join(", ") : copy.status.xhs.fallback.nothingChanged;
+  },
   // One followed blogger's last scan, as the Status line says it.
   xhsScan: (name: string, when: string | null, outcome: string | null, failure: string | null) => {
     if (!when || !outcome) return `${name}: ${copy.status.xhs.notScanned}`;
