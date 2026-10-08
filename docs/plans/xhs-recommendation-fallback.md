@@ -50,7 +50,7 @@ No row means never reviewed.
 | `state` | `resolved_blog`, `resolved_paper`, `excluded`, `needs_operator`, `operator_owned` |
 | `method` | `rule`, `model`, `operator` |
 | `reason_code` | nullable; one of the codes below |
-| `reason` | nullable public text, at most 500 characters |
+| `reason` | nullable public text on one line (whitespace runs, newlines included, become one space), at most 500 characters |
 | `corrected_fields` | JSON array, a subset of `kind`, `arxiv_id`, `url` |
 | `duplicate_of` | nullable FK `xhs_recommendations(id)`, same note, not itself |
 | `run_id` | nullable FK `xhs_fallback_runs(id)` |
@@ -114,7 +114,7 @@ applies their result in one transaction per batch, with an audit event.
   another paper of the same note already has is excluded the same way.
 
 While `fallback_enabled` is true, rules run at the start of every `xhs-drain`
-tick (bounded to 100 rows) and when a run starts, so an upgrade alone changes
+tick and when a run starts (each pass bounded to 100 rows), so an upgrade alone changes
 no data. They make no network call and never import.
 
 Correction keeps the recommendation's `id`, `item_key`, `title`, `quote`,

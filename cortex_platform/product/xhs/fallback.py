@@ -163,19 +163,24 @@ def merge_corrected_fields(*groups: Iterable[str]) -> list[str]:
 
 
 def public_reason(value: Any) -> str | None:
-    """A shown reason: None, or 1..500 characters without control characters
-    other than a newline or a tab. Surrounding whitespace is dropped."""
+    """A shown reason: None, or 1..500 characters on one line.
+
+    A newline or a tab is allowed in, and every run of whitespace becomes one
+    space; another control character is refused. One line matters to the
+    API, which redacts per line: a redacted reason is then `[redacted]` as a
+    whole and can never grow past the limit.
+    """
 
     if value is None:
         return None
-    if not isinstance(value, str):
+    if not isinstance(value, str) or any(
+        ord(character) < 32 and character not in "\n\t" for character in value
+    ):
         raise ValueError("reason is invalid")
-    text = value.strip()
+    text = " ".join(value.split())
     if not text:
         return None
-    if len(text) > REASON_MAX or any(
-        ord(character) < 32 and character not in "\n\t" for character in text
-    ):
+    if len(text) > REASON_MAX:
         raise ValueError("reason is invalid")
     return text
 

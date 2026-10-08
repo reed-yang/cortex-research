@@ -2560,8 +2560,13 @@ class XhsStore:
             )
         elif kind in {"resolve", "blog_import"}:
             recommendation = self._xhs_recommendation(conn, str(payload["recommendation_id"]))
+            review = self._xhs_review(conn, str(recommendation["id"]))
             if kind == "resolve":
-                if recommendation["url_state"] != "failed":
+                # An excluded row is not searched again: that would spend a
+                # call and change a row the operator set aside.
+                if recommendation["url_state"] != "failed" or (
+                    review is not None and review["state"] == "excluded"
+                ):
                     return False
                 self._xhs_update_recommendation(
                     conn, str(recommendation["id"]),
@@ -2573,10 +2578,7 @@ class XhsStore:
                 if (
                     recommendation["kind"] != "blog"
                     or recommendation["import_state"] != "failed"
-                    or self._xhs_import_refusal(
-                        recommendation, self._xhs_review(conn, str(recommendation["id"]))
-                    )
-                    is not None
+                    or self._xhs_import_refusal(recommendation, review) is not None
                 ):
                     return False
                 self._xhs_update_recommendation(

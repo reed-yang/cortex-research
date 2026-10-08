@@ -884,25 +884,37 @@ def test_an_exclusion_keeps_the_corrections_a_rule_made(store: ControlStore) -> 
     assert (again["kind"], again["arxiv_id"]) == ("paper", "2509.00001")
 
 
-def test_a_failed_blog_import_retries_only_while_it_may_import(store: ControlStore) -> None:
+def test_a_failed_import_or_search_retries_only_while_the_row_may_take_it(
+    store: ControlStore,
+) -> None:
     source_id = _saved(store)
     retried = _rec(store, "blog:a", "blog", "Retried", url="https://blog.example/a")
     excluded = _rec(store, "blog:b", "blog", "Excluded", url="https://blog.example/b")
     converted = _rec(store, "blog:c", "blog", "Converted", url="https://arxiv.org/abs/2509.00001")
+    searched = _rec(store, "blog:d", "blog", "Searched, then excluded")
     with store._transaction() as conn:
         for row in (retried, excluded, converted):
             store._xhs_update_recommendation(conn, row["id"], expected_revision=0,
                                              import_state="failed")
             store._xhs_create_task(conn, kind="blog_import", subject_key=f"blog:{row['id']}:1",
                                    payload={"recommendation_id": row["id"]})
+        store._xhs_update_recommendation(conn, searched["id"], expected_revision=0,
+                                         url=None, url_state="failed")
+        store._xhs_create_task(conn, kind="resolve", subject_key=f"resolve:{searched['id']}:1",
+                               payload={"recommendation_id": searched["id"]})
         conn.execute("""UPDATE xhs_tasks SET state = 'failed', last_error = 'network'
-                        WHERE kind = 'blog_import'""")
-    after = store.get_xhs_recommendation(excluded["id"])
-    store.exclude_xhs_recommendation(
-        note_source_id=source_id, recommendation_id=excluded["id"], reason="Not wanted",
-        expected_revision=after["revision"], actor_id=ACTOR,
-        idempotency_key="exclude-00000000001",
-    )
+                        WHERE kind IN ('blog_import', 'resolve')""")
+    for row, key in ((excluded, "exclude-00000000001"), (searched, "exclude-00000000002")):
+        after = store.get_xhs_recommendation(row["id"])
+        store.exclude_xhs_recommendation(
+            note_source_id=source_id, recommendation_id=row["id"], reason="Not wanted",
+            expected_revision=after["revision"], actor_id=ACTOR, idempotency_key=key,
+        )
+    # An excluded row's link is not searched again: no call, no change.
+    assert store.retry_failed_xhs_tasks(
+        kinds=["resolve"], actor_id=ACTOR, idempotency_key="retry-resolve-0000001"
+    ).value == {"retried": {"resolve": 0}, "skipped": 1}
+    assert store.get_xhs_recommendation(searched["id"])["url_state"] == "failed"
     # The rule makes the third a paper; its failed blog import stays behind.
     assert store.apply_xhs_fallback_rules() == {"converted": 1, "duplicates": 0}
     result = store.retry_failed_xhs_tasks(

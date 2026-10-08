@@ -235,7 +235,8 @@ importing, and whose link is an arXiv abs, pdf or html page, becomes a paper
 with that arXiv ID; its link is kept. When another paper in the same note
 already has that ID, the blog is excluded as a duplicate instead and stays a
 blog. A link you set yourself is left alone. The rules change at most 100 rows
-per tick, make no network call and import nothing.
+per pass, one pass per tick and one more when a run starts; they make no
+network call and import nothing.
 
 ### The weekly run
 

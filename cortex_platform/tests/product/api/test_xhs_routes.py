@@ -774,7 +774,9 @@ def test_needs_operator_route_lists_what_waits_for_the_operator(
 ) -> None:
     _left_to_operator(store, {
         "Attention Sinks": "Two pages match the title.",
-        "Efficient Streaming": "api_key=abcdef0123456789",
+        # Near the limit and over two lines: kept as one line, so redaction
+        # replaces it whole rather than lengthening one short line.
+        "Efficient Streaming": "x" * 470 + "\napi_key=abcdef0123456789",
     })
     api = _api(store)
     response = get(api, "/api/v1/xhs/recommendations?review=needs_operator")

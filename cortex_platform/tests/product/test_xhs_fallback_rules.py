@@ -124,6 +124,11 @@ def test_a_checked_decision_is_normalized() -> None:
     assert fallback.check_decision({"action": "paper", "arxiv_id": "arXiv:2509.00001v2"}) == {
         "action": "paper", "arxiv_id": "2509.00001", "reason": None,
     }
+    # A reason is one line, so the API's per-line redaction replaces it whole
+    # and never lengthens it past 500 characters.
+    assert fallback.public_reason("x" * 493 + "\n/tmp/x") == "x" * 493 + " /tmp/x"
+    assert fallback.public_reason("Two\tparts,\n\n  one line ") == "Two parts, one line"
+    assert fallback.public_reason(" \n\t ") is None
     assert fallback.merge_corrected_fields(["url"], ("arxiv_id", "kind")) == [
         "kind", "arxiv_id", "url",
     ]
