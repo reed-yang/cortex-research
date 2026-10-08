@@ -331,6 +331,7 @@ export const copy = Object.freeze({
       refused: {
         not_found: "Not imported: this recommendation is no longer on the note.",
         already_imported: "Already imported.",
+        excluded: "Not imported: this recommendation is excluded.",
         not_importable: "Not imported: only papers and blogs can be imported.",
         no_url: "Not imported: this blog has no link yet.",
         no_arxiv_id: "Not imported: this paper has no arXiv id.",

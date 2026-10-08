@@ -1302,6 +1302,8 @@ describe("XHS note, link and status contracts", () => {
         { recommendation_id: "xhs_rec_paper", disposition: "capture_staged", reason: null, capture_id: "capture_1", capture_revision: 0, capture_state: "pending", recommendation: staged },
         { recommendation_id: "xhs_rec_blog", disposition: "blog_import_queued", reason: null, capture_id: null, capture_revision: null, capture_state: null, recommendation: xhsRecommendation("xhs_rec_blog", { kind: "blog", arxiv_id: null, url: "https://blog.example.org/a", url_state: "from_text", import_state: "importing" }) },
         { recommendation_id: "xhs_rec_gone", disposition: "refused", reason: "not_found", capture_id: null, capture_revision: null, capture_state: null, recommendation: null },
+        // Excluded in another tab after this one listed it as importable.
+        { recommendation_id: "xhs_rec_excluded", disposition: "refused", reason: "excluded", capture_id: null, capture_revision: null, capture_state: null, recommendation: xhsRecommendation("xhs_rec_excluded", { kind: "blog", arxiv_id: null, url: "https://blog.example.org/b", url_state: "from_text", import_state: "failed", review: xhsReview("excluded", { method: "operator", reason_code: "operator", reason: "Not about memory." }) }) },
       ],
     };
     expect(decodeXhsImportResult(result)).toEqual(result);
