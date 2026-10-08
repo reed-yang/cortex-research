@@ -101,7 +101,8 @@ No row means never reviewed.
 applies their result in one transaction per batch, with an audit event.
 
 - **arXiv link.** A `blog` that is not imported, staged or importing, has no
-  review row (or one in `resolved_blog`), and whose URL is an arXiv abs, pdf or
+  review row (or one in `resolved_blog`), whose `url_state` is not
+  `operator_set`, and whose URL is an arXiv abs, pdf or
   html URL with a canonical ID (`sources/identity.py`), becomes `kind=paper`
   with that `arxiv_id`. Its URL is kept. Review: `resolved_paper`, method
   `rule`, reason `arxiv_link`, `corrected_fields=["kind","arxiv_id"]`. Not
@@ -141,9 +142,11 @@ rule; there is no force. It also refuses while the plugin refuses
   running `blog_import` task; or `kind='paper'` with `arxiv_id IS NULL` and
   `import_state='none'`;
 - the note is saved;
+- `url_state` is not `operator_set`: a link the operator chose is theirs;
 - no review row, or none in `excluded`, `operator_owned`, `resolved_blog`,
   `resolved_paper`, `needs_operator`;
-- not already an item of an earlier run with the same `input_sha256`.
+- not already an item of an earlier run with the same `input_sha256`, unless
+  that item went stale before its call (`call_state='not_started'`).
 
 Order: blogs first, then papers; then `created_at`, `id`. Take at most
 `min(fallback_weekly_cap, 100)`. The rest waits for the next run.

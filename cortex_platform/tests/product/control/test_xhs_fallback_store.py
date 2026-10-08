@@ -220,10 +220,15 @@ def test_the_rules_leave_importing_and_reviewed_rows_alone(store: ControlStore) 
     importing = _rec(store, "blog:a", "blog", "Importing", url="https://arxiv.org/abs/2509.00004")
     excluded = _rec(store, "blog:b", "blog", "Excluded", url="https://arxiv.org/abs/2509.00005")
     resolved = _rec(store, "blog:c", "blog", "Resolved", url="https://arxiv.org/abs/2509.00006")
+    operator_set = _rec(store, "blog:d", "blog", "Set by the operator")
     with store._transaction() as conn:
         store._xhs_update_recommendation(
             conn, importing["id"], expected_revision=importing["revision"],
             import_state="importing",
+        )
+        store._xhs_update_recommendation(
+            conn, operator_set["id"], expected_revision=operator_set["revision"],
+            url="https://arxiv.org/abs/2509.00007", url_state="operator_set",
         )
         store._xhs_set_review(conn, resolved["id"], state="resolved_blog", method="model",
                               corrected=("url",))
@@ -235,6 +240,8 @@ def test_the_rules_leave_importing_and_reviewed_rows_alone(store: ControlStore) 
     assert store.apply_xhs_fallback_rules() == {"converted": 1, "duplicates": 0}
     assert store.get_xhs_recommendation(importing["id"])["kind"] == "blog"
     assert store.get_xhs_recommendation(excluded["id"])["kind"] == "blog"
+    # A link the operator set is theirs: no rule reinterprets it.
+    assert store.get_xhs_recommendation(operator_set["id"])["kind"] == "blog"
     converted = store.get_xhs_recommendation(resolved["id"])
     assert (converted["kind"], converted["arxiv_id"]) == ("paper", "2509.00006")
     with store._connect() as conn:
@@ -285,7 +292,7 @@ def test_a_run_takes_blogs_then_papers_oldest_first_up_to_the_cap(
     paper_new = _rec(store, "paper:new", "paper", "New paper", clock=clock)
     blog_new = _rec(store, "blog:new", "blog", "New blog", clock=clock)
     # Not taken: other items, papers with an ID, imports in progress, waiting
-    # blog imports, unsaved notes and reviewed rows.
+    # blog imports, unsaved notes, reviewed rows and links the operator set.
     _rec(store, "other:a", "other", "A course", clock=clock)
     _rec(store, "arxiv:2509.00009", "paper", "With ID", arxiv_id="2509.00009", clock=clock)
     importing = _rec(store, "blog:importing", "blog", "Importing", url="https://b.example/i",
@@ -294,8 +301,12 @@ def test_a_run_takes_blogs_then_papers_oldest_first_up_to_the_cap(
                    clock=clock)
     _rec(store, "blog:unsaved", "blog", "Unsaved", note_id=SECOND_NOTE, clock=clock)
     reviewed = _rec(store, "blog:reviewed", "blog", "Reviewed", clock=clock)
+    operator_set = _rec(store, "blog:operator", "blog", "Operator link", clock=clock)
     with store._transaction() as conn:
         store._xhs_update_recommendation(conn, failed["id"], expected_revision=0,
+                                         import_state="failed")
+        store._xhs_update_recommendation(conn, operator_set["id"], expected_revision=0,
+                                         url="https://b.example/o", url_state="operator_set",
                                          import_state="failed")
         store._xhs_update_recommendation(conn, importing["id"], expected_revision=0,
                                          import_state="importing")
@@ -371,7 +382,9 @@ def test_runs_start_one_at_a_time_and_at_most_weekly(
     assert _start(store)["refusal"] is None
     first = store.xhs_fallback_state()["running"]
     assert first is not None
-    assert _start(store)["refusal"] == "running"
+    running = _start(store)
+    # A running run already fixes when the next one may start.
+    assert running["refusal"] == "running" and running["next_start_at"] is not None
     item = _decide(store)
     store.apply_xhs_fallback_result(
         item["id"], expected_revision=item["revision"],
@@ -383,7 +396,7 @@ def test_runs_start_one_at_a_time_and_at_most_weekly(
     another = _rec(store, "blog:b", "blog", "Another blog")
     refused = _start(store)
     assert refused["refusal"] == "too_soon" and refused["run"] is None
-    assert refused["next_start_at"] == state["next_start_at"]
+    assert refused["next_start_at"] == state["next_start_at"] == running["next_start_at"]
     clock.advance(1)
     second = _start(store)
     assert second["refusal"] is None
@@ -397,22 +410,35 @@ def test_an_input_reviewed_once_is_not_taken_again(
 ) -> None:
     _saved(store)
     blog = _rec(store, "blog:a", "blog", "A blog")
+    unasked = _rec(store, "blog:b", "blog", "Another blog")
     run = _start(store)["run"]
-    # A change that leaves the model input as it was makes the item stale.
+    asked = _decide(store)
+    # A change that leaves the model input as it was makes both items stale:
+    # the first after its call, the second before it.
     with store._transaction() as conn:
-        store._xhs_update_recommendation(conn, blog["id"], expected_revision=blog["revision"],
-                                         import_state="failed")
+        for row in (blog, unasked):
+            store._xhs_update_recommendation(conn, row["id"], expected_revision=row["revision"],
+                                             import_state="failed")
+    stale = store.apply_xhs_fallback_result(
+        asked["id"], expected_revision=asked["revision"],
+        decision={"action": "exclude", "reason_code": "not_a_blog", "reason": "A course."},
+    )
+    assert (stale["state"], stale["call_state"]) == ("stale", "finished")
     assert store.claim_xhs_fallback_item(lease_seconds=LEASE) is None
     done = store.get_xhs_fallback_run(run["id"])
-    assert done["state"] == "completed" and done["summary"]["stale"] == 1
+    assert done["state"] == "completed" and done["summary"]["stale"] == 2
     assert done["digest_state"] == "suppressed"
     clock.advance(WEEK)
-    again = _start(store)
-    assert again["refusal"] == "nothing_selected"
-    assert again["selection"]["already_reviewed"] == 1
+    # The model saw the first input, never the second, which is taken again.
+    preview = store.preview_xhs_fallback_run(item_cap=100)
+    assert [item["recommendation_id"] for item in preview["selected"]] == [unasked["id"]]
+    assert preview["selection"]["already_reviewed"] == 1
     # A changed input is taken.
     _rec(store, "blog:a", "blog", "A blog, retitled")
-    assert _start(store)["run"] is not None
+    again = _start(store)
+    assert [item["recommendation_id"] for item in store.list_xhs_fallback_items(
+        again["run"]["id"]
+    )] == [blog["id"], unasked["id"]]
 
 
 # -- stages and applying -----------------------------------------------------------------
@@ -856,6 +882,39 @@ def test_an_exclusion_keeps_the_corrections_a_rule_made(store: ControlStore) -> 
     assert view["review"]["corrected_fields"] == ["kind", "arxiv_id"]
     again = _rec(store, "blog:a", "blog", "A blog")
     assert (again["kind"], again["arxiv_id"]) == ("paper", "2509.00001")
+
+
+def test_a_failed_blog_import_retries_only_while_it_may_import(store: ControlStore) -> None:
+    source_id = _saved(store)
+    retried = _rec(store, "blog:a", "blog", "Retried", url="https://blog.example/a")
+    excluded = _rec(store, "blog:b", "blog", "Excluded", url="https://blog.example/b")
+    converted = _rec(store, "blog:c", "blog", "Converted", url="https://arxiv.org/abs/2509.00001")
+    with store._transaction() as conn:
+        for row in (retried, excluded, converted):
+            store._xhs_update_recommendation(conn, row["id"], expected_revision=0,
+                                             import_state="failed")
+            store._xhs_create_task(conn, kind="blog_import", subject_key=f"blog:{row['id']}:1",
+                                   payload={"recommendation_id": row["id"]})
+        conn.execute("""UPDATE xhs_tasks SET state = 'failed', last_error = 'network'
+                        WHERE kind = 'blog_import'""")
+    after = store.get_xhs_recommendation(excluded["id"])
+    store.exclude_xhs_recommendation(
+        note_source_id=source_id, recommendation_id=excluded["id"], reason="Not wanted",
+        expected_revision=after["revision"], actor_id=ACTOR,
+        idempotency_key="exclude-00000000001",
+    )
+    # The rule makes the third a paper; its failed blog import stays behind.
+    assert store.apply_xhs_fallback_rules() == {"converted": 1, "duplicates": 0}
+    result = store.retry_failed_xhs_tasks(
+        kinds=["blog_import"], actor_id=ACTOR, idempotency_key="retry-blog-00000001"
+    ).value
+    assert result == {"retried": {"blog_import": 1}, "skipped": 2}
+    assert store.get_xhs_recommendation(retried["id"])["import_state"] == "importing"
+    assert store.get_xhs_recommendation(excluded["id"])["import_state"] == "failed"
+    assert store.get_xhs_recommendation(converted["id"])["kind"] == "paper"
+    assert _count(
+        store, "SELECT COUNT(*) FROM xhs_tasks WHERE kind = 'blog_import' AND state = 'failed'"
+    ) == 2
 
 
 def test_a_revision_conflict_answers_with_the_review(store: ControlStore) -> None:

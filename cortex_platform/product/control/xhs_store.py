@@ -2568,7 +2568,16 @@ class XhsStore:
                     expected_revision=recommendation["revision"], url=None, url_state="none",
                 )
             else:
-                if recommendation["import_state"] != "failed" or recommendation["url"] is None:
+                # Still a blog import may make: a rule may since have made it
+                # a paper, and the operator may have excluded it.
+                if (
+                    recommendation["kind"] != "blog"
+                    or recommendation["import_state"] != "failed"
+                    or self._xhs_import_refusal(
+                        recommendation, self._xhs_review(conn, str(recommendation["id"]))
+                    )
+                    is not None
+                ):
                     return False
                 self._xhs_update_recommendation(
                     conn, str(recommendation["id"]),
@@ -3252,7 +3261,8 @@ class XhsStore:
         self, conn: sqlite3.Connection, *, limit: int
     ) -> list[fallback.RuleAction]:
         """Plan the rules over blogs with an arXiv link that are not imported,
-        staged or importing and are unreviewed or a resolved blog."""
+        staged or importing, are unreviewed or a resolved blog, and whose link
+        the operator did not set."""
 
         if type(limit) is not int or not 1 <= limit <= fallback.RULE_BATCH_MAX:
             raise ValueError("rule limit is invalid")
@@ -3262,7 +3272,7 @@ class XhsStore:
                 """SELECT r.id, r.note_id, r.url FROM xhs_recommendations r
                    LEFT JOIN xhs_recommendation_reviews v ON v.recommendation_id = r.id
                    WHERE r.kind = 'blog' AND r.import_state IN ('none', 'failed')
-                     AND r.url LIKE '%arxiv.org/%'
+                     AND r.url LIKE '%arxiv.org/%' AND r.url_state IS NOT 'operator_set'
                      AND (v.recommendation_id IS NULL OR v.state = 'resolved_blog')
                    ORDER BY r.created_at, r.id"""
             )
@@ -3329,7 +3339,8 @@ class XhsStore:
 
         A blog not imported, staged or importing with no import task waiting,
         or a paper without an arXiv ID that was never staged; of a saved note;
-        never reviewed. One recommendation when `recommendation_id` is given.
+        never reviewed; never one whose link the operator set. One
+        recommendation when `recommendation_id` is given.
         """
 
         only = "AND r.id = ?" if recommendation_id is not None else ""
@@ -3337,6 +3348,7 @@ class XhsStore:
             f"""SELECT r.* FROM xhs_recommendations r
                 JOIN xhs_notes n ON n.note_id = r.note_id
                 WHERE n.state = 'saved' {only}
+                  AND r.url_state IS NOT 'operator_set'
                   AND NOT EXISTS (
                       SELECT 1 FROM xhs_recommendation_reviews v
                       WHERE v.recommendation_id = r.id
@@ -3382,7 +3394,8 @@ class XhsStore:
         """The candidates a run takes with their input digests, and the counts.
 
         An input any earlier run already took is skipped and counts as
-        reviewed; `skip` names rows the rules are about to change.
+        reviewed, unless that item went stale before its call: the model never
+        saw it. `skip` names rows the rules are about to change.
         """
 
         selected: list[tuple[dict[str, Any], str]] = []
@@ -3394,7 +3407,9 @@ class XhsStore:
             digest = self._xhs_fallback_digest(conn, recommendation)
             if conn.execute(
                 """SELECT 1 FROM xhs_fallback_items
-                   WHERE recommendation_id = ? AND input_sha256 = ? LIMIT 1""",
+                   WHERE recommendation_id = ? AND input_sha256 = ?
+                     AND NOT (state = 'stale' AND call_state = 'not_started')
+                   LIMIT 1""",
                 (recommendation["id"], digest),
             ).fetchone() is not None:
                 reviewed += 1
@@ -3415,10 +3430,6 @@ class XhsStore:
         """Why no run may start now (`running` or `too_soon`), or None, and
         when the spacing rule next allows one (None: no run started yet)."""
 
-        if conn.execute(
-            "SELECT 1 FROM xhs_fallback_runs WHERE state = 'running'"
-        ).fetchone() is not None:
-            return "running", None
         last = conn.execute(
             "SELECT started_at FROM xhs_fallback_runs ORDER BY started_at DESC, id DESC LIMIT 1"
         ).fetchone()
@@ -3427,7 +3438,12 @@ class XhsStore:
         next_start = self._parse_control_time(str(last["started_at"])) + timedelta(
             seconds=fallback.RUN_SPACING_SECONDS
         )
-        refusal = "too_soon" if self._utc_now() < next_start else None
+        if conn.execute(
+            "SELECT 1 FROM xhs_fallback_runs WHERE state = 'running'"
+        ).fetchone() is not None:
+            refusal: str | None = "running"
+        else:
+            refusal = "too_soon" if self._utc_now() < next_start else None
         return refusal, self._format_registry_time(next_start)
 
     @staticmethod

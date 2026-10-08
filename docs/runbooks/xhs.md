@@ -234,8 +234,8 @@ At the start of each drain tick, a blog that is not imported, staged or
 importing, and whose link is an arXiv abs, pdf or html page, becomes a paper
 with that arXiv ID; its link is kept. When another paper in the same note
 already has that ID, the blog is excluded as a duplicate instead and stays a
-blog. The rules change at most 100 rows per tick, make no network call and
-import nothing.
+blog. A link you set yourself is left alone. The rules change at most 100 rows
+per tick, make no network call and import nothing.
 
 ### The weekly run
 
@@ -245,8 +245,8 @@ starts no run. After the rules, the run takes up to `fallback_weekly_cap`
 recommendations (never more than 100) from saved notes: unimported blogs
 (never imported, or failed, with no blog import queued), then papers without
 an arXiv ID that were never imported, oldest first within each. It skips a
-recommendation that has any review already, and one an earlier run took with
-the same input. The first run takes the existing backlog; the rest waits for
+recommendation that has any review already, one whose link you set, and one
+an earlier run already sent to the model with the same input. The first run takes the existing backlog; the rest waits for
 later runs.
 
 Each tick runs at most two of the run's steps before ordinary tasks, counted
@@ -298,8 +298,8 @@ left to you and stale items. Corrections, imports and exclusions notify no one.
 
 ### Exclusion and restore
 
-An excluded recommendation keeps its row and shows its reason, and import
-refuses it. In the Web note record you can exclude any recommendation that is
+An excluded recommendation keeps its row and shows its reason; import and
+`cortex xhs retry --failed` refuse it. In the Web note record you can exclude any recommendation that is
 not staged, importing or imported, with a reason of up to 500 characters, and
 restore an excluded one. A restored recommendation is yours: it can be
 imported, and automatic review never takes it again. Editing a link or
