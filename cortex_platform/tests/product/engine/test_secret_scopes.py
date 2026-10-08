@@ -68,6 +68,8 @@ def test_every_operation_has_a_scope_and_arxiv_keeps_its_credentials() -> None:
         "xhs_identify": {"sub2api-gpt"},
         "xhs_resolve_link": {"sub2api-gpt"},
         "blog_fetch": set(),
+        "xhs_fallback_decide": {"sub2api-gpt"},
+        "xhs_fallback_verify": set(),
     }
     for operation, aliases in expected.items():
         assert operation_secret_scope(operation).aliases == aliases

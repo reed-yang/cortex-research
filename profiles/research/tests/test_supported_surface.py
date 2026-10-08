@@ -40,6 +40,7 @@ PROVIDER_MODULES = {
     "image_ocr.py",
     "responses_client.py",
     "blog_fetch.py",
+    "xhs_fallback.py",
 }
 
 # Read by `db.apply_schema` (the first four) and `radar_schema.ensure_radar_schema`
