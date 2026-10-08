@@ -15,7 +15,8 @@ instructions. The following files are intentionally tracked and public.
 | [Runtime credentials](runbooks/runtime-credentials.md) | Keychain and age references, scoped checkout commands |
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
 | [Operator skills](runbooks/operator-skills.md) | OCR for PDF-only papers through an accepted, digest-pinned skill |
-| [XHS notes and blogs](runbooks/xhs.md) | Opt-in XHS plugin: setup, follow, cadence, caps, backfill, retries, disable and provider data disclosure |
+| [XHS notes and blogs](runbooks/xhs.md) | Opt-in XHS plugin: setup, follow, cadence, caps, backfill, retries, the weekly recommendation fallback, disable and provider data disclosure |
+| [0.1.36](releases/0.1.36.md) | Weekly XHS recommendation fallback, recommendation exclusion and restore (Control schema 22) |
 | [0.1.35](releases/0.1.35.md) | Source text keeps chain-of-thought and hidden-reasoning wording; credentials and private paths stay redacted |
 | [0.1.34](releases/0.1.34.md) | The Web page no longer scrolls into blank space; resizable sidebar and list columns |
 | [0.1.33](releases/0.1.33.md) | Short blog extractions are compared with Jina; `cortex xhs refetch-blog` |
@@ -35,6 +36,7 @@ instructions. The following files are intentionally tracked and public.
 | [PR review quality](plans/pr-review-quality.md) | T3 Code case study and proposed context, feedback and publication improvements |
 | [Library reader](plans/library-reader.md) | Rendered Markdown and source-bound figures for adopted sources |
 | [XHS notes and blogs](plans/xhs-sources.md) | XHS note and blog sources, the acquisition plugin, recommendation import and known limits |
+| [XHS recommendation fallback](plans/xhs-recommendation-fallback.md) | Free rules and a weekly model review for unimportable recommendations, exclusion and the Telegram digest |
 | [ADR index](adr/README.md) | Retained architectural decisions |
 
 Release composition is defined in `../distribution/release.toml`; installed

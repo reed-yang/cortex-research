@@ -44,6 +44,8 @@ The opt-in [XHS plugin](xhs.md) adds `tikhub`, `sub2api-gpt` and the optional
 | `xhs_ocr_image` | `novita`, `glm`, `glm-app-id`; `sub2api-gpt`, omitted when it does not resolve |
 | `xhs_identify`, `xhs_resolve_link` | `sub2api-gpt` |
 | `blog_fetch` | `jina`, omitted when it does not resolve |
+| `xhs_fallback_decide` | `sub2api-gpt` |
+| `xhs_fallback_verify` | none |
 
 The arXiv operations never resolve the three XHS aliases, so a missing or
 broken XHS reference cannot block paper ingestion. A configured XHS reference

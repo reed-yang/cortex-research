@@ -68,6 +68,14 @@ Paths abbreviated `product/` are relative to `cortex_platform/`.
   publications: publication requires the paper kind. Importing a recommended
   paper stages an ordinary Capture that still needs approval; a blog import
   fetches only a recommended link, through the public-address fetch policy.
+- The weekly recommendation fallback runs only inside `xhs-drain` with
+  `[xhs] fallback_enabled`. It never imports a paper or stages a Capture; it
+  queues a blog import only after Cortex fetched the proposed page itself and
+  its title matched, and never for a paper host or PDF. A model call that may
+  have run is never repeated. Exclusion keeps the row, shows its reason and is
+  reversible; a restored row belongs to the operator. Its Telegram digest
+  carries a count, up to three titles and the Web Inbox link, goes only to the
+  one bound operator chat, and never opens the transport.
 
 Executable authorities: `product/research/`, `product/sources/`,
 `product/artifacts/`, `product/skills.py`, `product/engine/bindings.py`,
