@@ -125,7 +125,11 @@ _CANONICAL_SOURCE_RE = re.compile(
     r"|sha256:[0-9a-f]{64})\Z",
     re.IGNORECASE,
 )
-_SENSITIVE_TEXT_PATTERNS = tuple(
+# Private paths and credentials. External source text (a paper, a blog, an
+# XHS note) is projected against these alone: those documents routinely
+# discuss chain-of-thought and hidden reasoning, and the reasoning markers below
+# exist to keep a model's own reasoning out of what Cortex itself produced.
+_SOURCE_TEXT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
         (
@@ -140,8 +144,14 @@ _SENSITIVE_TEXT_PATTERNS = tuple(
         r"\bAKIA[A-Z0-9]{12,}",
         r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
-        r"<thinking>|hidden reasoning|internal reasoning|chain[- ]of[- ]thought",
     )
+)
+_SENSITIVE_TEXT_PATTERNS = (
+    *_SOURCE_TEXT_PATTERNS,
+    re.compile(
+        r"<thinking>|hidden reasoning|internal reasoning|chain[- ]of[- ]thought",
+        re.IGNORECASE,
+    ),
 )
 _REDACTED_DECISION_PROMPT = "Decision details are unavailable in this client."
 

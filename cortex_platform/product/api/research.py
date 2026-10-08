@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -12,7 +13,7 @@ from ..workflows.models import (
     SuccessorCreationRequest,
     SuccessorCreationResult,
 )
-from .events import _SENSITIVE_TEXT_PATTERNS, project_public_decision
+from .events import _SENSITIVE_TEXT_PATTERNS, _SOURCE_TEXT_PATTERNS, project_public_decision
 
 JsonObject = dict[str, Any]
 _MAX_COLLECTION = 200
@@ -147,9 +148,7 @@ class ResearchWorkflowProjector:
                     "id": candidate["id"],
                     "claim_kind": candidate["claim_kind"],
                     "canonical_id": candidate["canonical_id"],
-                    "official_title": cls._safe_text(
-                        candidate.get("official_title"), "Untitled source"
-                    ),
+                    "official_title": cls._source_title(candidate.get("official_title")),
                     "source_kind": source_kind,
                     "version": candidate.get("version"),
                 }
@@ -204,9 +203,7 @@ class ResearchWorkflowProjector:
                         "authority_id": source["authority_id"],
                         "canonical_id": source["canonical_id"],
                         "source_kind": source["source_kind"],
-                        "official_title": cls._safe_text(
-                            source.get("official_title"), "Untitled source"
-                        ),
+                        "official_title": cls._source_title(source.get("official_title")),
                         "import_state": source["import_state"],
                         "revision": source["revision"],
                         "aliases": aliases,
@@ -443,15 +440,22 @@ class ResearchWorkflowProjector:
         return result
 
     @staticmethod
-    def _optional_safe_text(value: object) -> str | None:
+    def _optional_safe_text(
+        value: object, patterns: Sequence[re.Pattern[str]] = _SENSITIVE_TEXT_PATTERNS
+    ) -> str | None:
         if not isinstance(value, str) or not value or len(value) > 2_000:
             return None
         if any(ord(character) < 32 for character in value):
             return None
-        if any(pattern.search(value) for pattern in _SENSITIVE_TEXT_PATTERNS):
+        if any(pattern.search(value) for pattern in patterns):
             return None
         return value
 
     @classmethod
     def _safe_text(cls, value: object, fallback: str) -> str:
         return cls._optional_safe_text(value) or fallback
+
+    @classmethod
+    def _source_title(cls, value: object) -> str:
+        # An official title is the source's own text, held to the source patterns.
+        return cls._optional_safe_text(value, _SOURCE_TEXT_PATTERNS) or "Untitled source"

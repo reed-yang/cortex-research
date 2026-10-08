@@ -29,6 +29,16 @@ def test_research_projection_rejects_secret_bearing_text(secret: str) -> None:
     from cortex_platform.product.api.research import ResearchWorkflowProjector
 
     assert ResearchWorkflowProjector._optional_safe_text(secret) is None
+    assert ResearchWorkflowProjector._source_title(f"Title {secret}") == "Untitled source"
+
+
+def test_research_projection_keeps_reasoning_vocabulary_only_in_source_titles() -> None:
+    from cortex_platform.product.api.research import ResearchWorkflowProjector
+
+    title = "GPT-6 Astra, Looped Transformers, and Hidden Reasoning"
+    assert ResearchWorkflowProjector._source_title(title) == title
+    # What a run observed or wrote is Cortex's own text and keeps the full patterns.
+    assert ResearchWorkflowProjector._optional_safe_text(title) is None
 
 
 def _insert_completed_run(

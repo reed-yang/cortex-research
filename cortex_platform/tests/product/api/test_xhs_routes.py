@@ -179,6 +179,44 @@ def test_note_route_redacts_sensitive_lines_and_links(
     assert "abcdef0123456789" not in json.dumps(note)
 
 
+def test_provider_text_keeps_reasoning_vocabulary(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    title = "GPT-6 Astra, Looped Transformers, and Hidden Reasoning"
+    with store._transaction() as conn:
+        conn.execute(
+            "UPDATE sources SET official_title = ? WHERE id = ?", (title, saved["source_id"])
+        )
+        conn.execute(
+            "UPDATE xhs_notes SET title = ?, caption = ? WHERE source_id = ?",
+            (title, "chain of thought\napi_key=abcdef0123456789", saved["source_id"]),
+        )
+        store._xhs_upsert_recommendation(
+            conn, note_id=note_id(1), item_key="blog:reasoning", image_ordinal=None,
+            kind="blog", title="Monitoring chain-of-thought", quote="<thinking> tags",
+            arxiv_id=None, url="https://blog.example/chain-of-thought-monitoring",
+            url_state="from_text", origin="model", identify_run="synthetic-run",
+        )
+    api = _api(store)
+    assert get(api, f"/api/v1/sources/{saved['source_id']}").payload["official_title"] == title
+    note = get(api, f"/api/v1/sources/{saved['source_id']}/note").payload
+    assert note["title"] == title
+    assert note["caption"] == "chain of thought\n[redacted]"
+    blog = next(r for r in note["recommendations"] if r["title"] == "Monitoring chain-of-thought")
+    assert blog["quote"] == "<thinking> tags"
+    assert blog["url"] == "https://blog.example/chain-of-thought-monitoring"
+    links = ControlAPI._source_links_projection({
+        "recommended_in": [],
+        "recommends": [
+            {"source_id": "source_a", "source_kind": "blog", "official_title": title,
+             "image_ordinal": 1, "recommendation_id": "rec_a", "created_at": "2026-10-07T00:00:00Z"},
+            {"source_id": "source_b", "source_kind": "blog", "official_title": "token=abcdef0123456789",
+             "image_ordinal": 2, "recommendation_id": "rec_b", "created_at": "2026-10-07T00:00:00Z"},
+        ],
+    })
+    assert [entry["title"] for entry in links["recommends"]] == [title, "Untitled source"]
+
+
 def test_note_route_refuses_other_sources_and_queries(
     store: ControlStore, saved: dict[str, Any]
 ) -> None:
