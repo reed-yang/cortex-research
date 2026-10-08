@@ -41,7 +41,12 @@ RECOMMENDATION_FIELDS = {
     "id", "image_ordinal", "kind", "title", "quote", "arxiv_id", "url", "url_state",
     "url_checked_title", "origin", "identify_run", "capture_id", "capture_state",
     "capture_revision", "import_state", "imported_source_id", "imported_source_kind",
-    "revision", "created_at", "updated_at",
+    "review", "revision", "created_at", "updated_at",
+}
+REVIEW_FIELDS = {"state", "method", "reason_code", "reason", "corrected_fields", "updated_at"}
+NEEDS_OPERATOR_FIELDS = {
+    "note_source_id", "note_title", "recommendation_id", "kind", "title", "reason_code",
+    "reason", "updated_at",
 }
 NOTE_HEADER_FIELDS = {
     "source_id", "note_id", "title", "state", "last_error", "content_version", "revision",
@@ -627,6 +632,213 @@ def test_link_route_refuses_bad_links_and_unlinkable_items(
     assert store.get_xhs_recommendation(sinks["id"])["url_state"] == "auto_matched"
 
 
+# -- exclusion and the weekly fallback ----------------------------------------------
+
+
+def _left_to_operator(store: ControlStore, reasons: dict[str, str]) -> None:
+    """Reviews the weekly run would leave for the operator, by title."""
+
+    found = _recommendations(store)
+    with store._transaction() as conn:
+        for title, reason in reasons.items():
+            store._xhs_set_review(
+                conn, found[title]["id"], state="needs_operator", method="model",
+                reason_code="conflicting_evidence", reason=reason,
+            )
+
+
+def test_exclude_and_restore_routes_follow_the_receipt_and_the_fence(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    api = _api(store)
+    sid = saved["source_id"]
+    streaming = _recommendations(store)["Efficient Streaming"]
+    target = f"/api/v1/sources/{sid}/recommendations/{streaming['id']}"
+    body = {"reason": "A course, not a blog", "expected_revision": streaming["revision"]}
+
+    response = post(api, f"{target}/exclude", body, "exclude-route-00001")
+    assert response.status == 200
+    excluded = response.payload["recommendation"]
+    assert set(excluded) == RECOMMENDATION_FIELDS and set(excluded["review"]) == REVIEW_FIELDS
+    assert excluded["review"] | {"updated_at": None} == {
+        "state": "excluded", "method": "operator", "reason_code": "operator",
+        "reason": "A course, not a blog", "corrected_fields": [], "updated_at": None,
+    }
+    assert excluded["revision"] == streaming["revision"] + 1
+    replay = post(api, f"{target}/exclude", body, "exclude-route-00001")
+    assert ("Idempotency-Replayed", "true") in replay.headers
+    assert replay.payload == response.payload
+    changed = post(api, f"{target}/exclude", {**body, "reason": "Other"}, "exclude-route-00001")
+    assert (changed.status, changed.payload["category"]) == (409, "idempotency_conflict")
+    stale = post(
+        api, f"{target}/restore", {"expected_revision": streaming["revision"]},
+        "restore-route-00001",
+    )
+    assert (stale.status, stale.payload["category"]) == (409, "revision_conflict")
+    assert set(stale.payload["current"]) == RECOMMENDATION_FIELDS
+    assert stale.payload["current"]["review"]["state"] == "excluded"
+    twice = post(
+        api, f"{target}/exclude", {**body, "expected_revision": excluded["revision"]},
+        "exclude-route-00002",
+    )
+    assert (twice.status, twice.payload["category"]) == (409, "invalid_transition")
+
+    # The note shows the review, and an import refuses the row.
+    note = get(api, f"/api/v1/sources/{sid}/note").payload
+    shown = next(r for r in note["recommendations"] if r["id"] == streaming["id"])
+    assert shown["review"] == excluded["review"]
+    assert all(
+        r["review"] is None for r in note["recommendations"] if r["id"] != streaming["id"]
+    )
+    refused = post(
+        api, f"/api/v1/sources/{sid}/recommendations/import",
+        {"recommendation_ids": [streaming["id"]], "expected_revision": note["revision"]},
+        "import-excluded-001",
+    ).payload["items"][0]
+    assert (refused["disposition"], refused["reason"]) == ("refused", "excluded")
+    assert tasks(store, "blog_import") == []
+
+    restore = {"expected_revision": excluded["revision"]}
+    response = post(api, f"{target}/restore", restore, "restore-route-00002")
+    assert response.status == 200
+    restored = response.payload["recommendation"]
+    assert set(restored) == RECOMMENDATION_FIELDS
+    assert (
+        restored["review"]["state"], restored["review"]["method"],
+        restored["review"]["reason_code"], restored["review"]["reason"],
+    ) == ("operator_owned", "operator", None, None)
+    replay = post(api, f"{target}/restore", restore, "restore-route-00002")
+    assert ("Idempotency-Replayed", "true") in replay.headers
+    assert replay.payload == response.payload
+    again = post(
+        api, f"{target}/restore", {"expected_revision": restored["revision"]},
+        "restore-route-00003",
+    )
+    assert (again.status, again.payload["category"]) == (409, "invalid_transition")
+
+
+def test_exclude_and_restore_routes_refuse_bad_requests(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    api = _api(store)
+    sid = saved["source_id"]
+    found = _recommendations(store)
+    sinks, streaming = found["Attention Sinks"], found["Efficient Streaming"]
+    target = f"/api/v1/sources/{sid}/recommendations/{streaming['id']}"
+    revision = streaming["revision"]
+    for index, (action, body) in enumerate((
+        ("exclude", {"expected_revision": revision}),
+        ("exclude", {"reason": "   ", "expected_revision": revision}),
+        ("exclude", {"reason": "x" * 501, "expected_revision": revision}),
+        ("exclude", {"reason": 5, "expected_revision": revision}),
+        ("exclude", {"reason": "A course", "expected_revision": revision, "x": 1}),
+        ("exclude", {"reason": "A course", "expected_revision": "1"}),
+        ("restore", {"expected_revision": revision, "reason": "A course"}),
+        ("restore", {}),
+    )):
+        response = post(api, f"{target}/{action}", body, f"review-bad-000{index:02d}")
+        assert (response.status, response.payload["category"]) == (400, "invalid_request")
+    missing_key = api.handle(
+        method="POST", target=f"{target}/exclude", headers=_headers(),
+        body=json.dumps({"reason": "A course", "expected_revision": revision}).encode(),
+    )
+    assert missing_key.status == 400
+    other = _paper_source(store)
+    for path in (
+        f"/api/v1/sources/{sid}/recommendations/xhs_rec_unknown/exclude",
+        f"/api/v1/sources/{other['id']}/recommendations/{streaming['id']}/exclude",
+        "/api/v1/sources/source_missing/recommendations/xhs_rec_unknown/exclude",
+    ):
+        response = post(
+            api, path, {"reason": "A course", "expected_revision": 0}, "review-404-000001"
+        )
+        assert response.status == 404
+    # A row whose import is queued is neither excluded nor restored.
+    post(
+        api, f"/api/v1/sources/{sid}/recommendations/import",
+        {"recommendation_ids": [sinks["id"]], "expected_revision": saved["revision"]},
+        "import-0000000007",
+    )
+    importing = store.get_xhs_recommendation(sinks["id"])
+    busy = post(
+        api, f"/api/v1/sources/{sid}/recommendations/{sinks['id']}/exclude",
+        {"reason": "A course", "expected_revision": importing["revision"]},
+        "review-busy-000001",
+    )
+    assert (busy.status, busy.payload["category"]) == (409, "invalid_transition")
+    assert store.get_xhs_recommendation(streaming["id"])["revision"] == revision
+
+
+def test_needs_operator_route_lists_what_waits_for_the_operator(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    _left_to_operator(store, {
+        "Attention Sinks": "Two pages match the title.",
+        "Efficient Streaming": "api_key=abcdef0123456789",
+    })
+    api = _api(store)
+    response = get(api, "/api/v1/xhs/recommendations?review=needs_operator")
+    assert response.status == 200 and ("Cache-Control", "no-store") in response.headers
+    assert response.payload["total"] == 2
+    items = {item["title"]: item for item in response.payload["items"]}
+    assert all(set(item) == NEEDS_OPERATOR_FIELDS for item in items.values())
+    sinks = items["Attention Sinks"]
+    assert sinks | {"updated_at": None} == {
+        "note_source_id": saved["source_id"], "note_title": saved["title"],
+        "recommendation_id": _recommendations(store)["Attention Sinks"]["id"],
+        "kind": "blog", "title": "Attention Sinks", "reason_code": "conflicting_evidence",
+        "reason": "Two pages match the title.", "updated_at": None,
+    }
+    # The reason is redacted as provider text is.
+    assert items["Efficient Streaming"]["reason"] == "[redacted]"
+    assert "abcdef0123456789" not in json.dumps(response.payload)
+    limited = get(api, "/api/v1/xhs/recommendations?review=needs_operator&limit=1").payload
+    assert (len(limited["items"]), limited["total"]) == (1, 2)
+    for query in (
+        "", "?review=excluded", "?review=needs_operator&limit=0",
+        "?review=needs_operator&limit=101", "?review=needs_operator&limit=x",
+        "?review=needs_operator&x=1", "?review=needs_operator&review=needs_operator",
+    ):
+        response = get(api, f"/api/v1/xhs/recommendations{query}")
+        assert (response.status, response.payload["category"]) == (400, "invalid_request")
+
+
+def test_xhs_status_route_reports_the_weekly_fallback(
+    store: ControlStore, saved: dict[str, Any]
+) -> None:
+    run = store.start_xhs_fallback_run(
+        trigger="operator", item_cap=100, model="gpt-6.1-sol", effort="xhigh"
+    )["run"]
+    while (item := store.claim_xhs_fallback_item(lease_seconds=900)) is not None:
+        started, day = store.begin_xhs_fallback_call(
+            item["id"], expected_revision=item["revision"], cap=300
+        )
+        assert day is not None
+        store.apply_xhs_fallback_result(
+            started["id"], expected_revision=started["revision"],
+            decision={"action": "needs_operator", "reason_code": "insufficient_evidence"},
+        )
+    store.set_xhs_fallback_digest(run["id"], state="pending", reason="transport_disabled")
+    settings = XhsSettings(enabled=True, fallback_enabled=True)
+
+    fallback = get(_api(store, xhs_settings=settings), "/api/v1/xhs/status").payload["fallback"]
+
+    assert set(fallback) == {
+        "enabled", "running", "last", "next_start_at", "backlog", "needs_operator",
+    }
+    assert (fallback["enabled"], fallback["running"], fallback["backlog"]) == (True, None, 0)
+    last = fallback["last"]
+    assert (last["id"], last["state"], last["trigger"], last["model"]) == (
+        run["id"], "completed", "operator", "gpt-6.1-sol",
+    )
+    assert (last["digest_state"], last["digest_reason"]) == ("pending", "transport_disabled")
+    assert last["summary"]["needs_operator"] == fallback["needs_operator"] > 0
+    assert fallback["next_start_at"] > last["started_at"]
+    listed = get(_api(store), "/api/v1/xhs/recommendations?review=needs_operator").payload
+    assert listed["total"] == fallback["needs_operator"]
+    assert get(_api(store), "/api/v1/xhs/status").payload["fallback"]["enabled"] is False
+
+
 # -- image retry -------------------------------------------------------------------
 
 
@@ -682,8 +894,11 @@ def test_retry_route_resets_a_failed_image(store: ControlStore, saved: dict[str,
         ("GET", "/api/v1/sources/{sid}/note"),
         ("GET", "/api/v1/sources/{sid}/links"),
         ("GET", "/api/v1/xhs/status"),
+        ("GET", "/api/v1/xhs/recommendations?review=needs_operator"),
         ("POST", "/api/v1/sources/{sid}/recommendations/import"),
         ("POST", "/api/v1/sources/{sid}/recommendations/xhs_rec_1/link"),
+        ("POST", "/api/v1/sources/{sid}/recommendations/xhs_rec_1/exclude"),
+        ("POST", "/api/v1/sources/{sid}/recommendations/xhs_rec_1/restore"),
         ("POST", "/api/v1/sources/{sid}/images/2/retry"),
     ],
 )
@@ -698,6 +913,8 @@ def test_xhs_routes_authenticate_before_reading(
     for name in (
         "list_sources", "xhs_note_view", "list_source_links", "xhs_usage",
         "import_xhs_recommendations", "set_xhs_recommendation_link", "xhs_note_id_for_source",
+        "list_xhs_needs_operator", "exclude_xhs_recommendation", "restore_xhs_recommendation",
+        "xhs_fallback_state",
     ):
         monkeypatch.setattr(store, name, refuse)
     response = api.handle(

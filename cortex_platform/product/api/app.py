@@ -743,6 +743,23 @@ class ControlAPI:
                 200, self._xhs_status(), headers=(("Cache-Control", "no-store"),)
             )
 
+        if path == "/api/v1/xhs/recommendations":
+            # The unimported recommendations left to the operator, for the
+            # Inbox. `review` is required and has one supported value.
+            self._require_query_fields(query, frozenset({"review", "limit"}))
+            if self._single_query(query, "review") != "needs_operator":
+                raise ValueError("review query parameter is invalid")
+            limit = self._integer_query(query, "limit", default=100)
+            if not 1 <= limit <= 100:
+                raise ValueError("limit must be between 1 and 100")
+            return APIResponse(
+                200,
+                self._xhs_needs_operator_projection(
+                    self.store.list_xhs_needs_operator(limit=limit)
+                ),
+                headers=(("Cache-Control", "no-store"),),
+            )
+
         if path == "/api/v1/sources/search":
             self._require_query_fields(query, frozenset({"q", "limit"}))
             return self._source_knowledge_response(query=query)
@@ -1378,6 +1395,42 @@ class ControlAPI:
             )
 
         match = re.fullmatch(
+            rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/recommendations/"
+            rf"({_PUBLIC_ID_PATTERN})/(exclude|restore)",
+            path,
+        )
+        if match:
+            # The operator's own review: an exclusion keeps the row and its
+            # reason, and a restore makes the row the operator's for good.
+            if match.group(3) == "exclude":
+                self._require_body_fields(body, frozenset({"reason", "expected_revision"}))
+                result = self.store.exclude_xhs_recommendation(
+                    note_source_id=match.group(1),
+                    recommendation_id=match.group(2),
+                    reason=self._string(body, "reason"),
+                    expected_revision=self._revision(body),
+                    actor_id=actor,
+                    idempotency_key=key,
+                )
+            else:
+                self._require_body_fields(body, frozenset({"expected_revision"}))
+                result = self.store.restore_xhs_recommendation(
+                    note_source_id=match.group(1),
+                    recommendation_id=match.group(2),
+                    expected_revision=self._revision(body),
+                    actor_id=actor,
+                    idempotency_key=key,
+                )
+            return self._command(
+                result,
+                projector=lambda value: {
+                    "recommendation": self._xhs_recommendation_projection(
+                        value["recommendation"]
+                    )
+                },
+            )
+
+        match = re.fullmatch(
             rf"/api/v1/sources/({_PUBLIC_ID_PATTERN})/images/([1-9][0-9]{{0,2}})/retry",
             path,
         )
@@ -1749,9 +1802,48 @@ class ControlAPI:
             "import_state": value["import_state"],
             "imported_source_id": value["imported_source_id"],
             "imported_source_kind": value.get("imported_source_kind"),
+            "review": cls._xhs_review_projection(value.get("review")),
             "revision": value["revision"],
             "created_at": value["created_at"],
             "updated_at": value["updated_at"],
+        }
+
+    @classmethod
+    def _xhs_review_projection(
+        cls, review: Mapping[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """A recommendation's review, or None when it was never reviewed. The
+        reason may quote the model or the operator, so it is redacted as
+        provider text is."""
+
+        if review is None:
+            return None
+        return {
+            "state": review["state"],
+            "method": review["method"],
+            "reason_code": review["reason_code"],
+            "reason": cls._public_external_text(review["reason"]),
+            "corrected_fields": list(review["corrected_fields"]),
+            "updated_at": review["updated_at"],
+        }
+
+    @classmethod
+    def _xhs_needs_operator_projection(cls, value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "items": [
+                {
+                    "note_source_id": item["note_source_id"],
+                    "note_title": cls._public_external_text(item["note_title"]),
+                    "recommendation_id": item["recommendation_id"],
+                    "kind": item["kind"],
+                    "title": cls._public_external_text(item["title"]),
+                    "reason_code": item["reason_code"],
+                    "reason": cls._public_external_text(item["reason"]),
+                    "updated_at": item["updated_at"],
+                }
+                for item in value["items"]
+            ],
+            "total": value["total"],
         }
 
     @classmethod
