@@ -521,9 +521,13 @@ class ResolveHandler(TaskHandler):
 
     def prepare(self, drain, task):
         recommendation = drain.store.get_xhs_recommendation(task["payload"]["recommendation_id"])
+        # An excluded row is not searched: the call would be spent on a row
+        # the operator set aside.
+        review = drain.store.get_xhs_recommendation_review(str(recommendation["id"]))
         if (
             recommendation["kind"] != "blog"
             or recommendation["url_state"] not in RESOLVABLE_URL_STATES
+            or (review is not None and review["state"] == "excluded")
         ):
             return None
         return {"title": recommendation["title"], **drain.gpt_settings()}

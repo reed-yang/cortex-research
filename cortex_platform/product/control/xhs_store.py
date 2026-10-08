@@ -874,6 +874,12 @@ class XhsStore:
         with self._connect() as conn:
             return self._xhs_recommendation(conn, recommendation_id)
 
+    def get_xhs_recommendation_review(self, recommendation_id: str) -> dict[str, Any] | None:
+        """One recommendation's review, or None when it has none."""
+
+        with self._connect() as conn:
+            return self._xhs_review(conn, recommendation_id)
+
     def xhs_save_inputs_sha256(self, note_id: str) -> str:
         """A digest of the Control state a note's saved version renders.
 
@@ -1889,15 +1895,18 @@ class XhsStore:
     ) -> dict[str, Any]:
         """Set a blog recommendation's link from the search and its check.
 
-        A link that arrived meanwhile, from the operator or the text, wins.
+        A link that arrived meanwhile, from the operator or the text, wins,
+        and a row the operator excluded meanwhile is left as it is.
         """
 
         recommendation = self._xhs_recommendation(
             conn, str(task["payload"]["recommendation_id"])
         )
+        review = self._xhs_review(conn, str(recommendation["id"]))
         if (
             recommendation["kind"] != "blog"
             or recommendation["url_state"] not in _RESOLVABLE_URL_STATES
+            or (review is not None and review["state"] == "excluded")
         ):
             return {"stale": True}
         self._xhs_update_recommendation(

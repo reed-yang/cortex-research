@@ -300,7 +300,7 @@ left to you and stale items. Corrections, imports and exclusions notify no one.
 ### Exclusion and restore
 
 An excluded recommendation keeps its row and shows its reason; import and
-`cortex xhs retry --failed` refuse it. In the Web note record you can exclude any recommendation that is
+`cortex xhs retry --failed` refuse it, and no link search runs for it. In the Web note record you can exclude any recommendation that is
 not staged, importing or imported, with a reason of up to 500 characters, and
 restore an excluded one. A restored recommendation is yours: it can be
 imported, and automatic review never takes it again. Editing a link or

@@ -21,6 +21,7 @@ from cortex_platform.product.workflows.coordinator import EffectPermanentlyRejec
 from cortex_platform.product.xhs import fallback
 from cortex_platform.product.xhs.status import xhs_fallback_status, xhs_status
 from cortex_platform.tests.product.test_xhs_drain import (  # noqa: F401 - fixtures
+    ACTOR,
     SIGNATURE,
     Execution,
     clock,
@@ -572,3 +573,58 @@ def test_runs_are_weekly_capped_and_retake_an_input_never_asked(
     assert supervisor.decided() == [first]
     status = xhs_fallback_status(store, settings(fallback_enabled=True, fallback_weekly_cap=1))
     assert status["backlog"] == 2
+
+
+def test_an_excluded_blog_is_never_searched_for_a_link(
+    store: ControlStore, supervisor: FallbackSupervisor, clock
+) -> None:
+    _three_images(supervisor)
+    supervisor.identify[PAPER_TEXT] = [model_items()]
+    found = supervisor.links[SINKS]
+    # The first search fails for now: the note is saved while it waits.
+    supervisor.links[SINKS] = "transient"
+    drain = pipeline(store, supervisor)
+    drain.pull()
+    drain.drain()
+    sinks = recommendations(store)[SINKS]
+    note = store.get_xhs_note(note_id(1))
+    assert (note["state"], sinks["url_state"]) == ("saved", "none")
+    assert tasks(store, "resolve")[0]["state"] == "pending"
+
+    def exclude(key: str) -> None:
+        current = store.get_xhs_recommendation(sinks["id"])
+        store.exclude_xhs_recommendation(
+            note_source_id=note["source_id"], recommendation_id=sinks["id"],
+            reason="Not about memory", expected_revision=current["revision"],
+            actor_id=ACTOR, idempotency_key=key,
+        )
+
+    exclude("exclude-00000000001")
+    supervisor.links[SINKS] = found
+    searches = supervisor.operations().count("xhs_resolve_link")
+    clock.advance(600)
+    drain.drain()
+    # Queued before the exclusion, the search is never made.
+    assert supervisor.operations().count("xhs_resolve_link") == searches
+    assert store.get_xhs_recommendation(sinks["id"])["url_state"] == "none"
+    # Excluded while its search runs, the row keeps no link the search found.
+    store.restore_xhs_recommendation(
+        note_source_id=note["source_id"], recommendation_id=sinks["id"],
+        expected_revision=store.get_xhs_recommendation(sinks["id"])["revision"],
+        actor_id=ACTOR, idempotency_key="restore-0000000001",
+    )
+    with store._transaction() as conn:
+        store._xhs_reset_task(conn, str(tasks(store, "resolve")[0]["subject_key"]))
+    run = supervisor.run
+
+    def run_and_exclude(operation, payload, **options):
+        if operation == "xhs_resolve_link":
+            exclude("exclude-00000000002")
+        return run(operation, payload, **options)
+
+    supervisor.run = run_and_exclude
+    drain.drain()
+    assert supervisor.operations().count("xhs_resolve_link") == searches + 1
+    after = store.get_xhs_recommendation(sinks["id"])
+    assert (after["url_state"], after["url"]) == ("none", None)
+    assert review(store, sinks["id"])["state"] == "excluded"
