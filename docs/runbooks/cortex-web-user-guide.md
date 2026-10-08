@@ -254,6 +254,10 @@ figures. Source is the paged, line-numbered view with the line range and
 choice for the Library only. Copy source copies the whole document as shown,
 with any redacted lines still redacted, in either view; it is available once
 that document has loaded and is not empty. Reopen document reads it again.
+A line of a source that names a private file path or carries something shaped
+like a credential (a token, a key, a password assignment) shows as
+`[redacted]`; the rest, including a source's own discussion of
+chain-of-thought or hidden reasoning, is shown as written.
 
 Figures load only from the selected source's own stored `assets/` directory,
 including references written with the older `papers/<dir>/assets/` prefix for

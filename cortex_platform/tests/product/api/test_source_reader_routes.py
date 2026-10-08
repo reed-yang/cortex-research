@@ -71,6 +71,23 @@ def test_document_route_returns_whole_projected_document(reader_api, kind):
     assert paged.payload["content_sha256"] == response.payload["content_sha256"]
 
 
+def test_source_text_keeps_reasoning_vocabulary_and_redacts_credentials(reader_api):
+    api, store, root = reader_api
+    sid = source_id(store, ENGLISH)
+    kept = [
+        "Chain-of-thought prompting improves arithmetic.",
+        "Hidden reasoning and internal reasoning in looped transformers.",
+        "The model wraps its draft in <thinking> tags.",
+    ]
+    raw = "\n".join([*kept, "api_key=synthetic-only-review-value"]) + "\n"
+    (root / ENGLISH / "notes.md").write_text(raw)
+    document = get(api, f"/api/v1/sources/{sid}/document?kind=notes").payload
+    assert document["text"] == "\n".join([*kept, "[redacted]"]) + "\n"
+    assert document["redacted"] is True
+    paged = get(api, f"/api/v1/sources/{sid}/content?kind=notes").payload
+    assert paged["text"].split("\n")[:4] == [*kept, "[redacted]"]
+
+
 def test_document_route_defaults_to_notes_without_redaction(reader_api):
     api, store, _ = reader_api
     response = get(api, f"/api/v1/sources/{source_id(store, ENGLISH)}/document")

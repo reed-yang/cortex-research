@@ -38,7 +38,12 @@ from ..control import (
 from ..sources import SourceResolver, canonicalize_arxiv_id, canonicalize_doi
 from ..sources.identity import xhs_note_permalink
 from ..sources.models import CONTENT_SOURCE_KINDS
-from .events import _SENSITIVE_TEXT_PATTERNS, project_public_decision, project_public_event
+from .events import (
+    _SENSITIVE_TEXT_PATTERNS,
+    _SOURCE_TEXT_PATTERNS,
+    project_public_decision,
+    project_public_event,
+)
 from .research import ResearchWorkflowProjector
 
 _PUBLIC_ID_PATTERN = r"[A-Za-z0-9_-]{1,200}"
@@ -1515,15 +1520,15 @@ class ControlAPI:
         try:
             reader = SourceKnowledgeReader(
                 self.store,
-                redact_line=lambda line: any(pattern.search(line) for pattern in _SENSITIVE_TEXT_PATTERNS),
+                redact_line=lambda line: any(pattern.search(line) for pattern in _SOURCE_TEXT_PATTERNS),
             )
             if source_id is None:
                 value = reader.search(search_query, limit=limit)
                 result = {
-                    "query": self._public_source_text(value["query"]),
-                    "retrieval_mode": self._public_source_text(value["retrieval_mode"]),
+                    "query": self._public_external_text(value["query"]),
+                    "retrieval_mode": self._public_external_text(value["retrieval_mode"]),
                     "results": [
-                        {key: self._public_source_text(item[key]) for key in (
+                        {key: self._public_external_text(item[key]) for key in (
                             "source_id", "canonical_id", "title", "evidence_id",
                             "section", "excerpt", "content_sha256",
                         )}
@@ -1538,7 +1543,7 @@ class ControlAPI:
                 )}
                 # Text has already been classified with complete original-line
                 # context by the reader. Its fragments retain the page budget.
-                result = {key: item if key == "text" else self._public_source_text(item)
+                result = {key: item if key == "text" else self._public_external_text(item)
                           for key, item in result.items()}
             return APIResponse(200, result, headers=(("Cache-Control", "no-store"),))
         except SourceQueryInvalid:
@@ -1571,7 +1576,7 @@ class ControlAPI:
         try:
             value = SourceKnowledgeReader(
                 self.store,
-                redact_line=lambda line: any(pattern.search(line) for pattern in _SENSITIVE_TEXT_PATTERNS),
+                redact_line=lambda line: any(pattern.search(line) for pattern in _SOURCE_TEXT_PATTERNS),
             ).document(source_id, kind=kind)
         except SourceQueryInvalid:
             return self._problem(400, "source_query_invalid", "Source query is invalid")
@@ -1588,7 +1593,7 @@ class ControlAPI:
             return self._problem(404, "not_found", "Source was not found")
         # The reader projected text per original line, as it does for pages.
         result = {
-            key: value[key] if key == "text" else self._public_source_text(value[key])
+            key: value[key] if key == "text" else self._public_external_text(value[key])
             for key in (
                 "source_id", "canonical_id", "kind", "text", "content_sha256",
                 "retained_bytes", "redacted",
@@ -1641,19 +1646,28 @@ class ControlAPI:
 
         value = cls._public_value(dict(source))
         if value.get("source_kind") in CONTENT_SOURCE_KINDS and "official_title" in value:
-            value["official_title"] = cls._public_source_text(value["official_title"])
+            value["official_title"] = cls._public_external_text(value["official_title"])
         return value
 
     @staticmethod
-    def _public_source_text(value: Any) -> Any:
+    def _public_source_text(
+        value: Any, *, patterns: Sequence[re.Pattern[str]] = _SENSITIVE_TEXT_PATTERNS
+    ) -> Any:
         if not isinstance(value, str):
             return value
         # Redact per line to preserve K1 citation coordinates. The digest is
         # the stored document identity, not a checksum of this public projection.
         return "\n".join(
-            "[redacted]" if any(pattern.search(line) for pattern in _SENSITIVE_TEXT_PATTERNS)
+            "[redacted]" if any(pattern.search(line) for pattern in patterns)
             else line for line in value.split("\n")
         )
+
+    @classmethod
+    def _public_external_text(cls, value: Any) -> Any:
+        """Text of an external source (a paper, a blog, an XHS note and what
+        it recommends): redacted for private paths and credentials only."""
+
+        return cls._public_source_text(value, patterns=_SOURCE_TEXT_PATTERNS)
 
     # -- XHS notes, recommendations and links ---------------------------------
     #
@@ -1666,7 +1680,7 @@ class ControlAPI:
         return {
             "source_id": note["source_id"],
             "note_id": note["note_id"],
-            "title": cls._public_source_text(note["title"]),
+            "title": cls._public_external_text(note["title"]),
             "state": note["state"],
             "last_error": note["last_error"],
             "content_version": note["content_version"],
@@ -1680,12 +1694,12 @@ class ControlAPI:
             **cls._xhs_note_header(note),
             "blogger": {
                 "user_id": note["user_id"],
-                "name": cls._public_source_text(blogger.get("display_name")),
+                "name": cls._public_external_text(blogger.get("display_name")),
                 "role": blogger.get("role"),
             },
             "permalink": xhs_note_permalink(str(note["note_id"])),
             "published_at": note["published_at"],
-            "caption": cls._public_source_text(note["caption"]),
+            "caption": cls._public_external_text(note["caption"]),
             "caption_complete": bool(note["caption_complete"]),
             "images": [cls._xhs_image_projection(image) for image in view["images"]],
             "recommendations": [
@@ -1715,18 +1729,18 @@ class ControlAPI:
     @classmethod
     def _xhs_recommendation_projection(cls, value: Mapping[str, Any]) -> dict[str, Any]:
         url = value["url"]
-        if url is not None and any(pattern.search(url) for pattern in _SENSITIVE_TEXT_PATTERNS):
+        if url is not None and any(pattern.search(url) for pattern in _SOURCE_TEXT_PATTERNS):
             url = None
         return {
             "id": value["id"],
             "image_ordinal": value["image_ordinal"],
             "kind": value["kind"],
-            "title": cls._public_source_text(value["title"]),
-            "quote": cls._public_source_text(value["quote"]),
+            "title": cls._public_external_text(value["title"]),
+            "quote": cls._public_external_text(value["quote"]),
             "arxiv_id": value["arxiv_id"],
             "url": url,
             "url_state": value["url_state"],
-            "url_checked_title": cls._public_source_text(value["url_checked_title"]),
+            "url_checked_title": cls._public_external_text(value["url_checked_title"]),
             "origin": value["origin"],
             "identify_run": value["identify_run"],
             "capture_id": value["capture_id"],
@@ -1768,7 +1782,7 @@ class ControlAPI:
                 "source_id": row["source_id"],
                 "source_kind": row["source_kind"],
                 "title": cls._public_metadata_text(
-                    row["official_title"], fallback="Untitled source"
+                    row["official_title"], fallback="Untitled source", patterns=_SOURCE_TEXT_PATTERNS
                 ),
                 "image_ordinal": row["image_ordinal"],
                 "recommendation_id": row["recommendation_id"],
@@ -1791,7 +1805,7 @@ class ControlAPI:
             and all(row["enabled"] for row in status["schedules"].values()),
             "roots_ready": all(state == "ready" for state in status["roots"].values()),
             "bloggers": [
-                {**row, "display_name": self._public_source_text(row["display_name"])}
+                {**row, "display_name": self._public_external_text(row["display_name"])}
                 for row in status["bloggers"]
             ],
         }
@@ -1843,13 +1857,18 @@ class ControlAPI:
             raise ValueError("JSON body fields are invalid")
 
     @staticmethod
-    def _public_metadata_text(value: Any, *, fallback: str) -> str:
+    def _public_metadata_text(
+        value: Any,
+        *,
+        fallback: str,
+        patterns: Sequence[re.Pattern[str]] = _SENSITIVE_TEXT_PATTERNS,
+    ) -> str:
         if (
             not isinstance(value, str)
             or not value
             or len(value) > 2_000
             or any(ord(character) < 32 for character in value)
-            or any(pattern.search(value) for pattern in _SENSITIVE_TEXT_PATTERNS)
+            or any(pattern.search(value) for pattern in patterns)
         ):
             return fallback
         return value

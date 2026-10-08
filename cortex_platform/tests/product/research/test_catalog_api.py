@@ -47,7 +47,9 @@ def test_real_catalog_document_and_thread_routes(tmp_path):
     root = tmp_path / "projects"
     root.mkdir()
     document = root / "project.md"
-    document.write_text("# Project dossier\n\n$x^2$\nPrivate: /Users/fixture/private\n")
+    document.write_text(
+        "# Project dossier\n\n$x^2$\nPrivate: /Users/fixture/private\n<thinking>draft</thinking>\n"
+    )
     adopter = ResearchDocumentAdopter(store, catalog)
     preview = adopter.preview({"project": root}, item_ids={item["id"]}, document_map={
         item["id"]: [{"kind": "project", "registered_path": str(document)}],
@@ -61,6 +63,8 @@ def test_real_catalog_document_and_thread_routes(tmp_path):
     assert content.status == 200
     assert "[redacted]" in content.payload["content"]
     assert "/Users/fixture" not in content.payload["content"]
+    # A research document is Cortex's own output, so reasoning markers stay redacted.
+    assert "<thinking>" not in content.payload["content"]
     assert content.payload["byte_length"] == len(content.payload["content"].encode())
     assert content.payload["redacted"]
     ws = store.create_workspace(title="Work", actor_id="local", idempotency_key="api-research-workspace").value

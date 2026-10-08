@@ -447,7 +447,7 @@ def _receipt_subject_id(response_column: str) -> str:
     corrupt row, and ⟦batchT ADJ-A2⟧ the door that error reaches is not the
     same for all three. `_receipt` sits behind the control API's command
     routes, where `ControlAPI.handle` answers its decode error as 400
-    `invalid_request` (api/app.py:319-320) -- so a replayed command whose
+    `invalid_request` (api/app.py:325-326) -- so a replayed command whose
     own stored receipt is unreadable blames the caller for a row the caller
     did not write. `_runtime_event_replay` never reaches that door:
     `adapter_event_id` is supplied only by the daemon's runtime delivery
