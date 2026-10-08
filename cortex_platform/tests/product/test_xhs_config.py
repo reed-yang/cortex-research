@@ -33,6 +33,8 @@ def test_an_absent_section_is_the_disabled_default() -> None:
     assert (settings.gpt_model, settings.gpt_effort) == ("gpt-6-luna", "xhigh")
     assert (settings.max_list_pages, settings.drain_units_per_tick) == (3, 10)
     assert settings.daily_calls == {"tikhub": 100, "ocr": 1000, "gpt": 300}
+    assert settings.fallback_enabled is False and settings.fallback_weekly_cap == 100
+    assert (settings.fallback_model, settings.fallback_effort) == ("gpt-6.1-sol", "xhigh")
 
 
 def test_given_values_override_defaults_one_by_one() -> None:
@@ -67,6 +69,15 @@ def test_given_values_override_defaults_one_by_one() -> None:
         {"daily_calls": {"gpt": 1.5}},
         {"daily_calls": 100},
         {"api_key": "plaintext"},
+        {"fallback_enabled": "true"},
+        {"fallback_enabled": 0},
+        {"fallback_weekly_cap": 0},
+        {"fallback_weekly_cap": 101},
+        {"fallback_weekly_cap": True},
+        {"fallback_model": "gpt 6.1"},
+        {"fallback_model": ""},
+        {"fallback_effort": "XHIGH"},
+        {"fallback_effort": "x" * 17},
     ],
 )
 def test_invalid_values_are_refused(xhs: dict[str, object]) -> None:
@@ -91,6 +102,23 @@ def test_the_section_round_trips_through_the_written_file(tmp_path: Path) -> Non
     write_config(path, config)
     assert load_config(path) == config
     assert xhs_settings(load_config(path)).daily_calls["ocr"] == 0
+
+
+def test_the_fallback_keys_round_trip_and_override_defaults(tmp_path: Path) -> None:
+    config = validate_config(_config(
+        fallback_enabled=True, fallback_weekly_cap=25,
+        fallback_model="gpt-6.1-sol", fallback_effort="high",
+    ))
+    rendered = _render_config(config)
+    assert "\"fallback_enabled\" = true" in rendered
+    assert validate_config(tomllib.loads(rendered)) == config
+    path = tmp_path / "config.toml"
+    write_config(path, config)
+    settings = xhs_settings(load_config(path))
+    assert settings.fallback_enabled is True and settings.fallback_weekly_cap == 25
+    assert (settings.fallback_model, settings.fallback_effort) == ("gpt-6.1-sol", "high")
+    # The other plugin settings keep their defaults.
+    assert settings.enabled is False and settings.gpt_model == "gpt-6-luna"
 
 
 def test_the_plugin_secret_aliases_are_accepted_as_references() -> None:

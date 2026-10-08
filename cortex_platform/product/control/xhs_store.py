@@ -26,6 +26,7 @@ from ..sources.models import (
     normalize_source_text,
     normalize_xhs_id,
 )
+from ..xhs import fallback
 from .errors import InvalidTransition, NotFound, RevisionConflict
 
 XHS_ROLES = frozenset({"curator", "author"})
@@ -540,8 +541,8 @@ class XhsStore:
     def _xhs_recommendation_view(
         self, conn: sqlite3.Connection, recommendation_id: str
     ) -> dict[str, Any]:
-        """One recommendation with its Capture's state and revision and the
-        kind of the source it imported."""
+        """One recommendation with its Capture's state and revision, the
+        kind of the source it imported, and its review (or None)."""
 
         recommendation = self._xhs_recommendation(conn, recommendation_id)
         capture = imported = None
@@ -559,6 +560,9 @@ class XhsStore:
         recommendation["capture_revision"] = None if capture is None else capture["revision"]
         recommendation["imported_source_kind"] = (
             None if imported is None else imported["source_kind"]
+        )
+        recommendation["review"] = self._xhs_review_view(
+            self._xhs_review(conn, recommendation_id)
         )
         return recommendation
 
@@ -721,6 +725,7 @@ class XhsStore:
 
         Import progress is never touched here, and a link the operator set is
         kept: a re-identification refreshes only what identification owns.
+        A field a review corrected is kept too, and the review is not touched.
         """
 
         if not isinstance(item_key, str) or _ITEM_KEY_RE.fullmatch(item_key) is None:
@@ -780,13 +785,23 @@ class XhsStore:
             )
             return self._xhs_recommendation(conn, recommendation_id)
         changes = dict(identified)
+        review = self._xhs_review(conn, str(row["id"]))
+        corrected = set(review["corrected_fields"]) if review is not None else set()
+        if corrected & {"kind", "arxiv_id"}:
+            # Kept together: a corrected kind or ID never pairs with the other
+            # from a re-identification in a way the row's CHECK refuses.
+            del changes["kind"], changes["arxiv_id"]
         # A link found in the text replaces an unresolved one; a link the
         # search resolved, or the operator set, survives a re-identification.
         # So does the link a blog is importing or was imported from: its
         # source link names that page.
-        if row["import_state"] not in {"staged", "importing", "imported"} and (
-            row["url_state"] in {"none", "from_text"}
-            or (url_state == "from_text" and row["url_state"] != "operator_set")
+        if (
+            "url" not in corrected
+            and row["import_state"] not in {"staged", "importing", "imported"}
+            and (
+                row["url_state"] in {"none", "from_text"}
+                or (url_state == "from_text" and row["url_state"] != "operator_set")
+            )
         ):
             changes.update(url=url, url_state=url_state)
         if any(row[name] != value for name, value in changes.items()):
@@ -2234,7 +2249,9 @@ class XhsStore:
         if row is None:
             return {**item, "reason": "not_found"}
         recommendation = self._xhs_recommendation(conn, recommendation_id)
-        reason = self._xhs_import_refusal(recommendation)
+        reason = self._xhs_import_refusal(
+            recommendation, self._xhs_review(conn, recommendation_id)
+        )
         if reason is not None:
             return {
                 **item,
@@ -2295,11 +2312,15 @@ class XhsStore:
             )
 
     @staticmethod
-    def _xhs_import_refusal(recommendation: Mapping[str, Any]) -> str | None:
+    def _xhs_import_refusal(
+        recommendation: Mapping[str, Any], review: Mapping[str, Any] | None = None
+    ) -> str | None:
         """Why one recommendation cannot be imported, or None when it can."""
 
         if recommendation["import_state"] == "imported":
             return "already_imported"
+        if review is not None and review["state"] == "excluded":
+            return "excluded"
         if recommendation["kind"] == "paper":
             # Only an arXiv ID makes a Capture payload; a title alone does not.
             return None if recommendation["arxiv_id"] else "no_arxiv_id"
@@ -2962,6 +2983,1100 @@ class XhsStore:
                 "recommended_in": [self._row(row) for row in recommended_in],
                 "recommends": [self._row(row) for row in recommends],
             }
+
+    # -- recommendation reviews -------------------------------------------------
+
+    def _xhs_review(
+        self, conn: sqlite3.Connection, recommendation_id: str
+    ) -> dict[str, Any] | None:
+        row = conn.execute(
+            "SELECT * FROM xhs_recommendation_reviews WHERE recommendation_id = ?",
+            (recommendation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        value = self._row(row)
+        value["corrected_fields"] = json.loads(value["corrected_fields"])
+        return value
+
+    @staticmethod
+    def _xhs_review_view(review: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        """A review as the recommendation DTO carries it, or None."""
+
+        if review is None:
+            return None
+        return {
+            "state": review["state"],
+            "method": review["method"],
+            "reason_code": review["reason_code"],
+            "reason": review["reason"],
+            "corrected_fields": list(review["corrected_fields"]),
+            "updated_at": review["updated_at"],
+        }
+
+    def _xhs_set_review(
+        self,
+        conn: sqlite3.Connection,
+        recommendation_id: str,
+        *,
+        state: str,
+        method: str,
+        reason_code: str | None = None,
+        reason: str | None = None,
+        corrected: Collection[str] = (),
+        duplicate_of: str | None = None,
+        run_id: str | None = None,
+        touch: bool = True,
+    ) -> dict[str, Any]:
+        """Write one recommendation's review; every earlier correction stays listed.
+
+        With `touch` the recommendation's revision moves too, so a command or
+        a run item that read it before is fenced out. A correction moves it
+        itself and passes `touch=False`.
+        """
+
+        if state not in fallback.REVIEW_STATES or method not in fallback.REVIEW_METHODS:
+            raise ValueError("xhs recommendation review is unsupported")
+        if reason_code is not None and reason_code not in fallback.REASON_CODES:
+            raise ValueError("reason_code is unsupported")
+        reason = fallback.public_reason(reason)
+        existing = self._xhs_review(conn, recommendation_id)
+        fields = fallback.merge_corrected_fields(
+            existing["corrected_fields"] if existing is not None else (), corrected
+        )
+        values = (
+            state, method, reason_code, reason, json.dumps(fields, separators=(",", ":")),
+            duplicate_of, run_id,
+        )
+        now = self._registry_now()
+        try:
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO xhs_recommendation_reviews
+                       (recommendation_id, state, method, reason_code, reason,
+                        corrected_fields, duplicate_of, run_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (recommendation_id, *values, now, now),
+                )
+            else:
+                conn.execute(
+                    """UPDATE xhs_recommendation_reviews
+                       SET state = ?, method = ?, reason_code = ?, reason = ?,
+                           corrected_fields = ?, duplicate_of = ?, run_id = ?,
+                           revision = revision + 1, updated_at = ?
+                       WHERE recommendation_id = ?""",
+                    (*values, now, recommendation_id),
+                )
+        except sqlite3.IntegrityError:
+            # A cross-column CHECK, a foreign key or the same-note guard refused it.
+            raise ValueError("xhs recommendation review is inconsistent") from None
+        if touch:
+            conn.execute(
+                """UPDATE xhs_recommendations SET revision = revision + 1, updated_at = ?
+                   WHERE id = ?""",
+                (now, recommendation_id),
+            )
+        review = self._xhs_review(conn, recommendation_id)
+        assert review is not None
+        return review
+
+    def _xhs_correct_recommendation(
+        self, conn: sqlite3.Connection, recommendation: Mapping[str, Any], **values: Any
+    ) -> dict[str, Any]:
+        """Set a corrected kind, arXiv ID or link on one recommendation.
+
+        Its identity, item key, title, quote, image, origin and identification
+        run stay. As a link edit does, the note's revision moves and an
+        identified or saved note queues its next version.
+        """
+
+        if not values or not set(values) <= {
+            "kind", "arxiv_id", "url", "url_state", "url_checked_title",
+        }:
+            raise ValueError("xhs recommendation correction is invalid")
+        if "kind" in values and values["kind"] not in XHS_RECOMMENDATION_KINDS:
+            raise ValueError("recommendation kind is unsupported")
+        if values.get("arxiv_id") is not None:
+            values["arxiv_id"] = canonicalize_arxiv_id(values["arxiv_id"]).authority_id
+        if "url" in values or "url_state" in values:
+            if not {"url", "url_state"} <= set(values):
+                raise ValueError("url and url_state change together")
+            values["url"], values["url_state"] = self._xhs_url_values(
+                values["url"], values["url_state"]
+            )
+        if values.get("url_checked_title") is not None:
+            values["url_checked_title"] = _bounded_text(
+                values["url_checked_title"], "url_checked_title", minimum=1, maximum=1_000
+            )
+        recommendation_id = str(recommendation["id"])
+        updated = self._xhs_fenced_update(
+            conn,
+            table="xhs_recommendations",
+            where={"id": recommendation_id},
+            expected_revision=int(recommendation["revision"]),
+            values=values,
+            current=lambda: self._xhs_recommendation(conn, recommendation_id),
+        )
+        conn.execute(
+            "UPDATE xhs_notes SET revision = revision + 1, updated_at = ? WHERE note_id = ?",
+            (self._registry_now(), updated["note_id"]),
+        )
+        note = self._xhs_note(conn, str(updated["note_id"]))
+        if note["state"] in {"identified", "saved"}:
+            self._xhs_queue_save(conn, note)
+        return updated
+
+    def _xhs_operator_recommendation(
+        self,
+        conn: sqlite3.Connection,
+        note_source_id: str,
+        recommendation_id: str,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        """One recommendation of a saved note at the operator's revision."""
+
+        note = self._xhs_note_by_source(conn, note_source_id)
+        row = conn.execute(
+            "SELECT id FROM xhs_recommendations WHERE id = ? AND note_id = ?",
+            (recommendation_id, note["note_id"]),
+        ).fetchone()
+        if row is None:
+            raise NotFound("xhs recommendation", recommendation_id)
+        recommendation = self._xhs_recommendation(conn, recommendation_id)
+        self._expect_revision(recommendation, expected_revision)
+        if recommendation["import_state"] in {"staged", "importing", "imported"}:
+            raise InvalidTransition(str(recommendation["import_state"]), "reviewed")
+        return recommendation
+
+    def exclude_xhs_recommendation(
+        self,
+        *,
+        note_source_id: str,
+        recommendation_id: str,
+        reason: str,
+        expected_revision: int,
+        actor_id: str,
+        idempotency_key: str,
+    ):
+        """Exclude one recommendation of a saved note, with the operator's reason.
+
+        The row stays and shows the reason; an import refuses it and automatic
+        review leaves it alone until it is restored. A row that is staged,
+        importing or imported is refused. `expected_revision` is the
+        recommendation's.
+        """
+
+        reason = fallback.public_reason(reason)
+        if reason is None:
+            raise ValueError("reason is invalid")
+        request = {"reason": reason, "expected_revision": expected_revision}
+        operation = (
+            f"POST:/api/v1/sources/{note_source_id}/recommendations/{recommendation_id}/exclude"
+        )
+        with self._transaction() as conn:
+            replay = self._receipt(conn, actor_id, operation, idempotency_key, request)
+            if replay:
+                return replay
+            recommendation = self._xhs_operator_recommendation(
+                conn, note_source_id, recommendation_id, expected_revision
+            )
+            review = self._xhs_review(conn, recommendation_id)
+            if review is not None and review["state"] == "excluded":
+                raise InvalidTransition("excluded", "excluded")
+            self._xhs_set_review(
+                conn, recommendation_id, state="excluded", method="operator",
+                reason_code="operator", reason=reason,
+            )
+            self._audit(
+                conn, "xhs_recommendation", recommendation_id, "xhs.recommendation.excluded",
+                {"note_id": recommendation["note_id"], "method": "operator"},
+            )
+            value = {"recommendation": self._xhs_recommendation_view(conn, recommendation_id)}
+            return self._save_receipt(
+                conn, actor_id, operation, idempotency_key, request, value, 200
+            )
+
+    def restore_xhs_recommendation(
+        self,
+        *,
+        note_source_id: str,
+        recommendation_id: str,
+        expected_revision: int,
+        actor_id: str,
+        idempotency_key: str,
+    ):
+        """Undo an exclusion: the row is the operator's from now on.
+
+        Its review becomes `operator_owned` without a reason; it may be
+        imported again and automatic review never takes it. Only an excluded
+        row is restored. `expected_revision` is the recommendation's.
+        """
+
+        request = {"expected_revision": expected_revision}
+        operation = (
+            f"POST:/api/v1/sources/{note_source_id}/recommendations/{recommendation_id}/restore"
+        )
+        with self._transaction() as conn:
+            replay = self._receipt(conn, actor_id, operation, idempotency_key, request)
+            if replay:
+                return replay
+            recommendation = self._xhs_operator_recommendation(
+                conn, note_source_id, recommendation_id, expected_revision
+            )
+            review = self._xhs_review(conn, recommendation_id)
+            if review is None or review["state"] != "excluded":
+                raise InvalidTransition(
+                    "unreviewed" if review is None else str(review["state"]), "operator_owned"
+                )
+            self._xhs_set_review(conn, recommendation_id, state="operator_owned", method="operator")
+            self._audit(
+                conn, "xhs_recommendation", recommendation_id, "xhs.recommendation.restored",
+                {"note_id": recommendation["note_id"]},
+            )
+            value = {"recommendation": self._xhs_recommendation_view(conn, recommendation_id)}
+            return self._save_receipt(
+                conn, actor_id, operation, idempotency_key, request, value, 200
+            )
+
+    # -- the weekly fallback: rules and selection ----------------------------------
+
+    def apply_xhs_fallback_rules(self, *, limit: int = fallback.RULE_BATCH_MAX) -> dict[str, int]:
+        """Apply the free rules to at most `limit` rows. No network call, no import."""
+
+        with self._transaction() as conn:
+            return self._xhs_apply_fallback_rules(conn, limit=limit)
+
+    def _xhs_rule_plan(
+        self, conn: sqlite3.Connection, *, limit: int
+    ) -> list[fallback.RuleAction]:
+        """Plan the rules over blogs with an arXiv link that are not imported,
+        staged or importing and are unreviewed or a resolved blog."""
+
+        if type(limit) is not int or not 1 <= limit <= fallback.RULE_BATCH_MAX:
+            raise ValueError("rule limit is invalid")
+        blogs = [
+            self._row(row)
+            for row in conn.execute(
+                """SELECT r.id, r.note_id, r.url FROM xhs_recommendations r
+                   LEFT JOIN xhs_recommendation_reviews v ON v.recommendation_id = r.id
+                   WHERE r.kind = 'blog' AND r.import_state IN ('none', 'failed')
+                     AND r.url LIKE '%arxiv.org/%'
+                     AND (v.recommendation_id IS NULL OR v.state = 'resolved_blog')
+                   ORDER BY r.created_at, r.id"""
+            )
+        ]
+        if not blogs:
+            return []
+        notes = sorted({str(blog["note_id"]) for blog in blogs})
+        placeholders = ", ".join("?" for _ in notes)
+        papers = [
+            self._row(row)
+            for row in conn.execute(
+                f"""SELECT id, note_id, arxiv_id FROM xhs_recommendations
+                    WHERE kind = 'paper' AND arxiv_id IS NOT NULL
+                      AND note_id IN ({placeholders})
+                    ORDER BY created_at, id""",
+                notes,
+            )
+        ]
+        return fallback.plan_rules(blogs, papers, limit=limit)
+
+    def _xhs_apply_fallback_rules(
+        self, conn: sqlite3.Connection, *, limit: int
+    ) -> dict[str, int]:
+        counts = {"converted": 0, "duplicates": 0}
+        for action in self._xhs_rule_plan(conn, limit=limit):
+            recommendation_id = action.recommendation_id
+            if action.duplicate_of is None:
+                self._xhs_correct_recommendation(
+                    conn, self._xhs_recommendation(conn, recommendation_id),
+                    kind="paper", arxiv_id=action.arxiv_id,
+                )
+                self._xhs_set_review(
+                    conn, recommendation_id, state="resolved_paper", method="rule",
+                    reason_code="arxiv_link",
+                    reason=f"The link is the arXiv page of {action.arxiv_id}.",
+                    corrected=("kind", "arxiv_id"), touch=False,
+                )
+                self._audit(
+                    conn, "xhs_recommendation", recommendation_id,
+                    "xhs.recommendation.corrected",
+                    {"note_id": action.note_id, "method": "rule",
+                     "fields": ["kind", "arxiv_id"], "reason_code": "arxiv_link"},
+                )
+                counts["converted"] += 1
+            else:
+                self._xhs_set_review(
+                    conn, recommendation_id, state="excluded", method="rule",
+                    reason_code="duplicate",
+                    reason="Another recommendation in this note is the same arXiv paper.",
+                    duplicate_of=action.duplicate_of,
+                )
+                self._audit(
+                    conn, "xhs_recommendation", recommendation_id,
+                    "xhs.recommendation.excluded",
+                    {"note_id": action.note_id, "method": "rule", "reason_code": "duplicate"},
+                )
+                counts["duplicates"] += 1
+        return counts
+
+    def _xhs_fallback_candidates(
+        self, conn: sqlite3.Connection, recommendation_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Recommendations a run may take: blogs before papers, oldest first.
+
+        A blog not imported, staged or importing with no import task waiting,
+        or a paper without an arXiv ID that was never staged; of a saved note;
+        never reviewed. One recommendation when `recommendation_id` is given.
+        """
+
+        only = "AND r.id = ?" if recommendation_id is not None else ""
+        rows = conn.execute(
+            f"""SELECT r.* FROM xhs_recommendations r
+                JOIN xhs_notes n ON n.note_id = r.note_id
+                WHERE n.state = 'saved' {only}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM xhs_recommendation_reviews v
+                      WHERE v.recommendation_id = r.id
+                  )
+                  AND (
+                      (r.kind = 'blog' AND r.import_state IN ('none', 'failed')
+                       AND NOT EXISTS (
+                           SELECT 1 FROM xhs_tasks t
+                           WHERE t.kind = 'blog_import' AND t.state IN ('pending', 'running')
+                             AND t.subject_key GLOB 'blog:' || r.id || ':*'
+                       ))
+                      OR (r.kind = 'paper' AND r.arxiv_id IS NULL AND r.import_state = 'none')
+                  )
+                ORDER BY r.kind = 'paper', r.created_at, r.id""",
+            () if recommendation_id is None else (recommendation_id,),
+        ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def _xhs_fallback_digest(
+        self, conn: sqlite3.Connection, recommendation: Mapping[str, Any]
+    ) -> str:
+        note = self._xhs_note(conn, str(recommendation["note_id"]))
+        text_sha256 = None
+        if recommendation["image_ordinal"] is not None:
+            image = self._xhs_image(
+                conn, str(recommendation["note_id"]), int(recommendation["image_ordinal"])
+            )
+            text_sha256 = image["ocr_text_sha256"] if image["ocr_state"] == "ok" else None
+        return fallback.input_sha256(
+            recommendation,
+            note_title=str(note["title"]),
+            caption=str(note["caption"]),
+            image_text_sha256=text_sha256,
+        )
+
+    def _xhs_fallback_selection(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        cap: int,
+        skip: Collection[str] = (),
+    ) -> tuple[list[tuple[dict[str, Any], str]], dict[str, int]]:
+        """The candidates a run takes with their input digests, and the counts.
+
+        An input any earlier run already took is skipped and counts as
+        reviewed; `skip` names rows the rules are about to change.
+        """
+
+        selected: list[tuple[dict[str, Any], str]] = []
+        eligible = reviewed = 0
+        for recommendation in self._xhs_fallback_candidates(conn):
+            if recommendation["id"] in skip:
+                continue
+            eligible += 1
+            digest = self._xhs_fallback_digest(conn, recommendation)
+            if conn.execute(
+                """SELECT 1 FROM xhs_fallback_items
+                   WHERE recommendation_id = ? AND input_sha256 = ? LIMIT 1""",
+                (recommendation["id"], digest),
+            ).fetchone() is not None:
+                reviewed += 1
+                continue
+            if len(selected) < cap:
+                selected.append((recommendation, digest))
+        counts = {
+            "eligible": eligible,
+            "already_reviewed": reviewed,
+            "selected": len(selected),
+            "waiting": eligible - reviewed - len(selected),
+        }
+        return selected, counts
+
+    def _xhs_fallback_start_refusal(
+        self, conn: sqlite3.Connection
+    ) -> tuple[str | None, str | None]:
+        """Why no run may start now (`running` or `too_soon`), or None, and
+        when the spacing rule next allows one (None: no run started yet)."""
+
+        if conn.execute(
+            "SELECT 1 FROM xhs_fallback_runs WHERE state = 'running'"
+        ).fetchone() is not None:
+            return "running", None
+        last = conn.execute(
+            "SELECT started_at FROM xhs_fallback_runs ORDER BY started_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if last is None:
+            return None, None
+        next_start = self._parse_control_time(str(last["started_at"])) + timedelta(
+            seconds=fallback.RUN_SPACING_SECONDS
+        )
+        refusal = "too_soon" if self._utc_now() < next_start else None
+        return refusal, self._format_registry_time(next_start)
+
+    @staticmethod
+    def _xhs_fallback_cap(item_cap: Any) -> int:
+        if type(item_cap) is not int or item_cap < 1:
+            raise ValueError("item_cap is invalid")
+        return min(item_cap, fallback.MAX_RUN_ITEMS)
+
+    def start_xhs_fallback_run(
+        self, *, trigger: str, item_cap: int, model: str, effort: str
+    ) -> dict[str, Any]:
+        """Start the weekly run when the spacing rule allows, in one transaction.
+
+        No run starts while one is running or within 7 days of the last start;
+        there is no force. The rules run first. Then at most `item_cap` (and
+        100) eligible recommendations become the run's items, blogs before
+        papers, oldest first; an input an earlier run took is skipped. With
+        nothing selected no run is created. Answers `run` (or None),
+        `refusal` (`running`, `too_soon`, `nothing_selected` or None),
+        `next_start_at`, the rule counts and the selection counts.
+        """
+
+        if trigger not in {"schedule", "operator"}:
+            raise ValueError("trigger is unsupported")
+        cap = self._xhs_fallback_cap(item_cap)
+        model = self._required_text(model, "model", maximum=128)
+        if not isinstance(effort, str) or re.fullmatch(r"[a-z]{1,16}", effort) is None:
+            raise ValueError("effort is invalid")
+        with self._transaction() as conn:
+            refusal, next_start = self._xhs_fallback_start_refusal(conn)
+            answer: dict[str, Any] = {
+                "run": None, "refusal": refusal, "next_start_at": next_start,
+                "rules": None, "selection": None,
+            }
+            if refusal is not None:
+                return answer
+            answer["rules"] = self._xhs_apply_fallback_rules(
+                conn, limit=fallback.RULE_BATCH_MAX
+            )
+            selected, answer["selection"] = self._xhs_fallback_selection(conn, cap=cap)
+            if not selected:
+                answer["refusal"] = "nothing_selected"
+                return answer
+            run_id = self._id_factory("xhs_fallback_run")
+            now = self._registry_now()
+            conn.execute(
+                """INSERT INTO xhs_fallback_runs
+                   (id, state, trigger, started_at, item_cap, model, effort,
+                    prompt_version, created_at, updated_at)
+                   VALUES (?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, trigger, now, cap, model, effort, fallback.PROMPT_VERSION, now, now),
+            )
+            for ordinal, (recommendation, digest) in enumerate(selected, start=1):
+                conn.execute(
+                    """INSERT INTO xhs_fallback_items
+                       (id, run_id, recommendation_id, ordinal, expected_revision,
+                        input_sha256, next_attempt_at, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        self._id_factory("xhs_fallback_item"), run_id, recommendation["id"],
+                        ordinal, int(recommendation["revision"]), digest, now, now, now,
+                    ),
+                )
+            self._audit(
+                conn, "xhs_fallback_run", run_id, "xhs.fallback.started",
+                {"trigger": trigger, "items": len(selected), "item_cap": cap,
+                 "rules": answer["rules"]},
+            )
+            run = self._xhs_fallback_run(conn, run_id)
+            answer["run"] = run
+            answer["next_start_at"] = self._format_registry_time(
+                self._parse_control_time(str(run["started_at"]))
+                + timedelta(seconds=fallback.RUN_SPACING_SECONDS)
+            )
+            return answer
+
+    def preview_xhs_fallback_run(self, *, item_cap: int) -> dict[str, Any]:
+        """What a start would do now, without writing anything.
+
+        The rule actions as planned, and the selection as it would be once
+        they applied: a row a rule changes is reviewed, so no run takes it.
+        """
+
+        cap = self._xhs_fallback_cap(item_cap)
+        with self._connect() as conn:
+            # One read snapshot; nothing is written, so it is rolled back.
+            conn.execute("BEGIN")
+            try:
+                refusal, next_start = self._xhs_fallback_start_refusal(conn)
+                actions = self._xhs_rule_plan(conn, limit=fallback.RULE_BATCH_MAX)
+                selected, counts = self._xhs_fallback_selection(
+                    conn, cap=cap, skip={action.recommendation_id for action in actions}
+                )
+            finally:
+                conn.rollback()
+        return {
+            "refusal": refusal,
+            "next_start_at": next_start,
+            "rules": [
+                {
+                    "recommendation_id": action.recommendation_id,
+                    "note_id": action.note_id,
+                    "arxiv_id": action.arxiv_id,
+                    "duplicate_of": action.duplicate_of,
+                }
+                for action in actions
+            ],
+            "selected": [
+                {
+                    "recommendation_id": recommendation["id"],
+                    "note_id": recommendation["note_id"],
+                    "kind": recommendation["kind"],
+                    "title": recommendation["title"],
+                    "input_sha256": digest,
+                }
+                for recommendation, digest in selected
+            ],
+            "selection": counts,
+        }
+
+    # -- the weekly fallback: runs and items ------------------------------------------
+
+    def _xhs_fallback_run(self, conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
+        row = conn.execute("SELECT * FROM xhs_fallback_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise NotFound("xhs fallback run", run_id)
+        value = self._row(row)
+        value["summary"] = json.loads(value["summary"])
+        return value
+
+    def get_xhs_fallback_run(self, run_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            return self._xhs_fallback_run(conn, run_id)
+
+    def xhs_fallback_state(self) -> dict[str, Any]:
+        """The running run, the last started one and when the next may start
+        (None: as soon as anything is eligible)."""
+
+        with self._connect() as conn:
+            running = conn.execute(
+                "SELECT id FROM xhs_fallback_runs WHERE state = 'running'"
+            ).fetchone()
+            last = conn.execute(
+                "SELECT id FROM xhs_fallback_runs ORDER BY started_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            _, next_start = self._xhs_fallback_start_refusal(conn)
+            return {
+                "running": None if running is None else self._xhs_fallback_run(conn, running["id"]),
+                "last": None if last is None else self._xhs_fallback_run(conn, last["id"]),
+                "next_start_at": next_start,
+            }
+
+    def _xhs_fallback_item(self, conn: sqlite3.Connection, item_id: str) -> dict[str, Any]:
+        row = conn.execute("SELECT * FROM xhs_fallback_items WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise NotFound("xhs fallback item", item_id)
+        value = self._row(row)
+        for name in ("proposal", "verification", "usage"):
+            if value[name] is not None:
+                value[name] = json.loads(value[name])
+        return value
+
+    def get_xhs_fallback_item(self, item_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            return self._xhs_fallback_item(conn, item_id)
+
+    def list_xhs_fallback_items(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            self._xhs_fallback_run(conn, run_id)
+            rows = conn.execute(
+                "SELECT id FROM xhs_fallback_items WHERE run_id = ? ORDER BY ordinal",
+                (run_id,),
+            ).fetchall()
+            return [self._xhs_fallback_item(conn, str(row["id"])) for row in rows]
+
+    def _xhs_fallback_update(
+        self, conn: sqlite3.Connection, item: Mapping[str, Any], **values: Any
+    ) -> dict[str, Any]:
+        item_id = str(item["id"])
+        return self._xhs_fenced_update(
+            conn,
+            table="xhs_fallback_items",
+            where={"id": item_id},
+            expected_revision=int(item["revision"]),
+            values=values,
+            current=lambda: self._xhs_fallback_item(conn, item_id),
+        )
+
+    def _xhs_fallback_leased(
+        self,
+        conn: sqlite3.Connection,
+        item_id: str,
+        expected_revision: int,
+        states: Collection[str],
+    ) -> dict[str, Any]:
+        """The item at the caller's revision, leased in one of `states`."""
+
+        item = self._xhs_fallback_item(conn, item_id)
+        self._expect_revision(item, expected_revision)
+        if item["state"] not in states or item["lease_until"] is None:
+            raise InvalidTransition(str(item["state"]), "leased")
+        return item
+
+    def _xhs_fallback_current(self, conn: sqlite3.Connection, item: Mapping[str, Any]) -> bool:
+        """Whether the item's recommendation is still at the revision the run
+        selected and still one a run may take."""
+
+        rows = self._xhs_fallback_candidates(conn, str(item["recommendation_id"]))
+        return bool(rows) and int(rows[0]["revision"]) == int(item["expected_revision"])
+
+    def _xhs_fallback_context(
+        self, conn: sqlite3.Connection, item: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The Control state one stage's child input is built from.
+
+        No task row, payload or file path: the transcription of a cited image
+        is read from the note's staging copy by its text hash.
+        """
+
+        recommendation = self._xhs_recommendation(conn, str(item["recommendation_id"]))
+        note = self._xhs_note(conn, str(recommendation["note_id"]))
+        image = None
+        if recommendation["image_ordinal"] is not None:
+            row = self._xhs_image(
+                conn, str(note["note_id"]), int(recommendation["image_ordinal"])
+            )
+            image = {name: row[name] for name in ("ordinal", "ocr_state", "ocr_text_sha256")}
+        return {
+            "recommendation": {
+                name: recommendation[name]
+                for name in (
+                    "id", "note_id", "kind", "title", "quote", "arxiv_id", "url",
+                    "url_state", "url_checked_title", "image_ordinal", "revision",
+                )
+            },
+            "note": {name: note[name] for name in ("note_id", "title", "caption")},
+            "image": image,
+        }
+
+    def claim_xhs_fallback_item(self, *, lease_seconds: int) -> dict[str, Any] | None:
+        """Lease the next due stage of the running run, or answer None.
+
+        A pending item becomes `deciding`: its one model call is next. A
+        `verifying` item is leased for one more verification attempt. An item
+        whose recommendation changed since selection, or is no longer one a
+        run may take, becomes `stale` instead and the next is tried. An
+        expired `deciding` lease whose call may have started is never called
+        again: the item is left to the operator as `outcome_unknown`. The
+        answer adds `stage` (`decide` or `verify`) and `context`.
+        """
+
+        if type(lease_seconds) is not int or not 1 <= lease_seconds <= 86_400:
+            raise ValueError("lease_seconds must be between 1 and 86400")
+        with self._transaction() as conn:
+            now_value = self._utc_now()
+            now = self._format_registry_time(now_value)
+            while True:
+                row = conn.execute(
+                    """SELECT i.id FROM xhs_fallback_items i
+                       JOIN xhs_fallback_runs r ON r.id = i.run_id
+                       WHERE r.state = 'running' AND (
+                           (i.lease_until IS NULL AND i.state IN ('pending', 'verifying')
+                            AND i.next_attempt_at <= ?)
+                           OR (i.lease_until IS NOT NULL AND i.lease_until <= ?)
+                       )
+                       ORDER BY i.state = 'pending', i.ordinal LIMIT 1""",
+                    (now, now),
+                ).fetchone()
+                if row is None:
+                    return None
+                item = self._xhs_fallback_item(conn, str(row["id"]))
+                if item["state"] == "deciding" and item["call_state"] == "may_have_started":
+                    self._xhs_fallback_conclude(
+                        conn, item, {"action": "needs_operator", "reason_code": "outcome_unknown"}
+                    )
+                    continue
+                if not self._xhs_fallback_current(conn, item):
+                    self._xhs_fallback_stale(conn, item, lease_until=None)
+                    continue
+                lease_until = self._format_registry_time(
+                    now_value + timedelta(seconds=lease_seconds)
+                )
+                if item["state"] == "verifying":
+                    if int(item["attempts"]) >= fallback.VERIFY_MAX_ATTEMPTS:
+                        # Its last attempt lost its lease: as a failed fetch.
+                        self._xhs_fallback_conclude(
+                            conn, item, {"action": "needs_operator", "reason_code": "fetch_failed"}
+                        )
+                        continue
+                    item = self._xhs_fallback_update(
+                        conn, item, lease_until=lease_until, attempts=int(item["attempts"]) + 1
+                    )
+                    stage = "verify"
+                else:
+                    item = self._xhs_fallback_update(
+                        conn, item, state="deciding", call_state="not_started",
+                        lease_until=lease_until,
+                    )
+                    stage = "decide"
+                return {**item, "stage": stage, "context": self._xhs_fallback_context(conn, item)}
+
+    def begin_xhs_fallback_call(
+        self, item_id: str, *, expected_revision: int, cap: int
+    ) -> tuple[dict[str, Any], str | None]:
+        """Reserve a deciding item's one `gpt` call and record that it may start.
+
+        Answers the item and the UTC day the call counts on, which a refund
+        names. At the daily cap nothing is reserved: the item goes back to
+        pending until the next UTC day and the day is None.
+        """
+
+        with self._transaction() as conn:
+            item = self._xhs_fallback_leased(conn, item_id, expected_revision, {"deciding"})
+            if item["call_state"] != "not_started":
+                raise InvalidTransition(str(item["call_state"]), "may_have_started")
+            day = self._xhs_reserve_usage(conn, provider="gpt", cap=cap)
+            if day is None:
+                tomorrow = (self._utc_now() + timedelta(days=1)).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                item = self._xhs_fallback_update(
+                    conn, item, state="pending", lease_until=None,
+                    next_attempt_at=self._format_registry_time(tomorrow),
+                )
+                return item, None
+            return self._xhs_fallback_update(conn, item, call_state="may_have_started"), day
+
+    def record_xhs_fallback_proposal(
+        self,
+        item_id: str,
+        *,
+        expected_revision: int,
+        proposal: Mapping[str, Any],
+        usage: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Store a checked model answer that needs verification; the item
+        waits for its first verification attempt, due at once."""
+
+        if not isinstance(proposal, Mapping):
+            raise ValueError("proposal is invalid")
+        with self._transaction() as conn:
+            item = self._xhs_fallback_leased(conn, item_id, expected_revision, {"deciding"})
+            if item["call_state"] != "may_have_started":
+                raise InvalidTransition(str(item["call_state"]), "finished")
+            return self._xhs_fallback_update(
+                conn, item, state="verifying", call_state="finished", lease_until=None,
+                next_attempt_at=self._registry_now(), attempts=0,
+                proposal=_json_text(dict(proposal), "proposal", maximum=_METADATA_MAX_BYTES),
+                usage=self._xhs_fallback_usage(usage),
+            )
+
+    @staticmethod
+    def _xhs_fallback_usage(usage: Mapping[str, Any] | None) -> str | None:
+        if usage is None:
+            return None
+        if not isinstance(usage, Mapping):
+            raise ValueError("usage is invalid")
+        return _json_text(dict(usage), "usage", maximum=4_096)
+
+    def release_xhs_fallback_item(
+        self,
+        item_id: str,
+        *,
+        expected_revision: int,
+        not_before: str | None = None,
+        refund_day: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a leased stage that never reached its provider.
+
+        A deciding item goes back to pending, with its reserved call refunded
+        to `refund_day` when one was reserved; a verifying item waits again
+        without spending an attempt. It is due at `not_before`, or at once.
+        """
+
+        with self._transaction() as conn:
+            item = self._xhs_fallback_leased(
+                conn, item_id, expected_revision, {"deciding", "verifying"}
+            )
+            next_attempt_at = (
+                self._registry_now()
+                if not_before is None
+                else self._required_text(not_before, "not_before", maximum=64)
+            )
+            if item["state"] == "verifying":
+                return self._xhs_fallback_update(
+                    conn, item, lease_until=None, next_attempt_at=next_attempt_at,
+                    attempts=max(0, int(item["attempts"]) - 1),
+                )
+            if refund_day is not None:
+                self._xhs_refund_usage(conn, provider="gpt", day=refund_day)
+            return self._xhs_fallback_update(
+                conn, item, state="pending", call_state="not_started", lease_until=None,
+                next_attempt_at=next_attempt_at,
+            )
+
+    def fail_xhs_fallback_verification(
+        self,
+        item_id: str,
+        *,
+        expected_revision: int,
+        category: str,
+        verification: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record a failed verification attempt; the model is not called again.
+
+        A retryable failure waits 10 min after the first attempt and 1 h after
+        the second. The third, or any other failure, leaves the item to the
+        operator as `fetch_failed`: a failed fetch never excludes.
+        """
+
+        category = _category(category)
+        with self._transaction() as conn:
+            item = self._xhs_fallback_leased(conn, item_id, expected_revision, {"verifying"})
+            attempts = int(item["attempts"])
+            if category in XHS_RETRYABLE_FAILURES and attempts < fallback.VERIFY_MAX_ATTEMPTS:
+                delay = fallback.VERIFY_RETRY_SECONDS[max(attempts, 1) - 1]
+                return self._xhs_fallback_update(
+                    conn, item, lease_until=None, last_error=category,
+                    next_attempt_at=self._format_registry_time(
+                        self._utc_now() + timedelta(seconds=delay)
+                    ),
+                )
+            return self._xhs_fallback_conclude(
+                conn, item, {"action": "needs_operator", "reason_code": "fetch_failed"},
+                verification=verification, last_error=category,
+            )
+
+    def apply_xhs_fallback_result(
+        self,
+        item_id: str,
+        *,
+        expected_revision: int,
+        decision: Mapping[str, Any],
+        proposal: Mapping[str, Any] | None = None,
+        usage: Mapping[str, Any] | None = None,
+        verification: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Apply one leased item's decision in one transaction, or find it stale.
+
+        The recommendation must still be at the revision the run selected and
+        still one a run may take; otherwise the item becomes `stale` and
+        nothing else changes. A verified blog gets a `blog_import` task and
+        nothing more; a paper is corrected and never imported, so no Capture
+        is staged. From `deciding`, `proposal` and `usage` record the call's
+        answer. The run completes with its last item.
+        """
+
+        decision = fallback.check_decision(decision)
+        with self._transaction() as conn:
+            item = self._xhs_fallback_leased(
+                conn, item_id, expected_revision, {"deciding", "verifying"}
+            )
+            if item["state"] == "deciding" and item["call_state"] != "may_have_started":
+                raise InvalidTransition(str(item["call_state"]), "finished")
+            if proposal is not None and item["state"] != "deciding":
+                raise ValueError("a proposal is recorded when the call ends")
+            return self._xhs_fallback_conclude(
+                conn, item, decision, proposal=proposal, usage=usage, verification=verification
+            )
+
+    def _xhs_fallback_conclude(
+        self,
+        conn: sqlite3.Connection,
+        item: Mapping[str, Any],
+        decision: Mapping[str, Any],
+        *,
+        proposal: Mapping[str, Any] | None = None,
+        usage: Mapping[str, Any] | None = None,
+        verification: Mapping[str, Any] | None = None,
+        last_error: str | None = None,
+    ) -> dict[str, Any]:
+        decision = fallback.check_decision(decision)
+        values: dict[str, Any] = {"lease_until": None}
+        if item["state"] == "deciding":
+            # Every end of a call but an unknown outcome means it returned.
+            values["call_state"] = (
+                "may_have_started"
+                if decision.get("reason_code") == "outcome_unknown" and proposal is None
+                else "finished"
+            )
+        if proposal is not None:
+            values["proposal"] = _json_text(
+                dict(proposal), "proposal", maximum=_METADATA_MAX_BYTES
+            )
+        if usage is not None:
+            values["usage"] = self._xhs_fallback_usage(usage)
+        if verification is not None:
+            if not isinstance(verification, Mapping):
+                raise ValueError("verification is invalid")
+            values["verification"] = _json_text(
+                dict(verification), "verification", maximum=_METADATA_MAX_BYTES
+            )
+        if last_error is not None:
+            values["last_error"] = last_error
+        if not self._xhs_fallback_current(conn, item):
+            return self._xhs_fallback_stale(conn, item, **values)
+        applied = self._xhs_fallback_effect(conn, item, decision)
+        updated = self._xhs_fallback_update(conn, item, state="done", applied=applied, **values)
+        self._xhs_fallback_maybe_complete(conn, str(item["run_id"]))
+        return updated
+
+    def _xhs_fallback_stale(
+        self, conn: sqlite3.Connection, item: Mapping[str, Any], **values: Any
+    ) -> dict[str, Any]:
+        updated = self._xhs_fallback_update(conn, item, state="stale", **values)
+        self._xhs_fallback_maybe_complete(conn, str(item["run_id"]))
+        return updated
+
+    def _xhs_paper_in_note(
+        self, conn: sqlite3.Connection, note_id: str, arxiv_id: str, *, other_than: str
+    ) -> str | None:
+        row = conn.execute(
+            """SELECT id FROM xhs_recommendations
+               WHERE note_id = ? AND kind = 'paper' AND arxiv_id = ? AND id <> ?
+               ORDER BY created_at, id LIMIT 1""",
+            (note_id, arxiv_id, other_than),
+        ).fetchone()
+        return None if row is None else str(row["id"])
+
+    def _xhs_fallback_effect(
+        self, conn: sqlite3.Connection, item: Mapping[str, Any], decision: Mapping[str, Any]
+    ) -> str:
+        """Write one checked decision's review and correction; answer `applied`.
+
+        Only `_xhs_queue_blog_import` follows a correction. Nothing here stages
+        a Capture or imports a paper.
+        """
+
+        recommendation_id = str(item["recommendation_id"])
+        run_id = str(item["run_id"])
+        recommendation = self._xhs_recommendation(conn, recommendation_id)
+        note_id = str(recommendation["note_id"])
+        action = decision["action"]
+        if action == "blog":
+            if recommendation["kind"] != "blog":
+                raise InvalidTransition(str(recommendation["kind"]), "resolved_blog")
+            self._xhs_correct_recommendation(
+                conn, recommendation, url=decision["url"], url_state="auto_matched",
+                url_checked_title=decision["checked_title"],
+            )
+            self._xhs_set_review(
+                conn, recommendation_id, state="resolved_blog", method="model",
+                reason=decision["reason"], corrected=("url",), run_id=run_id, touch=False,
+            )
+            self._xhs_queue_blog_import(conn, self._xhs_recommendation(conn, recommendation_id))
+            self._audit(
+                conn, "xhs_recommendation", recommendation_id, "xhs.recommendation.corrected",
+                {"note_id": note_id, "method": "model", "fields": ["url"], "run_id": run_id},
+            )
+            return "blog_queued"
+        if action == "paper":
+            arxiv_id = decision["arxiv_id"]
+            duplicate_of = (
+                None
+                if arxiv_id is None
+                else self._xhs_paper_in_note(
+                    conn, note_id, arxiv_id, other_than=recommendation_id
+                )
+            )
+            if duplicate_of is not None:
+                # As the arXiv-link rule does: one paper per note and ID.
+                self._xhs_set_review(
+                    conn, recommendation_id, state="excluded", method="model",
+                    reason_code="duplicate",
+                    reason="Another recommendation in this note is the same arXiv paper.",
+                    duplicate_of=duplicate_of, run_id=run_id,
+                )
+                self._audit(
+                    conn, "xhs_recommendation", recommendation_id,
+                    "xhs.recommendation.excluded",
+                    {"note_id": note_id, "method": "model", "reason_code": "duplicate",
+                     "run_id": run_id},
+                )
+                return "excluded"
+            fields: dict[str, Any] = {}
+            if recommendation["kind"] != "paper":
+                fields["kind"] = "paper"
+            if arxiv_id is not None:
+                fields["arxiv_id"] = arxiv_id
+            if fields:
+                self._xhs_correct_recommendation(conn, recommendation, **fields)
+                self._audit(
+                    conn, "xhs_recommendation", recommendation_id,
+                    "xhs.recommendation.corrected",
+                    {"note_id": note_id, "method": "model", "fields": list(fields),
+                     "run_id": run_id},
+                )
+            self._xhs_set_review(
+                conn, recommendation_id, state="resolved_paper", method="model",
+                reason_code=None if arxiv_id is not None else "not_on_arxiv",
+                reason=decision["reason"], corrected=tuple(fields), run_id=run_id,
+                touch=not fields,
+            )
+            return "paper_corrected" if fields else "paper_kept"
+        if action == "exclude":
+            self._xhs_set_review(
+                conn, recommendation_id, state="excluded", method="model",
+                reason_code=decision["reason_code"], reason=decision["reason"], run_id=run_id,
+            )
+            self._audit(
+                conn, "xhs_recommendation", recommendation_id, "xhs.recommendation.excluded",
+                {"note_id": note_id, "method": "model",
+                 "reason_code": decision["reason_code"], "run_id": run_id},
+            )
+            return "excluded"
+        self._xhs_set_review(
+            conn, recommendation_id, state="needs_operator", method="model",
+            reason_code=decision["reason_code"], reason=decision["reason"], run_id=run_id,
+        )
+        return "needs_operator"
+
+    def _xhs_fallback_maybe_complete(self, conn: sqlite3.Connection, run_id: str) -> None:
+        """Complete a running run once every item is done or stale.
+
+        The summary counts what was applied. The digest is `pending` when any
+        item was left to the operator, `suppressed` otherwise.
+        """
+
+        if conn.execute(
+            """SELECT 1 FROM xhs_fallback_items
+               WHERE run_id = ? AND state IN ('pending', 'deciding', 'verifying') LIMIT 1""",
+            (run_id,),
+        ).fetchone() is not None:
+            return
+        run = self._xhs_fallback_run(conn, run_id)
+        if run["state"] != "running":
+            return
+        summary = fallback.run_summary(
+            row["applied"]
+            for row in conn.execute(
+                "SELECT applied FROM xhs_fallback_items WHERE run_id = ?", (run_id,)
+            )
+        )
+        digest_state = "pending" if summary["needs_operator"] else "suppressed"
+        self._xhs_fenced_update(
+            conn,
+            table="xhs_fallback_runs",
+            where={"id": run_id},
+            expected_revision=int(run["revision"]),
+            values={
+                "state": "completed",
+                "finished_at": self._registry_now(),
+                "summary": _json_text(summary, "summary", maximum=4_096),
+                "digest_state": digest_state,
+            },
+            current=lambda: self._xhs_fallback_run(conn, run_id),
+        )
+        self._audit(
+            conn, "xhs_fallback_run", run_id, "xhs.fallback.completed",
+            {"summary": summary, "digest_state": digest_state},
+        )
 
     # -- shared -----------------------------------------------------------------
 
