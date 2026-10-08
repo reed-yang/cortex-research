@@ -529,7 +529,7 @@ def test_one_run_takes_at_most_100_and_the_rest_waits(
     assert status["running"]["remaining"] == 98
 
 
-def test_runs_are_weekly_capped_and_never_repeat_an_input(
+def test_runs_are_weekly_capped_and_retake_an_input_never_asked(
     store: ControlStore, supervisor: FallbackSupervisor, clock
 ) -> None:
     _saved(store, supervisor)
@@ -562,11 +562,13 @@ def test_runs_are_weekly_capped_and_never_repeat_an_input(
     assert store.xhs_fallback_state()["last"]["id"] == run["id"]
     clock.advance(61)
     drain.drain()
-    # The same input is not taken twice; the cap takes the next one only.
+    # The model never saw the first input, so the next run takes it again,
+    # and the cap leaves the other two waiting. (An input the model saw is
+    # never taken again: `test_an_input_reviewed_once_is_not_taken_again`.)
     state = store.xhs_fallback_state()
     assert state["last"]["id"] != run["id"]
     taken = items(store, state["last"]["id"])
-    assert len(taken) == 1 and first not in taken
-    assert supervisor.decided() == list(taken)
+    assert list(taken) == [first]
+    assert supervisor.decided() == [first]
     status = xhs_fallback_status(store, settings(fallback_enabled=True, fallback_weekly_cap=1))
-    assert status["backlog"] == 1
+    assert status["backlog"] == 2
