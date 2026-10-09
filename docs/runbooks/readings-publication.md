@@ -127,6 +127,16 @@ interrupted update with ambiguous bytes requires operator reconciliation.
 Retargeting a running publisher or reusing its journal for a different root is
 refused. There is no automatic destination path migration.
 
+Directory identities in the journal are `[st_dev, st_ino]`. macOS numbers
+`st_dev` in the order it finds disks at boot, so an update can renumber the
+volume of an unchanged library. Startup therefore also records the library's
+volume UUID while the binding matches. When only `st_dev` differs and the path,
+corpus, root inode and recorded volume UUID all match, startup rewrites the
+device of the root and of every paper directory whose inode and volume still
+match, in one transaction, and logs the old and new device. Without a recorded
+UUID, or with any other difference, startup still refuses. Products before
+0.1.37 ignore the UUID and refuse a renumbered device.
+
 Publishing files does not refresh a separate readings search index or prove
 cloud synchronization. Run the original library's index utility through its
 normal environment. Its incremental mode may add new papers without re-embedding
