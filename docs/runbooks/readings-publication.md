@@ -132,10 +132,12 @@ Directory identities in the journal are `[st_dev, st_ino]`. macOS numbers
 volume of an unchanged library. Startup therefore also records the library's
 volume UUID while the binding matches. When only `st_dev` differs and the path,
 corpus, root inode and recorded volume UUID all match, startup rewrites the
-device of the root and of every paper directory whose inode and volume still
-match, in one transaction, and logs the old and new device. Without a recorded
-UUID, or with any other difference, startup still refuses. Products before
-0.1.37 ignore the UUID and refuse a renumbered device.
+root's device and logs the old and new device. Every start then gives each
+paper directory and pending task the current device when its inode and volume
+still match, so a directory that could not be read during one start is retried
+at the next. Without a recorded UUID, or with any other difference, startup
+still refuses, and a replaced paper directory keeps its old identity. Products
+before 0.1.37 ignore the UUID and refuse a renumbered device.
 
 Publishing files does not refresh a separate readings search index or prove
 cloud synchronization. Run the original library's index utility through its

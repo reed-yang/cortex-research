@@ -532,3 +532,25 @@ def test_renumbering_does_not_adopt_a_replaced_paper_directory(library):
     restored.tick()
     assert status(restored)['state'] == 'conflict'
     assert (target / 'full_text.md').read_text() == 'original generated text'
+
+
+def test_paper_identity_that_could_not_be_inspected_is_refreshed_on_a_later_start(library):
+    service, store = library
+    source = add_paper(service, store)
+    service.tick()
+    old = renumber(service)
+    target = service.root / source.name
+    target.chmod(0)
+    try:
+        restored = reopen(service, store)
+    finally:
+        target.chmod(0o755)
+    with restored.connect() as db:
+        assert json.loads(db.execute('SELECT target_identity FROM publications').fetchone()[0])[0] == old
+    assert json.loads(settings(restored)['root'])[1] == service.identity
+    again = reopen(service, store)
+    with again.connect() as db:
+        assert json.loads(db.execute('SELECT target_identity FROM publications').fetchone()[0])[0] == service.identity[0]
+    (source / 'full_text.md').write_text('new generated text')
+    again.tick()
+    assert status(again)['state'] == 'published', status(again)
