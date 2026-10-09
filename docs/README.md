@@ -16,6 +16,7 @@ instructions. The following files are intentionally tracked and public.
 | [Managed tool access](runbooks/managed-tool-access.md) | Scoped terminal/file permissions and worker requirements |
 | [Operator skills](runbooks/operator-skills.md) | OCR for PDF-only papers through an accepted, digest-pinned skill |
 | [XHS notes and blogs](runbooks/xhs.md) | Opt-in XHS plugin: setup, follow, cadence, caps, backfill, retries, the weekly recommendation fallback, disable and provider data disclosure |
+| [0.1.37](releases/0.1.37.md) | Readings publication survives a macOS update that renumbers the library volume's `st_dev` |
 | [0.1.36](releases/0.1.36.md) | Weekly XHS recommendation fallback, recommendation exclusion and restore (Control schema 22) |
 | [0.1.35](releases/0.1.35.md) | Source text keeps chain-of-thought and hidden-reasoning wording; credentials and private paths stay redacted |
 | [0.1.34](releases/0.1.34.md) | The Web page no longer scrolls into blank space; resizable sidebar and list columns |

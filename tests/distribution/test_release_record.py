@@ -102,9 +102,9 @@ def test_the_checked_in_descriptor_parses_and_names_this_release() -> None:
 
     descriptor = load_descriptor(REPOSITORY / "distribution" / "release.toml")
 
-    assert descriptor.product_version == "0.1.36"
-    assert descriptor.release_id == "cortex-research-36"
-    assert descriptor.release_sequence == 36
+    assert descriptor.product_version == "0.1.37"
+    assert descriptor.release_id == "cortex-research-37"
+    assert descriptor.release_sequence == 37
     assert descriptor.target_schema == 22
     assert descriptor.upgrade_from_schemas == (16, 17, 18, 19, 20, 21)
     assert descriptor.worker_release_id == "hermes-0.15.0-gen10"
