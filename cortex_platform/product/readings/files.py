@@ -7,6 +7,8 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import stat
+import sys
+import uuid
 
 MAX_FILE_BYTES = 128 * 1024 * 1024
 MAX_PAPER_BYTES = 512 * 1024 * 1024
@@ -101,6 +103,32 @@ def inventory(root: Path) -> dict[str, str]:
     if 'full_text.md' not in result:
         raise PublicationConflict('missing_full_text')
     return result
+
+
+class _AttributeList(ctypes.Structure):
+    _fields_ = [('bitmapcount', ctypes.c_ushort), ('reserved', ctypes.c_uint16),
+                ('commonattr', ctypes.c_uint32), ('volattr', ctypes.c_uint32),
+                ('dirattr', ctypes.c_uint32), ('fileattr', ctypes.c_uint32), ('forkattr', ctypes.c_uint32)]
+
+
+def volume_uuid(fd: int) -> str | None:
+    """UUID of the volume holding an open descriptor, or None if it has none.
+
+    macOS assigns st_dev in the order disks are enumerated at boot, so an update
+    can renumber a volume whose files are unchanged. The volume UUID survives that.
+    """
+    function = ctypes.CDLL(None, use_errno=True).fgetattrlist
+    function.argtypes = [ctypes.c_int, ctypes.POINTER(_AttributeList), ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32]
+    function.restype = ctypes.c_int
+    # ATTR_BIT_MAP_COUNT, ATTR_VOL_INFO | ATTR_VOL_UUID; the reply is a u_int32 length and a uuid_t.
+    request = _AttributeList(5, 0, 0, 0x80000000 | 0x00040000, 0, 0, 0)
+    reply = ctypes.create_string_buffer(64)
+    if function(fd, ctypes.byref(request), reply, len(reply), 0):
+        return None
+    value = reply.raw[4:20]
+    if int.from_bytes(reply.raw[:4], sys.byteorder) < 20 or value == bytes(16):
+        return None
+    return str(uuid.UUID(bytes=value))
 
 
 def exclusive_rename(source: Path, target: Path) -> None:

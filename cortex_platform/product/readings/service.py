@@ -21,7 +21,8 @@ import uuid
 
 from ..sources.adoption import decode_engine_ref
 from ..sources.identity import canonicalize_arxiv_id
-from .files import PublicationConflict, digest, directory, inventory, parts, read_file, sync_tree, write_private
+from .files import (PublicationConflict, digest, directory, inventory, parts, read_file, sync_tree,
+                    volume_uuid, write_private)
 from .sandbox import ReadingsBoundaryError
 
 
@@ -32,6 +33,7 @@ class ReadingsService:
         with directory(root) as fd:
             info = os.fstat(fd)
             self.identity = [info.st_dev, info.st_ino]
+            self.volume = volume_uuid(fd)
         for other in (state.resolve(), self.corpus):
             if root.is_relative_to(other) or other.is_relative_to(root):
                 raise ReadingsBoundaryError('readings roots must be disjoint')
@@ -67,12 +69,73 @@ class ReadingsService:
                     (s['id'],) for s in store.list_sources()
                     if s['import_state'] in ('existing', 'imported') and s.get('engine_ref')
                 ])
-            elif bound[0] != binding:
-                raise ReadingsBoundaryError('readings root or corpus binding changed; use a new publication state')
             else:
                 version = db.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone()
                 if version is None or version[0] != '1':
                     raise ReadingsBoundaryError('unsupported publication journal schema')
+                if bound[0] != binding:
+                    self._rebind_root(db, json.loads(bound[0]))
+            # Recorded while the binding still matches, so a later renumbering can be
+            # told apart from a moved library. Older products ignore this key.
+            volume = db.execute("SELECT value FROM settings WHERE key='root_volume'").fetchone()
+            if volume is None:
+                if self.volume is not None:
+                    db.execute("INSERT INTO settings VALUES ('root_volume',?)", (self.volume,))
+            elif volume[0] != self.volume:
+                raise ReadingsBoundaryError('readings root volume changed; use a new publication state')
+            if self.volume is not None:
+                self._refresh_paper_identities(db)
+
+    def _rebind_root(self, db, bound: list) -> None:
+        """Rebind the journal root when only st_dev changed for the same library."""
+        path, (old_device, inode), corpus = bound
+        volume = db.execute("SELECT value FROM settings WHERE key='root_volume'").fetchone()
+        if (path != str(self.root) or corpus != str(self.corpus) or inode != self.identity[1]
+                or volume is None or self.volume is None or volume[0] != self.volume):
+            raise ReadingsBoundaryError('readings root or corpus binding changed; use a new publication state')
+        db.execute("UPDATE settings SET value=? WHERE key='root'",
+                   (json.dumps([str(self.root), self.identity, str(self.corpus)]),))
+        print(f'readings: library st_dev renumbered {old_device} -> {self.identity[0]}; journal rebound',
+              file=sys.stderr, flush=True)
+
+    def _refresh_paper_identities(self, db) -> None:
+        """Carry the current st_dev into identities of unchanged directories.
+
+        Runs at every start, so a directory that could not be inspected after a
+        renumbering is retried instead of keeping a stale identity. Only a
+        directory that still has the stored inode on the recorded volume is
+        refreshed; anything else keeps its old identity and conflicts as before.
+        """
+        device, inode = self.identity
+
+        def follow(identity, paper_dir):
+            if not identity or identity[0] == device:
+                return identity
+            try:
+                with directory(self.root.joinpath(*parts(paper_dir))) as fd:
+                    info = os.fstat(fd)
+                    same = info.st_ino == identity[1] and info.st_dev == device and volume_uuid(fd) == self.volume
+            except (OSError, ValueError):
+                return identity
+            return [device, identity[1]] if same else identity
+
+        refreshed = 0
+        for row in db.execute('SELECT source_id,paper_dir,target_identity,task FROM publications').fetchall():
+            target = json.loads(row['target_identity']) if row['target_identity'] else None
+            task = json.loads(row['task']) if row['task'] else None
+            current = follow(target, row['paper_dir'])
+            if task is not None:
+                root_identity = task.get('root_identity')
+                if root_identity and root_identity[1] == inode and root_identity[0] != device:
+                    task['root_identity'] = [device, inode]
+                task['target_identity'] = follow(task.get('target_identity'), row['paper_dir'])
+            if current != target or (task is not None and json.dumps(task) != row['task']):
+                db.execute('UPDATE publications SET target_identity=?,task=? WHERE source_id=?',
+                           (json.dumps(current) if current is not None else None,
+                            json.dumps(task) if task is not None else None, row['source_id']))
+                refreshed += 1
+        if refreshed:
+            print(f'readings: refreshed st_dev in {refreshed} journal rows', file=sys.stderr, flush=True)
 
     @contextmanager
     def connect(self):

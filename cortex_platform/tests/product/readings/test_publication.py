@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from cortex_platform.product.readings.files import PublicationConflict, inventory, read_file
+from cortex_platform.product.readings.files import PublicationConflict, directory, inventory, read_file, volume_uuid
 from cortex_platform.product.readings.service import ReadingsService
 from cortex_platform.product.sources.adoption import encode_engine_ref
 
@@ -406,3 +406,151 @@ def test_only_papers_are_discovered_retried_or_run(library, kind):
     states = {item['source_id']: item['state'] for item in service.status()['items']}
     assert states == {'source-one': 'published', 'source-other': 'pending'}
     assert (service.root / paper.name / 'full_text.md').exists()
+
+
+def renumber(service, *, device_offset=1, volume=None, inode_offset=0):
+    """Rewrite the journal as if the library's volume had another st_dev before a reboot."""
+    with service.connect() as db:
+        root, (device, inode), corpus = json.loads(db.execute("SELECT value FROM settings WHERE key='root'").fetchone()[0])
+        old = device + device_offset
+        db.execute("UPDATE settings SET value=? WHERE key='root'",
+                   (json.dumps([root, [old, inode + inode_offset], corpus]),))
+        if volume is not None:
+            db.execute("UPDATE settings SET value=? WHERE key='root_volume'", (volume,))
+        for row in db.execute('SELECT source_id,target_identity,task FROM publications').fetchall():
+            target = json.loads(row['target_identity']) if row['target_identity'] else None
+            task = json.loads(row['task']) if row['task'] else None
+            if target:
+                target[0] = old
+            if task:
+                task['root_identity'][0] = old
+                if task['target_identity']:
+                    task['target_identity'][0] = old
+            db.execute('UPDATE publications SET target_identity=?,task=? WHERE source_id=?',
+                       (json.dumps(target) if target else None, json.dumps(task) if task else None, row['source_id']))
+    return old
+
+
+def reopen(service, store):
+    return ReadingsService(root=service.root, state=service.state, corpus=service.corpus, store=store)
+
+
+def settings(service):
+    with service.connect() as db:
+        return dict(db.execute('SELECT key,value FROM settings').fetchall())
+
+
+def test_journal_records_the_library_volume(library):
+    service, _ = library
+    with directory(service.root) as fd:
+        expected = volume_uuid(fd)
+    assert expected is not None
+    assert service.volume == expected
+    assert settings(service)['root_volume'] == expected
+
+
+def test_volume_is_recorded_for_an_existing_journal_whose_binding_matches(library):
+    service, store = library
+    with service.connect() as db:
+        db.execute("DELETE FROM settings WHERE key='root_volume'")
+    reopen(service, store)
+    assert settings(service)['root_volume'] == service.volume
+
+
+def test_renumbered_device_rebinds_the_same_library(library, capsys):
+    service, store = library
+    source = add_paper(service, store)
+    service.tick()
+    assert status(service)['state'] == 'published'
+    old = renumber(service)
+    restored = reopen(service, store)
+    assert f'renumbered {old} -> {service.identity[0]}' in capsys.readouterr().err
+    assert json.loads(settings(restored)['root'])[1] == service.identity
+    with restored.connect() as db:
+        target = json.loads(db.execute('SELECT target_identity FROM publications').fetchone()[0])
+    assert target[0] == service.identity[0]
+    # The published directory is still owned: a later update publishes instead of conflicting.
+    (source / 'full_text.md').write_text('new generated text')
+    restored.tick()
+    assert status(restored)['state'] == 'published', status(restored)
+    assert (restored.root / source.name / 'full_text.md').read_text() == 'new generated text'
+
+
+def test_renumbered_device_recovers_a_publication_in_progress(library, monkeypatch):
+    service, store = library
+    source = add_paper(service, store)
+    def crash(task):
+        raise RuntimeError('simulated crash before the publisher ran')
+    monkeypatch.setattr(service, '_run', crash)
+    with pytest.raises(RuntimeError):
+        service.tick()
+    renumber(service)
+    restored = reopen(service, store)
+    restored.tick()
+    assert status(restored)['state'] == 'published', status(restored)
+    assert (restored.root / source.name / 'full_text.md').read_text() == 'original generated text'
+
+
+@pytest.mark.parametrize('change', ['no_recorded_volume', 'other_volume', 'other_inode'])
+def test_renumbered_device_is_refused_without_the_same_volume_and_inode(library, change):
+    service, store = library
+    add_paper(service, store)
+    service.tick()
+    if change == 'no_recorded_volume':
+        with service.connect() as db:
+            db.execute("DELETE FROM settings WHERE key='root_volume'")
+    renumber(service, volume='00000000-0000-0000-0000-000000000001' if change == 'other_volume' else None,
+             inode_offset=1 if change == 'other_inode' else 0)
+    before = settings(service)
+    with pytest.raises(ValueError, match='binding changed'):
+        reopen(service, store)
+    assert settings(service) == before
+
+
+def test_recorded_volume_must_match_even_when_the_binding_does(library):
+    service, store = library
+    with service.connect() as db:
+        db.execute("UPDATE settings SET value='00000000-0000-0000-0000-000000000001' WHERE key='root_volume'")
+    with pytest.raises(ValueError, match='volume changed'):
+        reopen(service, store)
+
+
+def test_renumbering_does_not_adopt_a_replaced_paper_directory(library):
+    import shutil
+    service, store = library
+    source = add_paper(service, store)
+    service.tick()
+    target = service.root / source.name
+    original = service.root / 'moved-by-operator'
+    target.rename(original)
+    shutil.copytree(original, target)
+    old = renumber(service)
+    restored = reopen(service, store)
+    with restored.connect() as db:
+        assert json.loads(db.execute('SELECT target_identity FROM publications').fetchone()[0])[0] == old
+    (source / 'full_text.md').write_text('new automatic text')
+    restored.tick()
+    assert status(restored)['state'] == 'conflict'
+    assert (target / 'full_text.md').read_text() == 'original generated text'
+
+
+def test_paper_identity_that_could_not_be_inspected_is_refreshed_on_a_later_start(library):
+    service, store = library
+    source = add_paper(service, store)
+    service.tick()
+    old = renumber(service)
+    target = service.root / source.name
+    target.chmod(0)
+    try:
+        restored = reopen(service, store)
+    finally:
+        target.chmod(0o755)
+    with restored.connect() as db:
+        assert json.loads(db.execute('SELECT target_identity FROM publications').fetchone()[0])[0] == old
+    assert json.loads(settings(restored)['root'])[1] == service.identity
+    again = reopen(service, store)
+    with again.connect() as db:
+        assert json.loads(db.execute('SELECT target_identity FROM publications').fetchone()[0])[0] == service.identity[0]
+    (source / 'full_text.md').write_text('new generated text')
+    again.tick()
+    assert status(again)['state'] == 'published', status(again)
