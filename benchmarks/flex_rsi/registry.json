@@ -1,0 +1,35 @@
+{
+  "schema_note": "Email-field-complete proposal; not verified against official Flex-RSI schema",
+  "tasks": [
+    {
+      "id": "cortex-evidence-chunking-v1",
+      "category": "software_engineering / research_infrastructure",
+      "source": "https://github.com/reed-yang/cortex-research; original research-derived starter in benchmarks/flex_rsi",
+      "branch": "flex-rsi/contribution-v0.1",
+      "version": "preflight-v0.1; freeze exact contribution commit after submission; upstream e975c242dc3955ff01593606b56dc6a310afa728",
+      "data_split": "Implemented: 8 public preflight cases. Planned final: 48 train, 40 validation, 200 sealed test, document/template grouped; not yet materialized",
+      "metric": "Equal-family macro case accuracy; strict byte, section, size, uniqueness and exclusion checks; failures retain denominator",
+      "model_access": "Task execution uses no model/API. Baseline agent API IDs, access and pricing must be confirmed with Flex-RSI; none assumed",
+      "hardware": "Proposed: Python 3.12, 2 CPU cores, 2 GiB RAM, no GPU, offline container; official host not confirmed",
+      "state": "proposal_preflight_passed / blocked_official_access / hidden_set_pending",
+      "maintainer": "Siyuan Yang (reed-yang)",
+      "budget": "Per model/seed: 30 min, 60 tool calls, 100k total billed tokens including reasoning where exposed; stop at first limit; <=20 min final CPU evaluation; no provider spend started",
+      "selected": true
+    },
+    {
+      "id": "specwam-field-integration-v0",
+      "category": "numerical_algorithm_optimization",
+      "source": "https://github.com/reed-yang/spec-wam; upstream 4d320ac73090274f613326a5be0c94043210a5f7; independently written synthetic field RPC prototype",
+      "branch": "flex-rsi/contribution-v0.1 (preparation source in Cortex repository; no Spec-WAM runtime changes)",
+      "version": "prototype-v0; not eligible for official run",
+      "data_split": "9 public development fields only; no hidden dataset",
+      "metric": "All-case checkpoint L-infinity <=0.01, then mean min(4, 256/NFE); every RPC query counted externally, max 512",
+      "model_access": "No weights; CPU field oracle only; baseline agent APIs unconfirmed",
+      "hardware": "Python 3.12 CPU; no GPU",
+      "state": "reserve / difficulty_calibration_failed / not_selected",
+      "maintainer": "Siyuan Yang (reed-yang)",
+      "budget": "Public preflight only; any future agent campaign requires redesigned score and sealed field families",
+      "selected": false
+    }
+  ]
+}

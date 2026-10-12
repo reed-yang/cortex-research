@@ -1,0 +1,100 @@
+{
+  "chunking": {
+    "task": "chunking",
+    "split": "public-dev",
+    "cases": 8,
+    "score": 0.375,
+    "passed": 3,
+    "rows": [
+      {
+        "valid": true
+      },
+      {
+        "valid": true
+      },
+      {
+        "valid": false
+      },
+      {
+        "valid": false
+      },
+      {
+        "valid": true
+      },
+      {
+        "valid": false
+      },
+      {
+        "valid": false
+      },
+      {
+        "valid": false
+      }
+    ],
+    "candidate_sha256": "bfb553039e634dc0205fbbb23ea4641bae7553cebbfa7e8e6858fffe47589591"
+  },
+  "integration": {
+    "task": "integration",
+    "split": "public-dev",
+    "cases": 9,
+    "score": 1.0,
+    "passed": 9,
+    "rows": [
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.0006859459723108641,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.0004898145273171117,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.0012340972617933543,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.002459442151658109,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.001547507256691505,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.0019313759075330617,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.001930713822415775,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.0017421136554748445,
+        "reward": 1.0
+      },
+      {
+        "valid": true,
+        "calls": 256,
+        "path_linf": 0.0018856026458812236,
+        "reward": 1.0
+      }
+    ],
+    "candidate_sha256": "3bd457d9acd5d8ae5bf661c35c98790424a73cbd198ab937d89ec3ad2ce5aa20"
+  }
+}
