@@ -1,0 +1,78 @@
+{
+  "version": "0.1.0-proposal",
+  "maintainer": "reed-yang (Siyuan Yang)",
+  "official_registration_status": "UNKNOWN — Flex-RSI repository returned 404 on 2026-10-12",
+  "official_schema_compatibility": "UNVERIFIED; transfer record only",
+  "agent_model_access": {
+    "status": "NOT_VERIFIED",
+    "plan": "Three distinct API model families; freeze exact model ID, provider, reasoning setting and agent harness after access/cost check; no model calls authorized by this file."
+  },
+  "run_board_claim": "NOT_CLAIMED",
+  "run_branch_policy": "Separate model/seed run branches; never merge experimental runs into main",
+  "task_id": "cortex-paper-chunking-v1",
+  "title": "Robust bounded paper evidence chunking",
+  "category": "software_engineering / research_data_preprocessing (proposed category)",
+  "source": "https://github.com/reed-yang/cortex-research",
+  "source_commit": "e975c242dc3955ff01593606b56dc6a310afa728",
+  "branch": "contrib/flex-rsi-chunking-20261012",
+  "initial_code": "profiles/research/src/cortex_research/chunker.py",
+  "editable_paths": [
+    "profiles/research/src/cortex_research/chunker.py"
+  ],
+  "data_splits": {
+    "train": {
+      "count": 48,
+      "status": "PUBLIC_SYNTHETIC_IMPLEMENTED"
+    },
+    "dev": {
+      "count": 24,
+      "status": "PUBLIC_SYNTHETIC_IMPLEMENTED"
+    },
+    "hidden": {
+      "count": 240,
+      "status": "PROPOSED_NOT_CREATED",
+      "unit": "document template family; not random variants of public instances"
+    },
+    "regression": {
+      "status": "PENDING_INDEPENDENT_EDGE_SUITE"
+    }
+  },
+  "metric": {
+    "primary": "100 * macro-family full-document contract pass rate",
+    "direction": "higher_is_better",
+    "baseline_public_dev": 25,
+    "baseline_public_dev_passed": 6,
+    "baseline_public_dev_total": 24,
+    "official_hidden_baseline": null,
+    "report": [
+      "absolute score",
+      "delta from A0",
+      "per-family pass rate",
+      "failures",
+      "CPU wall",
+      "RSS",
+      "agent billed cost"
+    ]
+  },
+  "model_access": {
+    "target": "none",
+    "agent": "API access and exact model IDs not yet verified"
+  },
+  "hardware": {
+    "proposed": "1 CPU core, 2 GiB RAM, Linux x86_64, CPython 3.12; no GPU",
+    "actual_local_smoke": "Python 3.12.14, CPU-only; OCI image not yet frozen"
+  },
+  "state": "PUBLIC_CPU_PROTOTYPE; BLOCKED_OFFICIAL_ACCESS_AND_HIDDEN_HARNESS",
+  "budget": {
+    "wall_hours": 2,
+    "cpu_cores": 1,
+    "ram_gib": 2,
+    "gpu_hours": 0,
+    "agent_usd_cap": 15,
+    "generated_token_cap": 100000,
+    "dev_feedback_cap": 20,
+    "final_minutes": 10,
+    "authorization": "PROPOSED; no paid agent campaign started"
+  },
+  "anti_leakage": "See README: isolated external scorer, hidden data off-repo, allowlisted one-file patch, fixed denominators, content equality and chunk-count bound"
+}
